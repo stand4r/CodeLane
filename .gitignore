@@ -72,4 +72,5 @@ htmlcov/
 /nul
 /screenshoots/agent_*.png
 /build-release.log
+/installer-build.log
 /docs/ИДЕИ_ДЛЯ_ДИПЛОМА.md

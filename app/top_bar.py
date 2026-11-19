@@ -310,7 +310,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
                     ("Анализ проекта", None, activity("intelligence")),
                     ("Архитектурный граф", None, lambda: w.open_graph_editor(None, "modules")),
                     ("Архитектурный паспорт", None, w.open_defense_guide),
-                    ("Git и GitHub", None, version_control),
+                    ("Git", None, version_control),
                 )),
             ),
             "Вид": (

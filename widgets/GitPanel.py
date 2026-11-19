@@ -629,9 +629,9 @@ class GitPanel(QtWidgets.QFrame):
         sync = QtWidgets.QGridLayout()
         sync.setSpacing(6)
         for index, (text, tip, icon_name, callback) in enumerate((
-            ("Получить", "Получить изменения (Pull)", "arrow-down", self.git_pull),
-            ("Отправить", "Отправить изменения (Push)", "arrow-up", self.git_push),
-            ("Синхронизировать", "Синхронизировать (Sync)", "sync", self.git_sync),
+            ("Pull", "Получить изменения (Pull)", "arrow-down", self.git_pull),
+            ("Push", "Отправить изменения (Push)", "arrow-up", self.git_push),
+            ("Sync", "Синхронизировать (Sync)", "sync", self.git_sync),
         )):
             b = self._button(text, callback)
             b.setToolTip(tip)
@@ -642,8 +642,8 @@ class GitPanel(QtWidgets.QFrame):
         self.not_repo_frame = QtWidgets.QFrame()
         nr = QtWidgets.QVBoxLayout(self.not_repo_frame)
         nr.setContentsMargins(0, 0, 0, 0)
-        nr.addWidget(self._button("Создать репозиторий", self.init_repository))
-        nr.addWidget(self._button("Клонировать с GitHub…", self.show_clone_dialog))
+        nr.addWidget(self._button("New repo", self.init_repository))
+        nr.addWidget(self._button("Clone", self.show_clone_dialog))
         self.not_repo_frame.hide()
         return self.not_repo_frame
 
@@ -653,7 +653,7 @@ class GitPanel(QtWidgets.QFrame):
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
-        self.files_label = QtWidgets.QLabel("ИЗМЕНЕНИЯ")
+        self.files_label = QtWidgets.QLabel("Changes")
         self.files_label.setObjectName("panelSectionLabel")
         layout.addWidget(self.files_label)
 
@@ -681,10 +681,10 @@ class GitPanel(QtWidgets.QFrame):
 
         actions = QtWidgets.QHBoxLayout()
         actions.setSpacing(4)
-        stage = self._button("Индекс +", self.stage_all)
-        stage.setToolTip("Проиндексировать все файлы (Stage All)")
-        unstage = self._button("Индекс −", self.unstage_all)
-        unstage.setToolTip("Снять индексацию (Unstage All)")
+        stage = self._button("Index+", self.stage_all)
+        stage.setToolTip("Stage all")
+        unstage = self._button("Index−", self.unstage_all)
+        unstage.setToolTip("Unstage All")
         actions.addWidget(stage)
         actions.addWidget(unstage)
         layout.addLayout(actions)
@@ -726,13 +726,13 @@ class GitPanel(QtWidgets.QFrame):
     def _on_auth_success(self):
         self._update_auth_ui()
         self.refresh()
-        self.status.setText("Аутентификация GitHub завершена успешно!")
+        self.status.setText("Аутентификация GitHub завершена")
 
     def _logout(self):
         self.github_service.logout()
         self._update_auth_ui()
         self.refresh()
-        self.status.setText("Вы вышли из GitHub.")
+        self.status.setText("Вы вышли из GitHub")
 
     def _open_user_repos(self):
         dialog = GitHubReposDialog(self)
