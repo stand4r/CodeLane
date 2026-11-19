@@ -1,6 +1,7 @@
 """PyScribe widgets/SearchPanel.py: application module and reusable component."""
 from pathlib import Path
 import re
+from threading import Event
 from design.icons import set_line_icon
 from PyQt6 import QtCore, QtWidgets, QtGui
 
@@ -22,6 +23,9 @@ class SearchPanel(QtWidgets.QWidget):
         super().__init__(parent)
         self.setObjectName("searchPanel")
         self.root_path = Path.cwd()
+        self._search_cancel = Event()
+        self._last_request = None
+        self._pending_results = None
         self._build()
 
     def _build(self):
@@ -106,8 +110,14 @@ class SearchPanel(QtWidgets.QWidget):
         layout.addWidget(self.results, 1)
 
     def set_root(self, path):
-        if path:
-            self.root_path = Path(path)
+        root = Path(path) if path else Path.cwd()
+        if root != self.root_path:
+            self._search_cancel.set()
+            self.root_path = root
+            self._last_request = None
+            self._pending_results = None
+            self.results.clear()
+            self.result_count.clear()
 
     def _compile_pattern(self, query):
         if self.regex.isChecked():
@@ -118,14 +128,15 @@ class SearchPanel(QtWidgets.QWidget):
                 pattern = r'\b' + pattern + r'\b'
         return re.compile(pattern, 0 if self.case_sensitive.isChecked() else re.IGNORECASE)
 
-    def _iter_text_files(self):
+    @classmethod
+    def _iter_text_files(cls, root):
         try:
             from core.ignore_rules import walk_files
             # Pruned walk so a search never descends into node_modules/.git.
-            scan = walk_files(self.root_path, extensions=None,
-                              max_files=None, max_bytes=self.MAX_FILE_BYTES)
+            scan = walk_files(root, extensions=None,
+                              max_files=None, max_bytes=cls.MAX_FILE_BYTES)
             for path in scan.files:
-                if path.suffix.lower() in self.BINARY_SUFFIXES:
+                if path.suffix.lower() in cls.BINARY_SUFFIXES:
                     continue
                 try:
                     data = path.read_bytes()
@@ -150,11 +161,32 @@ class SearchPanel(QtWidgets.QWidget):
         except OSError:
             return
 
+    def _request(self):
+        return (self.query.text(), self.regex.isChecked(), self.whole_word.isChecked(),
+                self.case_sensitive.isChecked())
+
+    def refresh_if_needed(self):
+        if self._request() != self._last_request:
+            self.search()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._pending_results is not None:
+            QtCore.QTimer.singleShot(0, self._render_pending)
+
+    def _render_pending(self):
+        if self.isVisible() and self._pending_results is not None:
+            result, self._pending_results = self._pending_results, None
+            self._show_results(self.root_path, *result)
+
     def search(self):
+        self._search_cancel.set()
+        self._last_request = self._request()
+        self._pending_results = None
         self.results.clear()
         query = self.query.text()
-        if not query.strip() or not self.root_path.exists():
-            self.result_count.setText('')
+        if not query.strip():
+            self.result_count.clear()
             return
         try:
             pattern = self._compile_pattern(query)
@@ -163,38 +195,67 @@ class SearchPanel(QtWidgets.QWidget):
             self.results.addTopLevelItem(QtWidgets.QTreeWidgetItem([str(exc)]))
             return
 
+        root = self.root_path
+        cancel = self._search_cancel = Event()
+        self.result_count.setText('Поиск…')
+
+        def ready(result):
+            if not cancel.is_set():
+                self._pending_results = result
+                self._render_pending()
+
+        def failed(message):
+            if not cancel.is_set():
+                self.result_count.setText('Ошибка поиска')
+                self.results.addTopLevelItem(QtWidgets.QTreeWidgetItem([message]))
+
+        from services.background import run_async
+        run_async(lambda: SearchPanel._find_matches(root, pattern, cancel), on_done=ready, on_error=failed)
+
+    @classmethod
+    def _find_matches(cls, root, pattern, cancel):
+        files = []
         total_matches = 0
-        file_count = 0
-        for path, text, _encoding, _bom in self._iter_text_files():
-            file_item = None
+        for path, text, _encoding, _bom in cls._iter_text_files(root):
+            if cancel.is_set():
+                break
+            rows = []
             for line_no, line in enumerate(text.splitlines(), 1):
-                matches = list(pattern.finditer(line))
-                if not matches:
-                    continue
-                if file_item is None:
-                    relative = str(path.relative_to(self.root_path))
-                    file_item = QtWidgets.QTreeWidgetItem([f'{path.name}  ·  {relative}'])
-                    file_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, str(path))
-                    file_item.setToolTip(0, str(path))
-                    self.results.addTopLevelItem(file_item)
-                    file_count += 1
-                snippet = line.strip()
-                if len(snippet) > 180:
-                    snippet = snippet[:177] + '…'
-                child = QtWidgets.QTreeWidgetItem([f'{line_no}:  {snippet}'])
-                child.setData(0, QtCore.Qt.ItemDataRole.UserRole, str(path))
-                child.setData(0, QtCore.Qt.ItemDataRole.UserRole + 1, line_no)
-                child.setToolTip(0, f'{path}:{line_no}\n{line.strip()}')
-                file_item.addChild(child)
-                total_matches += len(matches)
-                if total_matches >= 5000:
-                    break
+                count = sum(1 for _ in pattern.finditer(line))
+                if count:
+                    snippet = line.strip()
+                    rows.append((line_no, snippet if len(snippet) <= 180 else snippet[:177] + '…'))
+                    total_matches += count
+                    if total_matches >= 5000:
+                        break
+            if rows:
+                files.append((path, rows))
             if total_matches >= 5000:
                 break
-        self.result_count.setText(f'Совпадений: {total_matches} в {file_count} файлах')
+        return files, total_matches
+
+    def _show_results(self, root, files, total_matches):
+        items = []
+        for path, rows in files:
+            path_str = str(path)
+            file_item = QtWidgets.QTreeWidgetItem([f'{path.name}  ·  {path.relative_to(root)}'])
+            file_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, path_str)
+            file_item.setToolTip(0, path_str)
+            children = []
+            for line_no, snippet in rows:
+                child = QtWidgets.QTreeWidgetItem([f'{line_no}:  {snippet}'])
+                child.setData(0, QtCore.Qt.ItemDataRole.UserRole, path_str)
+                child.setData(0, QtCore.Qt.ItemDataRole.UserRole + 1, line_no)
+                child.setToolTip(0, f'{path}:{line_no}\n{snippet}')
+                children.append(child)
+            file_item.addChildren(children)
+            items.append(file_item)
+
+        self.result_count.setText(f'Совпадений: {total_matches} в {len(files)} файлах')
+        if not items:
+            items.append(QtWidgets.QTreeWidgetItem(['Ничего не найдено']))
+        self.results.addTopLevelItems(items)
         self.results.expandAll()
-        if total_matches == 0:
-            self.results.addTopLevelItem(QtWidgets.QTreeWidgetItem(['Ничего не найдено']))
 
     def _open_editor_paths(self) -> set:
         """Absolute paths of files currently open in editor tabs (skip them on replace)."""
@@ -221,7 +282,7 @@ class SearchPanel(QtWidgets.QWidget):
         replacement = self.replace.text()
         changes = 0
         skipped_open = []
-        for path, text, encoding, bom in self._iter_text_files():
+        for path, text, encoding, bom in self._iter_text_files(self.root_path):
             new_text, count = pattern.subn(replacement, text)
             if not count:
                 continue

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Optional
 
 from utils.programs import saveRecent, backup
 from core.activity_log import record_action
+from core.database_workspace import CONNECTION_SUFFIX, FILE_SUFFIXES as DATABASE_FILE_SUFFIXES
 from widgets.Dialog import CustomDialog
 from widgets.DocumentViewerWidget import DOCUMENT_EXTENSIONS, DocumentViewerWidget
 from widgets.HexViewer import HexViewer
@@ -39,6 +40,15 @@ class FileManager:
                 return
 
             suffix = file_path_obj.suffix.lower()
+            if suffix == CONNECTION_SUFFIX:
+                self.main_window.database_manager.open_connection_path(path_str)
+                return
+            if suffix in DATABASE_FILE_SUFFIXES:
+                with file_path_obj.open("rb") as stream:
+                    header = stream.read(16)
+                if header == b"SQLite format 3\x00" or (not header and suffix in {".sqlite", ".sqlite3"}):
+                    self.main_window.database_manager.open_sqlite_path(path_str)
+                    return
             if suffix in DIAGRAM_EXTENSIONS:
                 self.open_diagram_file(path_str)
                 return

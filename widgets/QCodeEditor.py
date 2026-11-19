@@ -4,6 +4,7 @@ from core.logging_config import get_logger
 import ast
 import re
 import json
+from bisect import bisect_left
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Set, Any, Callable
 import re
@@ -665,6 +666,9 @@ class ModernSyntaxHighlighter(QSyntaxHighlighter):
 
 
 class CompletionDelegate(QtWidgets.QStyledItemDelegate):
+    def sizeHint(self, option, index):
+        return QtCore.QSize(224, max(22, option.fontMetrics.height() + 4))
+
     def paint(self, painter, option, index):
         painter.save()
         if option.state & QtWidgets.QStyle.StateFlag.State_Selected:
@@ -680,13 +684,17 @@ class CompletionDelegate(QtWidgets.QStyledItemDelegate):
             "local": "#9CDCFE",
             "workspace": "#4EC9B0"
         }
-        badge = {"keyword": "KW", "class": "CLS", "function": "FN", "member": "MEM", "module": "MOD", "builtin": "SYS", "local": "VAR", "workspace": "WSP"}.get(kind, kind[:3].upper())
+        glyph = {"keyword": "#", "class": "◇", "function": "ƒ", "member": "ƒ",
+                 "module": "▣", "builtin": "·", "local": "𝑥", "workspace": "◇"}.get(kind, "·")
         painter.setPen(QColor(colors.get(kind, "#A8A8A8")))
-        painter.setFont(_ui_font(8, bold=True))
-        painter.drawText(option.rect.adjusted(8, 0, -4, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, badge)
+        painter.setFont(option.font)
+        icon_rect = QtCore.QRect(option.rect.left() + 4, option.rect.top(), 18, option.rect.height())
+        painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, glyph)
         painter.setPen(QColor("#D4D4D4"))
-        painter.setFont(_ui_font(10))
-        painter.drawText(option.rect.adjusted(44, 0, -8, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, str(index.data(Qt.ItemDataRole.DisplayRole)))
+        label_rect = option.rect.adjusted(26, 0, -6, 0)
+        label = option.fontMetrics.elidedText(str(index.data(Qt.ItemDataRole.DisplayRole)),
+                                             Qt.TextElideMode.ElideRight, label_rect.width())
+        painter.drawText(label_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
         painter.restore()
 
 class CompletionModel(QtCore.QAbstractListModel):
@@ -712,28 +720,29 @@ class SmartCompleter(QCompleter):
         self.setCompletionRole(Qt.ItemDataRole.DisplayRole)
         self.setModelSorting(QCompleter.ModelSorting.UnsortedModel)
         self.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-        self.setMaxVisibleItems(10)
-        self._items = []
+        self.setMaxVisibleItems(8)
+        self._suggestions = CompletionModel(parent=self)
+        self.setModel(self._suggestions)
+        self.activated[str].connect(self.insertText.emit)
         popup = self.popup()
         popup.setItemDelegate(CompletionDelegate(popup))
+        popup.setUniformItemSizes(True)
+        popup.setFont(_ui_font(9))
         popup.setObjectName("completionPopup")
         popup.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         popup.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         popup.setStyleSheet(f"""
-            QListView#completionPopup {{ background: {background_color}; color: #D4D4D4; border: 1px solid #2B2B2B; border-radius: 3px; padding: 4px; outline: none; }}
-            QListView#completionPopup::item {{ min-height: 30px; padding: 0; border: none; }}
+            QListView#completionPopup {{ background: {background_color}; color: #D4D4D4; border: 1px solid #2B2B2B; border-radius: 3px; padding: 1px; outline: none; }}
             QListView#completionPopup::item:selected {{ background: #264F78; color: #FFFFFF; }}
         """)
-        popup.setMinimumWidth(420)
-        popup.setMaximumWidth(680)
+        popup.setFixedWidth(260)
+
     def update_completions(self, items):
-        model = CompletionModel(items, self)
-        self._items = items
-        self.setModel(model)
-    def complete(self, rect):
-        popup = self.popup()
-        popup.setMinimumHeight(min(10, self.completionCount()) * 30 + 8)
-        super().complete(rect)
+        model = self._suggestions
+        if model.items != items:
+            model.beginResetModel()
+            model.items = items
+            model.endResetModel()
 
 
 class CodeEditor(EnhancedTextEdit):
@@ -757,11 +766,11 @@ class CodeEditor(EnhancedTextEdit):
         self._setup_line_numbers()
         
         # Таймеры для отложенных операций
-        self.analysis_timer = QTimer()
+        self.analysis_timer = QTimer(self)
         self.analysis_timer.setSingleShot(True)
         self.analysis_timer.timeout.connect(self._delayed_analysis)
         
-        self.completion_timer = QTimer()
+        self.completion_timer = QTimer(self)
         self.completion_timer.setSingleShot(True)
         self.completion_timer.timeout.connect(self._trigger_completion)
         
@@ -819,6 +828,7 @@ class CodeEditor(EnhancedTextEdit):
         self.updateRequest.connect(self.update_line_number_area)
         self.cursorPositionChanged.connect(self.highlight_current_line)
         self.cursorPositionChanged.connect(self._reposition_completion)
+        self.textChanged.connect(lambda: self.analysis_timer.start(450))
         self.cursorPositionChanged.connect(self._on_cursor_position_changed)
         
         show_lines = bool(self.settings.get("show_line_numbers", True))
@@ -842,7 +852,8 @@ class CodeEditor(EnhancedTextEdit):
     
     def _setup_autocomplete(self):
         """Настройка системы автодополнения"""
-        self.analyzer = CodeAnalyzer(self.language)
+        self._local_completions = (None, (), {})
+        self._completion_context = None
         self.completer = SmartCompleter(
             [], 
             self.settings.get("editor_background", self.settings.get("second_color", "#1E1E1E")),
@@ -861,8 +872,16 @@ class CodeEditor(EnhancedTextEdit):
             self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
     
     def _reposition_completion(self):
-        if hasattr(self, "completer") and self.completer.popup().isVisible():
-            self.completer.complete(self.cursorRect())
+        if self._completion_context and self._completion_context[:3] != self._completion_key():
+            self._dismiss_completion()
+
+    def _completion_key(self):
+        return self.language, self.document().revision(), self.textCursor().position()
+
+    def _dismiss_completion(self):
+        self._completion_context = None
+        self.completion_timer.stop()
+        self.completer.popup().hide()
 
     def setFont(self, font: QFont):
         super().setFont(font)
@@ -1349,7 +1368,7 @@ class CodeEditor(EnhancedTextEdit):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, "completer") and self.completer.popup().isVisible():
-            self.completer.complete(self.cursorRect())
+            self._dismiss_completion()
         self.update_line_number_area_width()
     
     def line_number_area_paint_event(self, event):
@@ -1681,7 +1700,7 @@ class CodeEditor(EnhancedTextEdit):
             tc.removeSelectedText()
         tc.insertText(completion)
         self.setTextCursor(tc)
-        self.completer.popup().hide()
+        self._dismiss_completion()
         self.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _accept_completion(self):
@@ -1694,88 +1713,74 @@ class CodeEditor(EnhancedTextEdit):
         else:
             popup.hide()
     
-    def _trigger_completion(self):
+    def _trigger_completion(self, *, explicit=False):
         """Интеллектуальное автодополнение (Jedi IntelliSense + Workspace Index + AST + Extensions)."""
         tc = self.textCursor()
-        text = self.toPlainText()
-        position = tc.position()
-        before = text[:position]
-        match = re.search(r"[A-Za-z_][A-Za-z0-9_]*$", before)
+        line_before = tc.block().text()
+        # QTextCursor columns are UTF-16 offsets, while Jedi takes code points.
+        line_before = line_before.encode("utf-16-le")[:tc.positionInBlock() * 2].decode("utf-16-le")
+        match = re.search(r"[^\W\d]\w*$", line_before)
         prefix = match.group(0) if match else ""
-        explicit = getattr(self, "_explicit_completion", False)
-        self._explicit_completion = False
-
-        if not prefix and not explicit and not before.endswith('.'):
-            self.completer.popup().hide()
+        member = re.search(r"([^\W\d]\w*)\.\w*$", line_before)
+        member_access = line_before.endswith(".") or bool(member)
+        if not prefix and not explicit and not member_access:
+            self._dismiss_completion()
             return
 
+        key = self._completion_key()
+        self._completion_context = (*key, explicit)
         completion_items = {}
+        text = None
+        prefix_lower = prefix.lower()
+        _, local_names, local_types = self._local_completions
 
-        # 1. Интеллектуальный анализатор Python через Jedi
-        is_python = self.language.lower() in ("python", "py", "") or getattr(self.language_config, "name", "").lower() == "python"
+        is_python = (self.language.lower() in ("python", "py", "")
+                     or self.language_config.name.lower() == "python")
         if is_python:
-            key = (self.document().revision(), tc.position())
             cached_key, cached_items = getattr(self, "_jedi_cache", (None, {}))
             if cached_key == key:
                 completion_items.update(cached_items)
-            elif not getattr(self, "_jedi_busy", False):
+            elif not getattr(self, "_jedi_busy", False) and (explicit or member_access or len(prefix) >= 2):
                 self._jedi_busy = True
+                text = self.toPlainText()
                 parent_mod = self._get_modern_editor_parent()
                 file_path = str(getattr(parent_mod, "file_path", "") or "temp.py")
-                line, column = tc.blockNumber() + 1, tc.positionInBlock()
+                line, column = tc.blockNumber() + 1, len(line_before)
 
-                def compute():
+                def compute(source=text):
                     import jedi
-                    items = {}
-                    for item in jedi.Script(code=text, path=file_path).complete(line=line, column=column):
-                        kind = {"function": "function", "method": "function",
-                                "class": "class", "module": "module",
-                                "keyword": "keyword"}.get(item.type, "local")
-                        items[item.name] = kind
-                    return items
+                    kinds = {"function": "function", "method": "function",
+                             "class": "class", "module": "module", "keyword": "keyword"}
+                    return {item.name: kinds.get(item.type, "local")
+                            for item in jedi.Script(code=source, path=file_path).complete(line=line, column=column)}
 
                 def ready(items):
                     self._jedi_busy = False
                     self._jedi_cache = (key, items)
-                    current = (self.document().revision(), self.textCursor().position())
-                    if current == key and self.hasFocus():
-                        self._trigger_completion()
-
-                def failed(_message):
-                    self._jedi_busy = False
+                    self._refresh_completion()
 
                 from services.background import run_async
-                run_async(compute, on_done=ready, on_error=failed)
+                run_async(compute, on_done=ready, on_error=lambda _: ready({}))
 
-        # 2. Ключевые слова синтаксиса языка
-        for word in self.language_config.keywords:
-            if str(word) not in completion_items:
-                completion_items[str(word)] = "keyword"
+        if not member_access:
+            for word in self.language_config.keywords:
+                if word.lower().startswith(prefix_lower):
+                    completion_items.setdefault(word, "keyword")
+            start = bisect_left(local_names, (prefix_lower, ""))
+            for folded, word in local_names[start:start + 81]:
+                if not folded.startswith(prefix_lower):
+                    break
+                completion_items.setdefault(word, "local")
 
-        # 3. Символы из локального синтаксического AST анализатора
-        try:
-            revision = self.document().revision()
-            if getattr(self, "_completion_analysis_revision", None) != revision:
-                self.analyzer.analyze_code(text)
-                self._completion_analysis_revision = revision
-            for word in self.analyzer.get_completion_list():
-                if str(word) not in completion_items:
-                    completion_items[str(word)] = "keyword" if str(word) in self.language_config.keywords else "local"
-        except Exception:
-            pass
-
-        # 4. Проектный индекс рабочей области (Workspace Index)
         if self.workspace_index is not None:
-            for word in self.workspace_index.complete(prefix, self.language):
-                if word not in completion_items:
-                    completion_items[word] = "workspace"
-            member_match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*$", before)
-            if member_match:
-                owner = member_match.group(1)
-                class_match = re.search(rf"\b{re.escape(owner)}\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", text)
-                if class_match:
-                    for word in self.workspace_index.complete_members(class_match.group(1), prefix):
-                        completion_items[word] = "member"
+            if not member_access:
+                for word in self.workspace_index.complete(prefix, self.language, limit=80):
+                    completion_items.setdefault(word, "workspace")
+            elif member:
+                class_name = local_types.get(member.group(1))
+                if class_name:
+                    for word in self.workspace_index.complete_members(class_name, prefix):
+                        completion_items.setdefault(word, "member")
 
         # 5. Провайдеры автодополнения из установленных расширений
         if self.extension_manager is not None:
@@ -1785,36 +1790,65 @@ class CodeEditor(EnhancedTextEdit):
                         try:
                             items = provider.complete(self, prefix)
                         except TypeError:
-                            items = provider.complete(text, self.language, prefix)
+                            items = provider.complete(text if text is not None else self.toPlainText(), self.language, prefix)
                         for item in items or []:
                             label = getattr(item, "label", str(item))
                             completion_items[str(label)] = "builtin"
                 except Exception as exc:
                     logger.exception("Completion provider error")
 
-        if prefix:
-            filtered = sorted([(w, k) for w, k in completion_items.items() if w and w.lower().startswith(prefix.lower())], key=lambda x: x[0].lower())
-        else:
-            filtered = sorted([(w, k) for w, k in completion_items.items() if w], key=lambda x: x[0].lower())[:80]
-
+        ranks = {"workspace": 2, "keyword": 1}
+        filtered = sorted(
+            ((word, kind) for word, kind in completion_items.items()
+             if word and word != prefix and word.lower().startswith(prefix_lower)),
+            key=lambda item: (not item[0].startswith(prefix), ranks.get(item[1], 0), item[0].lower()),
+        )[:80]
+        popup = self.completer.popup()
+        selected = popup.currentIndex().data() if popup.isVisible() else None
         self.completer.update_completions(filtered)
         self.completer.setCompletionPrefix(prefix)
-        if self.completer.completionCount() > 0:
-            popup = self.completer.popup()
-            popup.setCurrentIndex(self.completer.completionModel().index(0, 0))
-            self.completer.complete(self.cursorRect())
-            popup.show()
-            popup.raise_()
+        if filtered:
+            rect = self.cursorRect()
+            rect.translate(-self.fontMetrics().horizontalAdvance(prefix), 0)
+            self.completer.complete(rect)
+            row = next((i for i, (word, _) in enumerate(filtered) if word == selected), 0)
+            popup.setCurrentIndex(self.completer.completionModel().index(row, 0))
         else:
-            self.completer.popup().hide()
+            popup.hide()
+
+    def _refresh_completion(self):
+        context = self._completion_context
+        if context and context[:3] == self._completion_key() and (self.hasFocus() or self.completer.popup().isVisible()):
+            self._trigger_completion(explicit=context[3])
 
     def _delayed_analysis(self):
-        """Отложенный анализ кода"""
-        revision = self.document().revision()
-        if getattr(self, "_completion_analysis_revision", None) != revision:
-            self.analyzer.analyze_code(self.toPlainText())
-            self._completion_analysis_revision = revision
-    
+        key = self.language, self.document().revision()
+        if self._local_completions[0] == key or getattr(self, "_local_analysis_busy", False):
+            return
+        source = self.toPlainText()
+        self._local_analysis_busy = True
+
+        def compute():
+            analyzer = CodeAnalyzer(key[0])
+            analyzer.analyze_code(source)
+            names = sorted({(name.lower(), name) for name in analyzer.get_completion_list()})
+            constructor_types = {}
+            for match in re.finditer(r"\b([^\W\d]\w*)\s*=\s*([A-Za-z_]\w*)\s*\(", source):
+                name, class_name = match.groups()
+                constructor_types.setdefault(name, class_name)
+            return names, constructor_types
+
+        def ready(result):
+            self._local_analysis_busy = False
+            if key == (self.language, self.document().revision()):
+                self._local_completions = (key, *result)
+                self._refresh_completion()
+            elif not self.analysis_timer.isActive():
+                self.analysis_timer.start(450)
+
+        from services.background import run_async
+        run_async(compute, on_done=ready, on_error=lambda _: ready(((), {})))
+
     def _get_modern_editor_parent(self):
         p = self.parent()
         while p and not hasattr(p, 'show_find_bar'):
@@ -1925,8 +1959,7 @@ class CodeEditor(EnhancedTextEdit):
 
         # 1. Ctrl+Space: автодополнение
         if ctrl and event.key() == Qt.Key.Key_Space:
-            self._explicit_completion = True
-            self._trigger_completion()
+            self._trigger_completion(explicit=True)
             return
 
         # 2. Перемещение строк вверх/вниз (Alt+Up, Alt+Down)
@@ -2086,20 +2119,22 @@ class CodeEditor(EnhancedTextEdit):
                 self._accept_completion()
                 return
             if event.key() == Qt.Key.Key_Escape:
-                self.completer.popup().hide()
+                self._dismiss_completion()
                 return
             if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
                 QtWidgets.QApplication.sendEvent(self.completer.popup(), event)
                 return
 
-        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self.completer.popup().hide()
+        if event.key() == Qt.Key.Key_Escape:
+            self._dismiss_completion()
 
-        if event.text() and not event.text().isspace() and not ctrl:
-            self.completion_timer.start(120)
-
+        typed = event.text()
         super().keyPressEvent(event)
-        self.analysis_timer.start(500)
+        if (typed and (typed[-1].isalnum() or typed[-1] in "_.") and not ctrl
+                or event.key() == Qt.Key.Key_Backspace):
+            self.completion_timer.start(85)
+        elif typed:
+            self._dismiss_completion()
 
     def _handle_auto_closure(self, event):
         """Автоматическое закрытие скобок и кавычек с поддержкой пропуска и оборачивания выделения"""
@@ -2164,12 +2199,12 @@ class CodeEditor(EnhancedTextEdit):
     def set_language(self, language: str):
         """Изменение языка программирования"""
         self.language = language
-        self._completion_analysis_revision = None
+        self._local_completions = (None, (), {})
+        self._dismiss_completion()
         self._jedi_cache = (None, {})
         self.language_config = self._get_language_config(language)
-        self.analyzer = CodeAnalyzer(language)
         self.highlighter = ModernSyntaxHighlighter(self.document(), self.language_config)
-        self.analyzer.analyze_code(self.toPlainText())
+        self.analysis_timer.start(450)
 
 
 class ModernCodeEditor(QWidget):

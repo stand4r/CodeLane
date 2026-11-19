@@ -1630,6 +1630,10 @@ class TerminalTab(QtWidgets.QWidget):
             env.insert("PYTHONUTF8", "1")
             env.insert("PYTHONUNBUFFERED", "1")
             env.insert("TERM", "xterm-256color")
+            database_manager = getattr(self.window(), "database_manager", None)
+            database_url = database_manager.runtime_url(proc.workingDirectory()) if database_manager else None
+            if database_url:
+                env.insert("DATABASE_URL", database_url)
             proc.setProcessEnvironment(env)
         except Exception:
             pass

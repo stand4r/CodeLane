@@ -103,6 +103,7 @@ class AnalysisWorker(QtCore.QObject):
     def __init__(self, engine: ProjectIntelligenceEngine):
         super().__init__()
         self.engine = engine
+        self._last_progress_at = 0.0
 
     @QtCore.pyqtSlot()
     def run(self):
@@ -122,6 +123,10 @@ class AnalysisWorker(QtCore.QObject):
     def _progress(self, current, total, name):
         if QtCore.QThread.currentThread().isInterruptionRequested():
             raise InterruptedError("Project analysis cancelled")
+        now = time.monotonic()
+        if current < total and now - self._last_progress_at < 0.12:
+            return
+        self._last_progress_at = now
         try:
             self.progress.emit(current, total, name)
         except RuntimeError:
@@ -795,6 +800,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.engine: Optional[ProjectIntelligenceEngine] = None
         self.analysis: Optional[ProjectAnalysis] = None
         self._thread = None
+        self._worker_engine = None
+        self._rendered_analysis = None
         self._worker = None
         self._analysis_generation = 0
         self._refresh_pending = False
@@ -1689,6 +1696,10 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self._analysis_generation += 1
         self._relative_root = None
         self.engine = ProjectIntelligenceEngine(root, self.enabled_analyzers) if root else None
+        self._worker_engine = None
+        self._rendered_analysis = None
+        if self._thread is not None:
+            self._thread.requestInterruption()
         self.analysis = None
         if self._task_store:
             try:
@@ -1756,7 +1767,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         root = str(self.engine.root)
         self._analysis_generation += 1
         generation = self._analysis_generation
-        worker_engine = ProjectIntelligenceEngine(root, self.enabled_analyzers)
+        if self._worker_engine is None:
+            self._worker_engine = ProjectIntelligenceEngine(root, self.enabled_analyzers)
 
         self.status.setText('Анализируем проект…')
         self.loading_overlay.start('Анализ проекта…', 'Готовим анализатор…', show_progress=True)
@@ -1765,7 +1777,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.refresh_button.setEnabled(False)
 
         thread = QtCore.QThread(self)
-        worker = AnalysisWorker(worker_engine)
+        worker = AnalysisWorker(self._worker_engine)
         worker.moveToThread(thread)
         self._thread = thread
         self._worker = worker
@@ -1863,8 +1875,19 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             if len(skipped_names) > 10:
                 hint += f' и ещё {len(skipped_names) - 10}'
         self.status.setToolTip(hint)
-        self._populate(analysis)
+        if self.isVisible():
+            self._render_analysis()
         self.analysis_ready.emit(analysis)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.analysis is not None and self._rendered_analysis is not self.analysis:
+            QtCore.QTimer.singleShot(0, self._render_analysis)
+
+    def _render_analysis(self):
+        if self.isVisible() and self.analysis is not None and self._rendered_analysis is not self.analysis:
+            self._populate(self.analysis)
+            self._rendered_analysis = self.analysis
 
     def _on_failed(self, message, generation=None):
         if self._is_stale(generation):
@@ -1960,6 +1983,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             'low': Palette.severity('low'),
         }
 
+        items = []
         for tip in self.student_tips:
             cat = tip.get('category', '')
             prio = tip.get('priority', 'low')
@@ -1998,7 +2022,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
 
             c = QtGui.QColor(sev_colors.get(prio, Palette.TEXT_MUTED))
             item.setForeground(1, QtGui.QBrush(c))
-            self.tips_tree.addTopLevelItem(item)
+            items.append(item)
+        self.tips_tree.addTopLevelItems(items)
 
         # Resizing every column for hundreds of rows is itself several hundred
         # milliseconds; fixed widths are cheaper and stable while scrolling.

@@ -4,6 +4,7 @@
 
 from pathlib import Path
 import sys
+from PyInstaller.utils.hooks import collect_data_files, collect_delvewheel_libs_directory
 
 ROOT = Path(SPECPATH)
 
@@ -18,6 +19,8 @@ datas = [
     (str(ROOT / "third_party" / "assembly" / "nasm"), "third_party/assembly/nasm"),
     (str(ROOT / "third_party" / "assembly" / "fasm"), "third_party/assembly/fasm"),
 ]
+datas += collect_data_files("jedi") + collect_data_files("parso")
+datas, database_binaries = collect_delvewheel_libs_directory("psycopg_binary", datas=datas)
 
 hiddenimports = [
     # PyQt6 Core and GUI
@@ -51,6 +54,11 @@ hiddenimports = [
     "core.single_instance",
     "core.project_intelligence",
     "core.workspace_index",
+    "sqlalchemy.dialects.sqlite.pysqlite",
+    "sqlalchemy.dialects.postgresql.psycopg",
+    "sqlalchemy.dialects.mysql.pymysql",
+    "sqlalchemy.dialects.mssql.pyodbc",
+    "psycopg_binary",
     "core.security",
     "core.analyzers.registry",
     "core.analyzers.polyglot",
@@ -95,7 +103,7 @@ hiddenimports = [
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=database_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

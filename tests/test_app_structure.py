@@ -73,9 +73,7 @@ def test_ui_font_resolution():
     assert family == "Segoe UI" or is_font_available(family)
     assert ui_font_family() == family
     assert resolve_mono_font()
-    # Candara is the default: a normal-width face, unlike Bahnschrift, whose
-    # condensed variable instance made the whole UI look squeezed.
-    assert UI_FONT_CANDIDATES[0] == "Candara"
+    assert UI_FONT_CANDIDATES[0] == "Segoe UI Variable Text"
     assert "Bahnschrift" not in UI_FONT_CANDIDATES
 
 

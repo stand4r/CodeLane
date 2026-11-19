@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 import pytest
-from PyQt6 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtTest, QtWidgets
 
 from core.code_analysis.lsp_client import LspClient, LspDiagnostic, LspLocation, path_to_uri, uri_to_path
 from core.code_analysis.openapi_bridge import OpenApiBridge, paths_match
@@ -559,6 +559,9 @@ def test_ui_editor_navigation_and_codelens(qapp, temp_project_dir):
     lens = editor.code_lens
     assert lens is not None
     lens._refresh_lens()
+    deadline = time.monotonic() + 2
+    while len(lens._symbols) < 2 and time.monotonic() < deadline:
+        QtTest.QTest.qWait(10)
     assert len(lens._symbols) >= 2
     sym_names = [s.name for s in lens._symbols]
     assert "Greeter" in sym_names

@@ -124,6 +124,9 @@ class ProjectHandler:
             pass
         self.main_window.refresh_extensions_panel()
         self.main_window.search_panel.set_root(norm_root)
+        database = getattr(self.main_window, "database_manager", None)
+        if database is not None:
+            database.set_project(norm_root)
         self.main_window.git_panel.set_root(norm_root if enabled("git") else None)
         self.main_window.update_window_title()
 

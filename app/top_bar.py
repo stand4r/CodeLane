@@ -272,6 +272,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
             "Файл": (
                 ("Создание и открытие", (
                     ("Новый файл", "Ctrl+N", w.action_new_file),
+                    ("Новый файл подключения к БД…", None, lambda: w.database_manager.new_connection_file()),
                     ("Открыть файл…", "Ctrl+O", w.action_open_file),
                     ("Быстрый переход к файлу", "Ctrl+P", w.action_quick_open),
                 )),

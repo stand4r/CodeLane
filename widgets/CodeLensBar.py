@@ -737,7 +737,8 @@ class CodeLensBar(QFrame):
                 return ext
         return 'py'
 
-    def _parse_generic_symbols_with_status(self, code: str, lang: str) -> Tuple[List[CodeSymbol], Optional[Dict[str, Any]]]:
+    @staticmethod
+    def _parse_generic_symbols_with_status(code: str, lang: str) -> Tuple[List[CodeSymbol], Optional[Dict[str, Any]]]:
         """Generic symbol parser using regex and brace balancing for JS/TS/C/C++/C#/Java/Go/Rust/PHP."""
         symbols = []
         syntax_error = None
@@ -768,6 +769,7 @@ class CodeLensBar(QFrame):
         open_braces = 0
         brace_stack = []
         first_unmatched_close = None
+        python_class = None
 
         for idx, line in enumerate(lines):
             line_num = idx + 1
@@ -784,23 +786,22 @@ class CodeLensBar(QFrame):
                     parent = None
                     if brace_stack:
                         for _, p_idx in reversed(brace_stack):
-                            if p_idx < len(symbols) and symbols[p_idx].kind in ('class', 'struct', 'interface', 'trait'):
+                            if 0 <= p_idx < len(symbols) and symbols[p_idx].kind in ('class', 'struct', 'interface', 'trait'):
                                 parent = symbols[p_idx].name
                                 if kind == 'function':
                                     kind = 'method'
                                 break
-                    elif pattern_key == 'py':
+                    elif pattern_key == 'py' and python_class is not None:
                         line_indent = len(line) - len(line.lstrip())
-                        for prev_sym in reversed(symbols):
-                            if prev_sym.kind == 'class':
-                                prev_indent = len(lines[prev_sym.line - 1]) - len(lines[prev_sym.line - 1].lstrip())
-                                if line_indent > prev_indent:
-                                    parent = prev_sym.name
-                                    if kind == 'function':
-                                        kind = 'method'
-                                    break
+                        class_indent, class_name = python_class
+                        if line_indent > class_indent:
+                            parent = class_name
+                            if kind == 'function':
+                                kind = 'method'
 
                     symbols.append(CodeSymbol(sym_name, kind, line_num, line_num + 5, parent))
+                    if pattern_key == 'py' and kind == 'class':
+                        python_class = (len(line) - len(line.lstrip()), sym_name)
                     matched = True
                     break
 
@@ -820,20 +821,20 @@ class CodeLensBar(QFrame):
                             symbols[b_sym_idx].end_line = max(symbols[b_sym_idx].line, line_num)
 
         if pattern_key == 'py':
-            for sym in symbols:
-                sym_line_idx = sym.line - 1
-                if sym_line_idx < len(lines):
-                    base_indent = len(lines[sym_line_idx]) - len(lines[sym_line_idx].lstrip())
-                    end = len(lines)
-                    for next_idx in range(sym_line_idx + 1, len(lines)):
-                        nxt = lines[next_idx]
-                        if not nxt.strip():
-                            continue
-                        nxt_indent = len(nxt) - len(nxt.lstrip())
-                        if nxt_indent <= base_indent:
-                            end = next_idx
-                            break
-                    sym.end_line = max(sym.line, end)
+            declarations = {sym.line: sym for sym in symbols}
+            scopes = []
+            for line_num, line in enumerate(lines, 1):
+                stripped = line.lstrip()
+                if not stripped:
+                    continue
+                indent = len(line) - len(stripped)
+                while scopes and scopes[-1][0] >= indent:
+                    _, sym = scopes.pop()
+                    sym.end_line = line_num - 1
+                if line_num in declarations:
+                    scopes.append((indent, declarations[line_num]))
+            for _, sym in scopes:
+                sym.end_line = len(lines)
 
         if pattern_key != 'py':
             if open_braces > 0 and brace_stack:
@@ -867,7 +868,7 @@ class CodeLensBar(QFrame):
         # cursor move; its native parser could stall or crash the UI thread.
         if self._parse_pending:
             self._parse_pending = False
-            self._parse_symbols(self.editor.toPlainText())
+            self._schedule_symbol_analysis()
 
         # 3. Find current scope and telemetry
         curr_class = None
@@ -916,58 +917,63 @@ class CodeLensBar(QFrame):
         if manager is not None and filepath and hasattr(manager, 'open_markdown_file'):
             manager.open_markdown_file(str(filepath))
 
-    def _parse_symbols(self, code: str):
-        self._symbols = []
-        self._syntax_error_line = None
-
-        if not code.strip():
-            self._set_syntax_badge("Синтаксис")
+    def _schedule_symbol_analysis(self):
+        if getattr(self, "_symbol_analysis_busy", False):
+            self._parse_pending = True
             return
+        document = self.editor.document()
+        key = self._detect_language(), document.revision()
+        code = document.toPlainText()
+        self._symbol_analysis_busy = True
 
-        lang = self._detect_language()
+        def ready(result):
+            self._symbol_analysis_busy = False
+            if key == (self._detect_language(), self.editor.document().revision()):
+                self._parse_pending = False
+                self._apply_symbols(result)
+                self._refresh_lens()
+            elif not self._debounce_timer.isActive():
+                self._schedule_parse_refresh()
 
-        # Keep CodeLens lightweight: full Tree-sitter/LSP analysis belongs to
-        # the analysis worker and must never run from a UI refresh callback.
-        is_python = lang in ('py', 'python')
+        from services.background import run_async
+        run_async(lambda: CodeLensBar._analyze_symbols(code, key[0]), on_done=ready,
+                  on_error=lambda _: ready(([], None, "Синтаксис", "")))
 
-        if is_python:
+    @classmethod
+    def _analyze_symbols(cls, code: str, lang: str):
+        if not code.strip():
+            return [], None, "Синтаксис", ""
+
+        if lang in ('py', 'python'):
             try:
                 tree = ast.parse(code)
-                self._set_syntax_badge("Python ОК")
-
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.ClassDef):
-                        end_lineno = getattr(node, 'end_lineno', node.lineno + 10)
-                        self._symbols.append(CodeSymbol(node.name, 'class', node.lineno, end_lineno))
-                        for item in node.body:
-                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                                item_end = getattr(item, 'end_lineno', item.lineno + 5)
-                                self._symbols.append(CodeSymbol(item.name, 'method', item.lineno, item_end, node.name))
-                    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        if not any(s.name == node.name and s.line == node.lineno for s in self._symbols):
-                            end_lineno = getattr(node, 'end_lineno', node.lineno + 5)
-                            self._symbols.append(CodeSymbol(node.name, 'function', node.lineno, end_lineno))
-
             except SyntaxError as exc:
-                self._syntax_error_line = exc.lineno or 1
-                self._set_syntax_badge(f"Синтаксис: строка {self._syntax_error_line}", error=True)
-                # Generic fallback so outline and navigation work even during syntax errors
-                generic_syms, _ = self._parse_generic_symbols_with_status(code, 'py')
-                self._symbols = generic_syms
-            except Exception:
-                pass
-        else:
-            # Multi-language parsing for JS, TS, C, C++, C#, Java, Go, Rust, PHP, etc.
-            self._symbols, syntax_err = self._parse_generic_symbols_with_status(code, lang)
-            if syntax_err:
-                self._syntax_error_line = syntax_err.get('line', 1)
-                self._set_syntax_badge(syntax_err["text"], error=True)
-                self.syntax_badge.setToolTip("Обнаружен дисбаланс фигурных скобок.")
-            else:
-                # Only Python gets a real parser; other languages are checked
-                # for balanced braces, so do not claim full validation.
-                self._set_syntax_badge(f"{lang.upper()} · скобки OK")
-                self.syntax_badge.setToolTip("Проверен баланс фигурных скобок (полный разбор доступен для Python).")
+                line = exc.lineno or 1
+                symbols, _ = cls._parse_generic_symbols_with_status(code, 'py')
+                return symbols, line, f"Синтаксис: строка {line}", ""
+
+            symbols = []
+            methods = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    symbols.append(CodeSymbol(node.name, 'class', node.lineno, node.end_lineno))
+                    for item in node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            methods.add(item)
+                            symbols.append(CodeSymbol(item.name, 'method', item.lineno, item.end_lineno, node.name))
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node not in methods:
+                    symbols.append(CodeSymbol(node.name, 'function', node.lineno, node.end_lineno))
+            return symbols, None, "Python OK", ""
+
+        symbols, error = cls._parse_generic_symbols_with_status(code, lang)
+        if error:
+            return symbols, error['line'], error['text'], "Обнаружен дисбаланс фигурных скобок."
+        return symbols, None, f"{lang.upper()} · скобки OK", "Проверен баланс фигурных скобок."
+
+    def _apply_symbols(self, result):
+        self._symbols, self._syntax_error_line, status, tooltip = result
+        self._set_syntax_badge(status, error=self._syntax_error_line is not None)
+        self.syntax_badge.setToolTip(tooltip or "Outline")
 
     def _set_syntax_badge(self, text, *, error=False):
         self.syntax_badge.setText(text)
@@ -1262,7 +1268,7 @@ class CodeLensBar(QFrame):
 
         # Multi-language or generic symbol fallback
         if not self._symbols:
-            self._parse_symbols(code)
+            self._apply_symbols(self._analyze_symbols(code, lang))
         if not self._symbols:
             QMessageBox.information(self, "Документирование", "В файле не найдено функций или классов для документирования.")
             return

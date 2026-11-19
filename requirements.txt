@@ -13,6 +13,17 @@ pygments==2.15.1
 blessed==1.20.0
 terminaltables==3.1.10
 
+# Semantic Python completion
+jedi>=0.19
+
+# Database workspace
+SQLAlchemy>=2.0,<3
+psycopg[binary]>=3.2,<4
+PyMySQL[rsa]>=1.1,<2
+pyodbc>=5.2,<6; sys_platform == "win32"
+sqlparse>=0.5,<1
+python-dotenv>=1.0,<2
+
 # Дополнительные утилиты (опционально)
 ansi2html==1.7.0
 asyncssh==2.24.1

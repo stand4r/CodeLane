@@ -644,12 +644,14 @@ class TodoPanel(QtWidgets.QWidget):
         """Bind panel to opened project or clear when closed."""
         self.root_path = Path(project_root).resolve() if project_root else None
         self.task_store.set_root(str(self.root_path) if self.root_path else None)
-        self.refresh_tasks()
+        self._render_tasks()
 
     def refresh_tasks(self):
         """Reload project tasks and update view."""
         if self.root_path and self.root_path.is_dir():
-            self.task_store.load()
+            previous_tasks, previous_error = self.task_store.tasks, self.task_store.error
+            if self.task_store.load() == previous_tasks and self.task_store.error == previous_error:
+                return
         self._render_tasks()
 
     def _set_sort_mode(self, mode: str):

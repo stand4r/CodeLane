@@ -25,63 +25,36 @@ class _ActivityIndicator(QtWidgets.QWidget):
         super().__init__(parent)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._accent = QtGui.QColor("#0078D4")
-        self._progress = 0.0
-        self._anim = None
+        from widgets.animations import DURATION
+        self._anim = QtCore.QPropertyAnimation(self, b"geometry", self)
+        self._anim.setDuration(DURATION["fast"])
+        self._anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
 
     def set_accent(self, color: str):
         self._accent = QtGui.QColor(color)
         self.update()
 
-    @QtCore.pyqtProperty(float)
-    def progress(self):
-        return self._progress
-
-    @progress.setter
-    def progress(self, value):
-        self._progress = float(value)
-        self.update()
-
     def animate_to(self, target_rect: QtCore.QRect):
-        """Slide the indicator to *target_rect* (bar-local coordinates)."""
-        for motion in self.findChildren(QtCore.QParallelAnimationGroup):
-            motion.stop()
-        start = self.geometry()
-        if start == target_rect and self.isVisible():
-            return
-        if not self.isVisible() and start.isEmpty():
-            self.setGeometry(target_rect.left(), target_rect.top(), 2, target_rect.height())
-            self._progress = 1.0
-            self.show()
-            self.raise_()
-            self.update()
-            return
+        if self.isVisible() and self._anim.state() == QtCore.QAbstractAnimation.State.Running:
+            if self._anim.endValue() == target_rect:
+                return
+        self._anim.stop()
+        if self.isVisible() and self.geometry() != target_rect:
+            self._anim.setStartValue(self.geometry())
+            self._anim.setEndValue(target_rect)
+            self._anim.start()
+        else:
+            self.setGeometry(target_rect)
         self.show()
         self.raise_()
-        from widgets.animations import DURATION
-        group = QtCore.QParallelAnimationGroup(self)
-        for prop, a, b in ((b"geometry", start, target_rect),):
-            anim = QtCore.QPropertyAnimation(self, prop, group)
-            anim.setDuration(DURATION["fast"])
-            anim.setStartValue(a)
-            anim.setEndValue(b)
-            anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
-        fade = QtCore.QPropertyAnimation(self, b"progress", group)
-        fade.setDuration(DURATION["fast"])
-        fade.setStartValue(min(1.0, 0.55 + self._progress * 0.45))
-        fade.setEndValue(1.0)
-        group.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def hide_indicator(self):
+        self._anim.stop()
         self.hide()
 
     def paintEvent(self, event):
-        if self._progress <= 0:
-            return
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, False)
-        color = QtGui.QColor(self._accent)
-        color.setAlphaF(max(0.0, min(1.0, self._progress)))
-        painter.fillRect(self.rect(), color)
+        painter.fillRect(self.rect(), self._accent)
         painter.end()
 
 

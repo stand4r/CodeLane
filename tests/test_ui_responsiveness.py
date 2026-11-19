@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -41,21 +42,22 @@ def _make_project(root: Path, lines: int = 40):
 # ----------------------------------------------------------------------
 # Completion index: batching, thread-safe parsing
 # ----------------------------------------------------------------------
-def test_index_batch_respects_time_budget():
-    """A batch never runs much longer than its budget, even with big files."""
+def test_index_batch_respects_time_budget(monkeypatch):
+    """Stop before starting the next file once the current file uses the budget."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         _make_project(root, lines=200)
-        from core.workspace_index import WorkspaceIndex
-        index = WorkspaceIndex()
+        from core import workspace_index
+
+        index = workspace_index.WorkspaceIndex()
         index.prepare_root(str(root))
         index.set_pending_files(index.scan_source_files())
-        assert index.pending_count >= 2
-        started = time.perf_counter()
-        index.process_batch(limit=500, budget_ms=2.0)
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        # One file may overshoot; the whole batch must not.
-        assert elapsed_ms < 120.0, elapsed_ms
+        before = index.pending_count
+        assert before >= 2
+        clock = iter((0.0, 0.003))
+        monkeypatch.setattr(workspace_index, "time", SimpleNamespace(perf_counter=lambda: next(clock)))
+        assert index.process_batch(limit=500, budget_ms=2.0)
+        assert index.pending_count == before - 1
         assert index.symbols, "the first slice must index something"
 
 

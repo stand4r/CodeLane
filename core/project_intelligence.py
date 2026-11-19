@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -143,6 +144,8 @@ class ProjectIntelligenceEngine:
         '.swift', '.kt', '.kts', '.scala', '.dart', '.lua', '.sh', '.bash', '.zsh', '.sql', '.r', '.fs', '.fsx', '.ex', '.exs', '.erl', '.hrl', '.hs', '.lhs', '.jl', '.m', '.mm', '.zig', '.v', '.sol', '.asm', '.s'
     }
 
+    SOURCE_CACHE_BUDGET = 24 * 1024 * 1024
+
     DEFAULT_ANALYZERS = {'structure', 'dependencies', 'health'}
 
     def __init__(self, root: Optional[str] = None, enabled_analyzers=None):
@@ -158,6 +161,8 @@ class ProjectIntelligenceEngine:
         self.time_budget_sec = 25.0
         # Breathing room between files so the UI keeps its share of disk I/O.
         self.io_pause_sec = 0.002
+        self._source_cache = OrderedDict()
+        self._source_cache_weight = 0
         self.last_scan = None
         self.scan_truncated = False
         self.skipped_dirs = 0
@@ -166,6 +171,8 @@ class ProjectIntelligenceEngine:
             self.set_root(root)
 
     def set_root(self, root: Optional[str]):
+        self._source_cache.clear()
+        self._source_cache_weight = 0
         self.root = Path(root).resolve() if root else None
         self.analysis = ProjectAnalysis(str(self.root) if self.root else '')
 
@@ -227,6 +234,40 @@ class ProjectIntelligenceEngine:
             return path.read_text(encoding='utf-8', errors='replace')
         except OSError:
             return ''
+
+    def _analyze_source(self, path, analyzer):
+        try:
+            stat = path.stat()
+            fingerprint = stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino
+        except OSError:
+            fingerprint = None
+
+        cached = self._source_cache.pop(path, None)
+        if cached is not None:
+            if fingerprint is not None and cached[0] == fingerprint:
+                self._source_cache[path] = cached
+                return cached[1], cached[2]
+            self._source_cache_weight -= cached[3]
+
+        text = self._read(path)
+        result = analyzer.analyze(path, text)
+        if fingerprint is not None and text:
+            # Account for retained Python objects as well as source text.
+            weight = sys.getsizeof(text) + 256 * (
+                1 + len(result.symbols) + len(result.nodes) + len(result.edges)
+                + len(result.issues) + len(result.imports)
+            )
+            if weight <= self.SOURCE_CACHE_BUDGET:
+                self._source_cache[path] = (fingerprint, text, result, weight)
+                self._source_cache_weight += weight
+                while self._source_cache_weight > self.SOURCE_CACHE_BUDGET:
+                    _, oldest = self._source_cache.popitem(last=False)
+                    self._source_cache_weight -= oldest[3]
+        return text, result
+
+    def _analysis_source_text(self, path: Path) -> str:
+        cached = self._source_cache.get(path)
+        return cached[1] if cached is not None else self._read(path)
 
     def _module_name(self, path: Path) -> str:
         try:
@@ -307,6 +348,9 @@ class ProjectIntelligenceEngine:
                          f'{len(paths)} файлов (лимит {self.max_files}). '
                          f'Исключены служебные каталоги и крупные файлы.'),
                 file=str(self.root), line=0))
+        source_paths = set(paths)
+        for removed in self._source_cache.keys() - source_paths:
+            self._source_cache_weight -= self._source_cache.pop(removed)[3]
         total = len(paths)
         module_by_file = {}
         for p in paths:
@@ -326,15 +370,12 @@ class ProjectIntelligenceEngine:
                              f'{remaining} файлов.'),
                     file=str(self.root), line=0))
                 break
-            # Cooperative yield: analysis is a background job. Reading hundreds
-            # of files from a cloud-synced folder saturates disk I/O and makes
-            # the window stutter, so the loop deliberately gives the UI thread
-            # time between files.
-            time.sleep(self.io_pause_sec)
-            if path.suffix.lower() in self.SOURCE_EXTENSIONS and source_analyzer is not None:
-                text = self._read(path)
+            # Yield periodically while scanning a cloud-synced workspace.
+            if self.io_pause_sec and index % 16 == 0:
+                time.sleep(self.io_pause_sec)
+            if str(path) in module_by_file and source_analyzer is not None:
                 try:
-                    result = source_analyzer.analyze(path, text)
+                    text, result = self._analyze_source(path, source_analyzer)
                 except (RecursionError, MemoryError, ValueError, UnicodeError) as exc:
                     # One pathological file must not abort the whole project.
                     analysis.issues.append(Issue(
@@ -345,14 +386,14 @@ class ProjectIntelligenceEngine:
                         progress(index, total, path.name)
                     continue
                 info = FileInfo(
-                    path=str(path), module=module_by_file.get(str(path), self._module_name(path)),
+                    path=str(path), module=module_by_file[str(path)],
                     lines=text.count('\n') + (1 if text else 0), language=result.language,
                     parser=result.metrics.get('parser', 'ast' if result.language == 'python' else 'fallback'),
                     metrics=dict(result.metrics),
                 )
-                info.symbols = result.symbols
-                info.imports = result.imports
-                info.issues = result.issues
+                info.symbols = list(result.symbols)
+                info.imports = list(result.imports)
+                info.issues = list(result.issues)
                 info.functions = sum(1 for s in result.symbols if s.kind in {'function', 'method', 'constructor'})
                 info.classes = sum(1 for s in result.symbols if s.kind in {'class', 'struct', 'interface', 'enum'})
                 info.complexity = int(result.metrics.get('complexity', 1) or 1)
@@ -366,7 +407,7 @@ class ProjectIntelligenceEngine:
                     result = binary_analyzer.analyze(path)
                     b = BinaryInfo(
                         path=str(path), format=result.format, architecture=result.architecture, bits=result.bits,
-                        entrypoint=result.entrypoint, size=result.metrics.get('size', path.stat().st_size),
+                        entrypoint=result.entrypoint, size=result.metrics['size'] if 'size' in result.metrics else path.stat().st_size,
                         sha256=result.metrics.get('sha256', ''), sections=result.sections, imports=result.imports,
                         exports=result.exports, symbols=result.symbols, issues=result.issues, metrics=result.metrics,
                     )
@@ -433,7 +474,7 @@ class ProjectIntelligenceEngine:
             return
         for info in analysis.files.values():
             if info.language != 'python': continue
-            text = self._read(Path(info.path))
+            text = self._analysis_source_text(Path(info.path))
             try:
                 blocks = cc_visit(text)
                 raw = raw_analyze(text)
@@ -650,8 +691,7 @@ class ProjectIntelligenceEngine:
         for path_str, file_info in analysis.files.items():
             if file_info.kind != 'source':
                 continue
-            p = Path(path_str)
-            text = self._read(p)
+            text = self._analysis_source_text(Path(path_str))
             lines = text.splitlines()
             total_lines = len(lines)
 

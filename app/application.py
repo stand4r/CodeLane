@@ -264,6 +264,7 @@ def main():
     handle = window.windowHandle()
     handle.screenChanged.connect(window.apply_screen_metrics)
     window.apply_screen_metrics(handle.screen())
+    QtCore.QTimer.singleShot(350, window.database_manager.discover_local_installations)
     if len(sys.argv) > 1:
         # Explorer passes the clicked path as an argument; open it once the
         # window is actually on screen (the layout is not ready before that).

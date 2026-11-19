@@ -446,13 +446,14 @@ class ModernMainWindow(QMainWindow):
             panel = getattr(self, "ai_panel", None)
             active = self._is_ai_view_active()
             wanted_max = scale_px(720) if active else scale_px(620)
-            self.side_panel.setMaximumWidth(wanted_max)
+            if self.side_panel.maximumWidth() != wanted_max:
+                self.side_panel.setMaximumWidth(wanted_max)
             if not active or not hasattr(self, "workspace_splitter"):
                 return
             target = max(scale_px(300), int(get_settings_manager().get_setting('sidebar_width', 300)))
             chat_min = scale_px(400)
-            if target < chat_min:
-                sizes = self.workspace_splitter.sizes()
+            sizes = self.workspace_splitter.sizes()
+            if target < chat_min and sizes and sizes[0] < chat_min:
                 total = sum(sizes) if sizes else self.workspace_splitter.width()
                 new_w = min(chat_min, wanted_max)
                 self.workspace_splitter.setSizes([new_w, max(1, total - new_w)])
@@ -793,7 +794,11 @@ class ModernMainWindow(QMainWindow):
             self.console_widget.set_current_tab("Terminal")
         terminal = self.console_widget.get_terminal()
         if terminal:
-            terminal.run_command(command, working_dir)
+            database = getattr(self, "database_manager", None)
+            if working_dir and database and database.runtime_url(working_dir):
+                terminal.run_file(command, working_dir)
+            else:
+                terminal.run_command(command, working_dir)
 
     def run_in_terminal(self, file_path, args="", working_dir=None):
         """Запуск кода в терминале"""
@@ -1110,40 +1115,33 @@ class ModernMainWindow(QMainWindow):
         if key == "toggle_sidebar":
             self.toggle_sidebar()
             return
-        for panel in panels.values():
-            if panel is not None:
-                panel.hide()
-        # Leaving the AI view restores the normal sidebar width ceiling.
-        if key != "ai":
-            QtCore.QTimer.singleShot(0, self._watch_ai_view_width)
-        title_label = getattr(self, 'explorer_section_title', None)
-        if title_label is not None:
-            title_label.setText({
-                "explorer": "ПРОВОДНИК",
-                "search": "ПОИСК",
-                "run": "ЗАПУСК",
-                "git": "УПРАВЛЕНИЕ ВЕРСИЯМИ",
-                "todo": "ЗАДАЧИ И TO DO",
-                "intelligence": "АНАЛИЗ ПРОЕКТА",
-                "ai": "ИИ-АГЕНТ",
-            }.get(key, "ПРОВОДНИК"))
         panel = panels.get(key)
-        if panel:
+        if panel is None:
+            return
+        # isHidden tracks the selected page even while the entire sidebar is collapsed.
+        if panel.isHidden():
+            previous = next((item for item in panels.values() if item is not None and not item.isHidden()), None)
+            if previous is not None:
+                previous.hide()
             panel.show()
-            if key == "intelligence":
-                self._ensure_intelligence_panel_project()
-            if key == "todo" and hasattr(panel, "refresh_tasks"):
-                panel.refresh_tasks()
-            if key == "ai" and hasattr(panel, "refresh_status"):
-                panel.refresh_status()
-                QtCore.QTimer.singleShot(0, self._watch_ai_view_width)
+
         if not self.sidebar_visible:
             self.toggle_sidebar()
-        else:
-            self.sidebar_visible = True
-            self.side_panel.show()
-        if key == "search" and self.search_panel.query.text():
-            self.search_panel.search()
+
+        QtCore.QTimer.singleShot(0, self._watch_ai_view_width)
+        QtCore.QTimer.singleShot(0, lambda: self._refresh_side_panel(key, panel))
+
+    def _refresh_side_panel(self, key, panel):
+        if not panel.isVisible():
+            return
+        if key == "intelligence":
+            self._ensure_intelligence_panel_project()
+        elif key == "todo":
+            panel.refresh_tasks()
+        elif key == "ai":
+            panel.refresh_status()
+        elif key == "search":
+            panel.refresh_if_needed()
 
     def _ensure_intelligence_panel_project(self):
         """Выполняет операцию  ensure intelligence panel project.
@@ -2244,6 +2242,10 @@ class ModernMainWindow(QMainWindow):
         """
         self.workbench.run_project()
 
+    def _stage_database_sql(self, source, source_path):
+        if not self.database_manager.open_sql(source, source_path):
+            CustomDialog("Откройте файл базы или положите рядом с SQL файл .dbconn с тем же именем.").exec()
+
     def action_run_file(self):
         """Выполняет операцию action run file.
         """
@@ -2285,6 +2287,19 @@ class ModernMainWindow(QMainWindow):
         if not path.exists():
             CustomDialog(f"Файл не найден: {path}").exec(); return
         editor = self.get_current_editor()
+        if path.suffix.lower() == ".sql":
+            if editor and Path(getattr(editor, "file_path", "") or "").resolve() == path:
+                cursor = editor.editor.textCursor()
+                source = cursor.selectedText().replace("\u2029", "\n") if cursor.hasSelection() else editor.get_code()
+                self._stage_database_sql(source, path)
+            else:
+                try:
+                    source = path.read_text(encoding="utf-8-sig")
+                except (OSError, UnicodeError) as exc:
+                    CustomDialog(str(exc)).exec()
+                    return
+                self._stage_database_sql(source, path)
+            return
         if editor and str(getattr(editor, 'file_path', '')) == str(path) and hasattr(editor, 'save_file'):
             if not editor.save_file():
                 CustomDialog("Не удалось сохранить файл перед выполнением").exec(); return
@@ -2497,6 +2512,7 @@ class ModernMainWindow(QMainWindow):
             self._project_session_restoring = False
             self.console_widget.get_terminal().switch_session(None)
             self.workspace_index.set_root(None)
+            self.database_manager.set_project(None)
             self.intelligence_panel.set_project(None)
             if hasattr(self, "todo_panel") and self.todo_panel:
                 self.todo_panel.set_project(None)
@@ -2600,6 +2616,8 @@ class ModernMainWindow(QMainWindow):
         editor = self.active_tab_widget.widget(index)
         if not editor:
             return
+        if editor.property("pyscribeSpecial") == "database" and not editor.confirm_close():
+            return
 
         if self.has_unsaved_changes(index):
             reply = self.ask_save_before_close()
@@ -2666,7 +2684,7 @@ class ModernMainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes
         )
 
-    def update_analysis_panels(self):
+    def update_analysis_panels(self, *, content=None):
         """Refresh Problems/Output for the active editor file, never the whole project."""
         if not getattr(self, "console_widget", None):
             return
@@ -2674,7 +2692,8 @@ class ModernMainWindow(QMainWindow):
         file_path = getattr(editor, "file_path", None) if editor else None
         engine = getattr(self.intelligence_panel, "engine", None)
         if file_path and engine:
-            content = editor.get_code() if hasattr(editor, "get_code") else None
+            if content is None and hasattr(editor, "get_code"):
+                content = editor.get_code()
             self.console_widget.set_file_context(str(file_path), engine=engine, content=content, background=True)
         elif file_path:
             self.console_widget.set_file_context(str(file_path))
@@ -3162,7 +3181,7 @@ class ModernMainWindow(QMainWindow):
             group.setTabText(index, clean_title)
         self.recalculate_unsaved_count()
 
-    def _update_editor_index(self, editor):
+    def _update_editor_index(self, editor, *, content=None):
         """Обновляет параметры editor index.
 
         Args:
@@ -3180,7 +3199,8 @@ class ModernMainWindow(QMainWindow):
             self._editor_index_generation = generation
             self._editor_index_requests = {}
         path = Path(fp).resolve()
-        content = editor.get_code()
+        if content is None:
+            content = editor.get_code()
         key = (generation, str(path))
         request = object()
         self._editor_index_requests[key] = request
@@ -3206,16 +3226,16 @@ class ModernMainWindow(QMainWindow):
     def _on_typing_settled(self):
         """Typing stopped: refresh the completion index and the diagnostics."""
         editor = self.get_current_editor()
-        self._update_editor_index(editor)
-        self.update_analysis_panels()
-        if editor and hasattr(editor, "get_code"):
-            fp = getattr(editor, "file_path", None)
-            if fp:
-                try:
-                    from core.code_analysis.service import UnifiedCodeAnalysisService
-                    UnifiedCodeAnalysisService.get_instance().on_document_changed(str(fp), editor.get_code())
-                except Exception:
-                    pass
+        fp = getattr(editor, "file_path", None)
+        content = editor.get_code() if fp and hasattr(editor, "get_code") else None
+        self._update_editor_index(editor, content=content)
+        self.update_analysis_panels(content=content)
+        if content is not None:
+            try:
+                from core.code_analysis.service import UnifiedCodeAnalysisService
+                UnifiedCodeAnalysisService.get_instance().on_document_changed(str(fp), content)
+            except Exception:
+                logger.exception("Не удалось обновить буфер анализатора")
 
     def _count_group_unsaved(self, group) -> int:
         """Подсчитывает количество group unsaved.
@@ -3587,6 +3607,12 @@ class ModernMainWindow(QMainWindow):
         Args:
             event: Параметр event.
         """
+        for group in self.editor_groups():
+            for index in range(group.count()):
+                widget = group.widget(index)
+                if widget.property("pyscribeSpecial") == "database" and not widget.confirm_close():
+                    event.ignore()
+                    return
         if self.unsaved_files_count > 0:
             reply = QMessageBox.question(
                 self,

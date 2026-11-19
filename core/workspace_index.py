@@ -1,5 +1,6 @@
 """PyScribe utils/WorkspaceIndex.py: application module and reusable component."""
 import ast
+from bisect import bisect_left
 import re
 import time
 from pathlib import Path
@@ -36,6 +37,7 @@ class WorkspaceIndex:
         self._pending: List[Path] = []
         self._pending_index = 0
         self._generation = 0
+        self._completion_symbols = None
         if root:
             self.set_root(root)
 
@@ -46,6 +48,7 @@ class WorkspaceIndex:
 
     def _clear(self) -> None:
         self.symbols.clear()
+        self._completion_symbols = None
         self.file_symbols.clear()
         self.file_members.clear()
         self.class_members.clear()
@@ -163,16 +166,11 @@ class WorkspaceIndex:
 
     def _read(self, path: Path) -> str:
         try:
-            if path.stat().st_size > 2 * 1024 * 1024:
-                return ""
+            with path.open("rb") as source:
+                data = source.read(MAX_INDEX_BYTES + 1)
         except OSError:
             return ""
-        try:
-            return path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            return path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return ""
+        return data.decode("utf-8", errors="replace") if len(data) <= MAX_INDEX_BYTES else ""
 
     def update_file(self, path: Path, content: Optional[str] = None) -> None:
         path = Path(path).resolve()
@@ -184,19 +182,17 @@ class WorkspaceIndex:
         """Read + parse one file; touches no index state, so it is thread safe."""
         if path.suffix.lower() not in SOURCE_EXTENSIONS:
             return set(), {}
-        if content is None:
-            try:
-                if path.stat().st_size > MAX_INDEX_BYTES:
-                    return set(), {}
-            except OSError:
-                return set(), {}
         code = content if content is not None else self._read(path)
+        if not code:
+            return set(), {}
         return self._extract(path, code)
 
     def _store(self, path_key: str, symbols: Set[str],
                members: Dict[str, Set[str]]) -> None:
         """Replace the indexed symbols of one file."""
-        old = self.file_symbols.pop(path_key, set())
+        old = self.file_symbols.get(path_key, set())
+        if old != symbols:
+            self._completion_symbols = None
         for symbol in old:
             locations = self.symbols.get(symbol)
             if locations:
@@ -332,6 +328,7 @@ class WorkspaceIndex:
 
     def apply_analysis(self, analysis) -> None:
         """Merge Project Intelligence's canonical structural tree into completion data."""
+        self._completion_symbols = None
         self.structure_symbols.clear()
         self.structure_members.clear()
         nodes = getattr(analysis, "structure_nodes", []) or []
@@ -357,13 +354,18 @@ class WorkspaceIndex:
         p = prefix.lower()
         return sorted([v for v in values if v.lower().startswith(p)], key=str.lower)
 
-    def complete(self, prefix: str = "", language: str = "") -> List[str]:
-        prefix_l = prefix.lower()
+    def complete(self, prefix: str = "", language: str = "", limit: Optional[int] = None) -> List[str]:
+        if self._completion_symbols is None:
+            self._completion_symbols = sorted((name.lower(), name) for name in self.symbols)
+        folded = prefix.lower()
+        start = bisect_left(self._completion_symbols, (folded, ""))
         result = []
-        for symbol in self.symbols:
-            if not prefix_l or symbol.lower().startswith(prefix_l):
-                result.append(symbol)
-        return sorted(result, key=lambda x: (not x.lower().startswith(prefix_l), x.lower()))
+        for index in range(start, len(self._completion_symbols)):
+            key, name = self._completion_symbols[index]
+            if not key.startswith(folded) or (limit is not None and len(result) >= limit):
+                break
+            result.append(name)
+        return result
 
     def describe(self, symbol: str) -> str:
         locations = self.symbols.get(symbol, set())

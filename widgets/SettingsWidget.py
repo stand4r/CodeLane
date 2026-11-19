@@ -112,7 +112,7 @@ class SettingsWidget(QtWidgets.QWidget):
             )),
             ("Проекты и запуск", (
                 ("Проекты и сеанс", "Недавние проекты и восстановление работы после запуска.", self._projects_page),
-                ("Компиляторы", "Пути к интерпретаторам и компиляторам.", self._toolchains_page),
+                ("Компиляторы", "Компиляторы, интерпретаторы и локальные СУБД.", self._toolchains_page),
             )),
             ("Инструменты", (
                 ("ИИ-агент", "Подключение модели, ответы и разрешения.", self._ai_page),
@@ -416,7 +416,35 @@ class SettingsWidget(QtWidgets.QWidget):
         detect_btn.clicked.connect(_do_detect)
         l.addRow('', detect_btn)
         l.addRow('', status_lbl)
+        database = getattr(self.main_window, "database_manager", None)
+        if database is not None:
+            self._section(l, "Локальные СУБД")
+            self.database_installations = QtWidgets.QLabel()
+            self.database_installations.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            self.database_installations.setWordWrap(True)
+            l.addRow(self.database_installations)
+            self.database_scan = QtWidgets.QPushButton("Обновить список СУБД")
+            self.database_scan.clicked.connect(database.discover_local_installations)
+            l.addRow("", self.database_scan)
+            database.local_installations_changed.connect(self._show_database_installations)
+            self._show_database_installations()
         return page
+
+    @QtCore.pyqtSlot()
+    def _show_database_installations(self):
+        from core.database_workspace import ENGINES
+
+        database = self.main_window.database_manager
+        entries = []
+        for profile in database.local_installations.values():
+            endpoint = f"{profile.host}:{profile.port}" if profile.port else profile.host
+            entries.append(f"{ENGINES[profile.kind][0]} · {profile.name} · {endpoint}")
+        if database.local_scan_running:
+            entries.append("Поиск…")
+        elif database.local_scan_error:
+            entries.append(database.local_scan_error)
+        self.database_installations.setText("\n".join(entries) or "Локальные СУБД не найдены")
+        self.database_scan.setEnabled(not database.local_scan_running)
 
 
     def _projects_page(self):

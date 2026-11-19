@@ -421,7 +421,10 @@ class GenericLanguageProvider(LanguageProvider):
                 line_comment=";", block_comment_start="", block_comment_end="",
             )
         words = self.KEYWORDS.get(ext, "").split()
-        comment = "#" if ext in ("sh",) else "//"
+        if ext == "sql":
+            return LanguageConfig(name="SQL", extensions=["sql"],
+                                  keywords=words + [word.upper() for word in words],
+                                  syntax_rules=[SyntaxRule(r'--[^\n]*', "#6A9955")], line_comment="--")
         rules = []
         if ext not in ("yaml", "md", "dockerfile"):
             rules.extend([
@@ -515,6 +518,7 @@ LanguageProviderFactory.register_provider(Language.HTML, HTMLLanguageProvider())
 LanguageProviderFactory.register_provider(Language.CSS, CSSLanguageProvider())
 LanguageProviderFactory.register_provider(Language.JSON, JSONLanguageProvider())
 LanguageProviderFactory.register_provider(Language.CS, CSLanguageProvider())
+LanguageProviderFactory.register_provider(Language.SQL, GenericLanguageProvider("sql"))
 for _lang in (Language.JAVA, Language.CPP, Language.C, Language.PHP, Language.RUBY, Language.GO, Language.RUST, Language.KOTLIN, Language.SWIFT, Language.BASH, Language.YAML, Language.MARKDOWN, Language.DOCKERFILE, Language.TYPESCRIPT, Language.TSX, Language.JSX, Language.SCALA, Language.DART, Language.ELIXIR, Language.ERLANG, Language.HASKELL, Language.JULIA, Language.ZIG, Language.VERILOG, Language.SOLIDITY, Language.ASSEMBLY, Language.OBJECTIVE_C, Language.OBJECTIVE_CPP, Language.FSHARP, Language.R):
     LanguageProviderFactory.register_provider(_lang, GenericLanguageProvider(_lang.value))
 

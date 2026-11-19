@@ -101,6 +101,9 @@ class UIManager:
         self.main_window.intelligence_panel.hide()
         side_layout.addWidget(self.main_window.intelligence_panel)
 
+        from widgets.DatabaseWorkspace import DatabaseManager
+        self.main_window.database_manager = DatabaseManager(self.main_window)
+
         # AI agent lives in the sidebar like VS Code's chat view.
         from widgets.AIAgentPanel import AIAgentPanel
         self.main_window.ai_panel = AIAgentPanel(self.main_window, self.main_window.side_panel)
