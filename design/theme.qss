@@ -46,7 +46,6 @@ QWidget#extensionsManager {
 }
 QFrame#workbenchTopBar { border-bottom: 1px solid #2B2B2B; }
 QFrame#activityBar { border-right: 1px solid #2B2B2B; }
-QFrame#sidePanel { border-right: 1px solid #2B2B2B; }
 QFrame#explorerHeader {
     min-height: 35px;
     max-height: 35px;
@@ -350,12 +349,9 @@ QToolButton.statusActionBtn::menu-indicator { image: none; width: 0; }
 
 /* CodeLens / breadcrumb strip: same 22px row rhythm as the status strip */
 QFrame#codeLensBar {
-    /* Slightly lighter than the editor plus a hairline on both sides: the strip
-       used to share the editor colour and visually merged with the code. */
-    background: #262628;
+    background: @glass_surface@;
     border: none;
-    border-top: 1px solid #343437;
-    border-bottom: 1px solid #343437;
+    border-bottom: 1px solid @soft_border@;
     min-height: 26px;
 }
 /* The widgets set a dynamic property `class="lensCrumbBtn"`, so the selector
@@ -1179,15 +1175,12 @@ QFrame#loadingCard {
 QFrame#loadingCard QLabel { background: transparent; }
 
 /* Rounded, flat chrome. Surface tokens adapt to the selected theme. */
-QFrame#workbenchTopBar, QFrame#aiHeader, QFrame#explorerHeader,
-QFrame#codeLensBar {
-    background: @glass_surface@;
-    border: 1px solid @glass_border@;
-    border-radius: 10px;
+QFrame#aiHeader {
+    border: none;
+    border-bottom: 1px solid @soft_border@;
 }
-QFrame#sidePanel {
-    border: 1px solid @glass_border@;
-    border-radius: 12px;
+QTabWidget#editorGroupPrimary::pane, QTabWidget#editorGroupSecondary::pane {
+    border: none;
 }
 QPushButton, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox {
     border-radius: 8px;
@@ -1735,7 +1728,7 @@ QLabel#workbenchMenuSection {
 
 /* Refined workbench surfaces and interaction states. */
 QFrame#workbenchTopBar { border-bottom: 1px solid @soft_border@; }
-QFrame#activityBar, QFrame#sidePanel { border-right: 1px solid @soft_border@; }
+QFrame#activityBar { border-right: 1px solid @soft_border@; }
 QFrame#explorerHeader { border-bottom: 1px solid @soft_border@; }
 QLabel#sideTitle, QLabel#explorerSectionTitle {
     letter-spacing: 0px;

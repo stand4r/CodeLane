@@ -364,12 +364,12 @@ def test_ai_welcome_is_removed_when_chat_starts():
     panel.show()
     _APP.processEvents()
     assert panel._welcome_visible
-    assert "Чем помочь" in panel.transcript_text()
+    hint = "/ — команды · @ — файлы"
+    assert hint in panel.transcript_text()
     panel._clear_welcome()
     _APP.processEvents()
     assert not panel._welcome_visible
-    assert "Чем помочь" not in panel.transcript_text()
-    assert "Enter — отправить" not in panel.transcript_text()
+    assert hint not in panel.transcript_text()
     # Clearing twice must be a no-op (and must not hang).
     panel._clear_welcome()
 

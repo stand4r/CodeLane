@@ -580,7 +580,7 @@ class CodeLensBar(QFrame):
         self.file_btn.setProperty("class", "lensCrumbBtn")
         self.file_btn.setText("Файл")
         set_line_icon(self.file_btn, "document", 14)
-        self.file_btn.setToolTip("Текущий файл. Нажмите для структуры символов (Outline).")
+        self.file_btn.setToolTip("Outline")
         self.file_btn.clicked.connect(self._show_outline_menu)
         layout.addWidget(self.file_btn)
 
@@ -593,7 +593,7 @@ class CodeLensBar(QFrame):
         # Breadcrumbs: Class
         self.class_btn = QToolButton()
         self.class_btn.setProperty("class", "lensCrumbBtn")
-        self.class_btn.setToolTip("Текущий класс. Нажмите для перехода к классам.")
+        self.class_btn.setToolTip("Классы")
         self.class_btn.hide()
         self.class_btn.clicked.connect(self._show_classes_menu)
         layout.addWidget(self.class_btn)
@@ -607,7 +607,7 @@ class CodeLensBar(QFrame):
         # Breadcrumbs: Function/Method
         self.func_btn = QToolButton()
         self.func_btn.setProperty("class", "lensCrumbBtn")
-        self.func_btn.setToolTip("Текущая функция / метод. Нажмите для перехода к функциям.")
+        self.func_btn.setToolTip("Функции")
         self.func_btn.hide()
         self.func_btn.clicked.connect(self._show_functions_menu)
         layout.addWidget(self.func_btn)

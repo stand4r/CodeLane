@@ -2263,7 +2263,7 @@ class ModernCodeEditor(QWidget):
         # 1. Action: Clean Code Menu
         self.clean_code_btn = QtWidgets.QToolButton()
         self.clean_code_btn.setProperty("class", "statusActionBtn")
-        self.clean_code_btn.setText("Форматирование")
+        self.clean_code_btn.setText("Форматировать")
         set_line_icon(self.clean_code_btn, "code")
         self.clean_code_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.clean_code_btn.setToolTip("Форматирование по принципам Clean Code и PEP-8")
@@ -2282,7 +2282,7 @@ class ModernCodeEditor(QWidget):
         # 2. Action: Documentation Menu
         self.docstring_btn = QtWidgets.QToolButton()
         self.docstring_btn.setProperty("class", "statusActionBtn")
-        self.docstring_btn.setText("Автодокументирование")
+        self.docstring_btn.setText("Docstrings")
         set_line_icon(self.docstring_btn, "document")
         self.docstring_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.docstring_btn.setToolTip("Генерация структурированных описаний и комментариев для функций, классов и всего файла")

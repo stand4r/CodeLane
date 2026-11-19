@@ -73,8 +73,7 @@ class RunDebugPanel(QtWidgets.QWidget):
         self.project_button.clicked.connect(lambda: self.project_requested.emit(False))
         layout.addWidget(self.project_button)
 
-        self.run_analyze_button = QtWidgets.QPushButton("Запуск + повторный анализ")
-        self.run_analyze_button.setToolTip("Запустить цель и повторно проанализировать проект")
+        self.run_analyze_button = QtWidgets.QPushButton("Запуск и анализ")
         self.run_analyze_button.clicked.connect(lambda: self._run_analyze())
         layout.addWidget(self.run_analyze_button)
 
@@ -132,12 +131,8 @@ class RunDebugPanel(QtWidgets.QWidget):
         self.run_button.setEnabled(has_target)
         self.project_button.setEnabled(has_project)
         self.run_analyze_button.setEnabled(has_target and has_project)
-        if has_target:
-            self.info.setText("Запуск выполняет выбранную цель во встроенном терминале.")
-        elif has_project:
-            self.info.setText("Выберите исходный файл или запустите проект целиком.")
-        else:
-            self.info.setText("Откройте проект или исходный файл, чтобы создать цель запуска.")
+        self.info.setVisible(not has_target and not has_project)
+        self.info.setText("Откройте проект или файл")
 
     def _run_analyze(self):
         path = self.target.currentData()

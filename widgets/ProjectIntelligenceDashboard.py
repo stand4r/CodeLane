@@ -971,7 +971,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.grade_score.setStyleSheet(
             ' font-size: 12px; font-weight: 600;'
             f' color: {Palette.ACCENT_TEXT};')
-        self.grade_desc = QtWidgets.QLabel('Откройте проект — покажем качество кода, структуру и рекомендации.')
+        self.grade_desc = QtWidgets.QLabel('Откройте проект')
         self.grade_desc.setWordWrap(True)
         self.grade_desc.setStyleSheet(
             ' font-size: 11px;'
@@ -1300,7 +1300,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        self.structure_summary = QtWidgets.QLabel('Откройте проект для изучения архитектуры.')
+        self.structure_summary = QtWidgets.QLabel('Откройте проект')
         self.structure_summary.setWordWrap(True)
         self.structure_summary.setStyleSheet('color: #D4D4D4; font-size: 12px; line-height: 1.4;')
         layout.addWidget(self.structure_summary)
@@ -1724,7 +1724,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         if hasattr(self, 'grade_score'):
             self.grade_score.setText('Оценка: —')
         if hasattr(self, 'grade_desc'):
-            self.grade_desc.setText('Откройте проект — покажем качество кода, структуру и рекомендации.')
+            self.grade_desc.setText('Откройте проект')
         if hasattr(self, 'open_folder_btn'):
             self.open_folder_btn.hide()
         self.tips_tree.clear()

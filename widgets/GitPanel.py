@@ -30,46 +30,20 @@ class GitHubLoginDialog(QtWidgets.QDialog):
         layout.setContentsMargins(22, 20, 22, 20)
         layout.setSpacing(14)
 
-        title = QtWidgets.QLabel("Вход в аккаунт GitHub")
+        title = QtWidgets.QLabel("Вход в GitHub")
         title.setStyleSheet("font-size: 18px; font-weight: bold; color: #FFFFFF;")
         layout.addWidget(title)
 
-        info = QtWidgets.QLabel(
-            "Для отправки кода (Push), получения обновлений (Pull), клонирования приватных репозиториев "
-            "и работы с проектами необходима авторизация через GitHub Personal Access Token (PAT)."
-        )
-        info.setWordWrap(True)
-        info.setStyleSheet("color: #CCCCCC; font-size: 13px; line-height: 1.4;")
-        layout.addWidget(info)
-
-        guide_box = QtWidgets.QFrame()
-        guide_box.setObjectName("githubTokenGuide")
-        gl = QtWidgets.QVBoxLayout(guide_box)
-        gl.setSpacing(6)
-        g_title = QtWidgets.QLabel("Как получить токен за 1 минуту:")
-        g_title.setStyleSheet("font-weight: bold; color: #58A6FF; font-size: 13px;")
-        gl.addWidget(g_title)
-        
-        step1 = QtWidgets.QLabel("1. Нажмите кнопку ниже — откроется страница создания токена на GitHub.")
-        step1.setStyleSheet("color: #D4D4D4; font-size: 12px;")
-        step1.setWordWrap(True)
-        gl.addWidget(step1)
-        step2 = QtWidgets.QLabel("2. Выберите срок (Expiration) и убедитесь, что включена галочка 'repo'.")
-        step2.setStyleSheet("color: #D4D4D4; font-size: 12px;")
-        step2.setWordWrap(True)
-        gl.addWidget(step2)
-        step3 = QtWidgets.QLabel("3. Нажмите 'Generate token' внизу страницы, скопируйте его и вставьте сюда.")
-        step3.setStyleSheet("color: #D4D4D4; font-size: 12px;")
-        step3.setWordWrap(True)
-        gl.addWidget(step3)
+        scope = QtWidgets.QLabel("Personal access token (classic) · scope: repo")
+        scope.setWordWrap(True)
+        layout.addWidget(scope)
 
         open_browser_btn = QtWidgets.QPushButton("Создать токен на GitHub")
         set_line_icon(open_browser_btn, "external")
         open_browser_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         open_browser_btn.setStyleSheet("background: #238636; color: #FFFFFF; font-weight: bold; padding: 7px 14px; border-radius: 4px;")
         open_browser_btn.clicked.connect(self._open_token_page)
-        gl.addWidget(open_browser_btn)
-        layout.addWidget(guide_box)
+        layout.addWidget(open_browser_btn)
 
         form = QtWidgets.QFormLayout()
         self.token_edit = QtWidgets.QLineEdit()
@@ -249,11 +223,11 @@ class CreateGitHubRepoDialog(QtWidgets.QDialog):
 
         form = QtWidgets.QFormLayout()
         self.name_edit = QtWidgets.QLineEdit(self.default_name)
-        self.name_edit.setPlaceholderText("Имя репозитория (например, my-lab-work)")
+        self.name_edit.setPlaceholderText("Имя репозитория")
         form.addRow("Название:", self.name_edit)
 
         self.desc_edit = QtWidgets.QLineEdit()
-        self.desc_edit.setPlaceholderText("Краткое описание проекта (необязательно)")
+        self.desc_edit.setPlaceholderText("Описание (необязательно)")
         form.addRow("Описание:", self.desc_edit)
 
         self.private_check = QtWidgets.QCheckBox("Сделать приватным (доступен только вам)")
@@ -323,11 +297,6 @@ class CloneGitHubDialog(QtWidgets.QDialog):
         title.setObjectName("dialogTitle")
         title.setStyleSheet("font-size: 16px; font-weight: bold; color: #FFFFFF;")
         layout.addWidget(title)
-
-        subtitle = QtWidgets.QLabel("Введите URL GitHub или выберите из своих репозиториев.")
-        subtitle.setObjectName("dialogSubtitle")
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
 
         # Quick button if logged in to pick from user's repos
         if self.github_service.is_authenticated():
@@ -648,7 +617,7 @@ class GitPanel(QtWidgets.QFrame):
         return self.not_repo_frame
 
     def _build_file_list(self, layout):
-        self.status = QtWidgets.QLabel("Откройте Git-проект для просмотра изменений.")
+        self.status = QtWidgets.QLabel("Откройте Git-репозиторий")
         self.status.setObjectName("gitStatus")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)

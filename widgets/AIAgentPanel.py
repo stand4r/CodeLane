@@ -447,7 +447,7 @@ class _ComposerInput(QtWidgets.QPlainTextEdit):
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setPlaceholderText("Спросите что-нибудь о коде")
+        self.setPlaceholderText("Сообщение")
         self.setTabChangesFocus(True)
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self._min_height = 56
@@ -806,7 +806,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         layout.setContentsMargins(12, 0, 8, 0)
         layout.setSpacing(6)
 
-        title = QtWidgets.QLabel("ИИ-агент")
+        title = QtWidgets.QLabel("AI Agent")
         title.setObjectName("aiHeaderTitle")
         self.header_title = title
         layout.addWidget(title)
@@ -908,7 +908,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         box.setSpacing(8)
 
         self.input = _ComposerInput(self.composer)
-        self.input.setPlaceholderText("Спросите что-нибудь…")
+        self.input.setPlaceholderText("Сообщение")
         self.input.setMinimumHeight(44)
         self.input.submitted.connect(self.send_message)
         self.input.textChanged.connect(self._on_composer_text_changed)
@@ -1757,21 +1757,8 @@ class AIAgentPanel(QtWidgets.QWidget):
                 pass
 
     def _append_welcome(self):
-        rows = "".join(
-            f'<tr><td style="color:{TEXT_DIM}; padding:0 8px 0 0; vertical-align:top;">·</td>'
-            f'<td style="color:{TEXT_MUTED}; padding:0 0 6px 0;">{html.escape(tip)}</td></tr>'
-            for tip in (
-                "/ — команды · @ — файл проекта",
-                "/mode teach — наставник, /mode solve — обычный режим",
-                "Enter — отправить · Shift+Enter — новая строка",
-            )
-        )
-        label = QtWidgets.QLabel(
-            f'<div style="margin:18px 4px 14px 4px;">'
-            f'<div style="color:{TEXT}; font-size:16px; margin-bottom:8px;">Чем помочь?</div>'
-            f'<table cellspacing="0" cellpadding="0">{rows}</table></div>')
+        label = QtWidgets.QLabel("/ — команды · @ — файлы")
         label.setObjectName("aiWelcome")
-        label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         label.setWordWrap(True)
         label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self._welcome_widget = label
@@ -1818,7 +1805,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._refresh_reasoning_label()
         title = getattr(self, "header_title", None)
         if title is not None:
-            title.setText("ИИ" if self.width() < 250 else "ИИ-агент")
+            title.setText("AI" if self.width() < 250 else "AI Agent")
 
     def _relayout_transcript(self):
         timer = getattr(self, "_transcript_layout_timer", None)
