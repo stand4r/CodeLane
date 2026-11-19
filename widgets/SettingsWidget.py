@@ -1,7 +1,7 @@
-"""PyScribe widgets/SettingsWidget.py: application module and reusable component."""
+"""CodeLane widgets/SettingsWidget.py: application module and reusable component."""
 from core.activity_log import record_action
 from design.icons import set_line_icon
-from PyQt5 import QtWidgets, QtCore, QtGui
+from PyQt6 import QtWidgets, QtCore, QtGui
 from utils.settings_manager import get_settings_manager
 
 
@@ -16,11 +16,48 @@ MCP_EXAMPLE = (
     '[{"name": "files", "transport": "stdio", "command": "npx",\n'
     '  "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]},\n'
     ' {"name": "git", "transport": "stdio", "command": "uvx",\n'
-    '  "args": ["mcp-server-git", "--repository", "."]}]'
+    '  "args": ["mcp-server-git", "--repository", "."]},\n'
+    ' {"name": "remote", "transport": "http", "url": "http://localhost:3001/mcp",\n'
+    '  "headers": {"Authorization": "Bearer your-token"}}]'
 )
 
+
+class _MCPCheckWorker(QtCore.QThread):
+    """Check MCP connections without blocking the settings interface."""
+
+    progress = QtCore.pyqtSignal(str)
+    completed = QtCore.pyqtSignal(list)
+
+    def __init__(self, servers):
+        super().__init__()
+        self.servers = list(servers)
+
+    def run(self):
+        from services.mcp_client import MCPClient
+
+        lines = []
+        for config in self.servers:
+            if not config.enabled:
+                lines.append(f"– {config.label}: отключён")
+                continue
+            self.progress.emit(f"Проверяется {config.label}…")
+            client = MCPClient(config, timeout=8)
+            try:
+                tools = client.connect()
+                names = ", ".join(tool.name for tool in tools[:6])
+                suffix = f" · {names}" if names else ""
+                if len(tools) > 6:
+                    suffix += f" · +{len(tools) - 6}"
+                server = client.server_info.get("name") or config.label
+                lines.append(f"✓ {server}: {len(tools)} инструментов{suffix}")
+            except Exception as exc:  # noqa: BLE001 - show per-server failures
+                lines.append(f"✗ {config.label}: {exc}")
+            finally:
+                client.close()
+        self.completed.emit(lines)
+
 class SettingsWidget(QtWidgets.QWidget):
-    """Full PyScribe workbench settings editor.
+    """Full CodeLane workbench settings editor.
 
     Settings are saved and applied from the footer.
     """
@@ -30,6 +67,7 @@ class SettingsWidget(QtWidgets.QWidget):
         self.settings_manager = get_settings_manager()
         self.main_window = parent
         self.controls = {}
+        self._mcp_test_worker = None
         self._building = True
         self._build()
         self._building = False
@@ -49,7 +87,7 @@ class SettingsWidget(QtWidgets.QWidget):
         self._compact_navigation = QtWidgets.QComboBox()
         self._compact_navigation.setObjectName("settingsCompactNavigation")
         self._compact_navigation.setAccessibleName("Раздел настроек")
-        self._compact_navigation.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self._compact_navigation.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         root.addWidget(self._compact_navigation)
         self._compact_navigation.hide()
 
@@ -60,7 +98,7 @@ class SettingsWidget(QtWidgets.QWidget):
         self._navigation.setObjectName("settingsNavigation")
         self._navigation.setAccessibleName("Разделы настроек")
         self._navigation.setFixedWidth(188)
-        self._navigation.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self._navigation.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body.addWidget(self._navigation)
         self._pages = QtWidgets.QStackedWidget()
         self._pages.setObjectName("settingsPages")
@@ -79,7 +117,7 @@ class SettingsWidget(QtWidgets.QWidget):
             ("Инструменты", (
                 ("ИИ-агент", "Подключение модели, ответы и разрешения.", self._ai_page),
                 ("Браузер", "Поисковик, профили и User-Agent.", self._browser_page),
-                ("Расширения", "Дополнительные инструменты PyScribe.", self._extensions_page),
+                ("Расширения", "Дополнительные инструменты CodeLane.", self._extensions_page),
             )),
             ("Приложение", (
                 ("Система", "Версия, обновления и интеграция с Windows.", self._system_page),
@@ -89,19 +127,19 @@ class SettingsWidget(QtWidgets.QWidget):
         self._page_builders = {}
         for group, sections in groups:
             heading = QtWidgets.QListWidgetItem(group.upper())
-            heading.setFlags(QtCore.Qt.NoItemFlags)
+            heading.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
             self._navigation.addItem(heading)
             for label, description, build in sections:
                 index = self._pages.count()
                 item = QtWidgets.QListWidgetItem(label)
-                item.setData(QtCore.Qt.UserRole, index)
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, index)
                 self._nav_items.append(item)
                 self._navigation.addItem(item)
                 self._compact_navigation.addItem(label, index)
                 self._page_builders[index] = (label, description, build)
                 self._pages.addWidget(QtWidgets.QWidget())
         self._navigation.currentItemChanged.connect(
-            lambda item, _: self._select_page(item.data(QtCore.Qt.UserRole)) if item else None
+            lambda item, _: self._select_page(item.data(QtCore.Qt.ItemDataRole.UserRole)) if item else None
         )
         self._compact_navigation.currentIndexChanged.connect(self._select_page)
         self._select_page(0)
@@ -122,11 +160,11 @@ class SettingsWidget(QtWidgets.QWidget):
 
     def _scroll_page(self, label, description, page):
         for combo in page.findChildren(QtWidgets.QComboBox):
-            combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(12)
         scroll = QtWidgets.QScrollArea()
         scroll.setObjectName("settingsPageScroll")
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         scroll.setWidgetResizable(True)
         content = QtWidgets.QWidget()
         content.setObjectName("settingsPageContent")
@@ -179,8 +217,8 @@ class SettingsWidget(QtWidgets.QWidget):
         layout = QtWidgets.QFormLayout(page)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(9)
-        layout.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
-        layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+        layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
+        layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         return page, layout
 
     def _combo(self, key, values):
@@ -287,17 +325,17 @@ class SettingsWidget(QtWidgets.QWidget):
         lay.setSpacing(4)
 
         line = QtWidgets.QHBoxLayout()
-        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         slider.setRange(75, 200)
         slider.setSingleStep(5)
         slider.setPageStep(10)
         slider.setTickInterval(25)
-        slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        slider.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
         value = normalize_scale(self._value('ui_scale_percent'))
         slider.setValue(value)
         label = QtWidgets.QLabel(f'{value}%')
         label.setMinimumWidth(48)
-        label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
         line.addWidget(slider, 1)
         line.addWidget(label)
         lay.addLayout(line)
@@ -384,7 +422,6 @@ class SettingsWidget(QtWidgets.QWidget):
     def _projects_page(self):
         page, l = self._page()
         self._section(l, "Проекты")
-        l.addRow('', self._check('project_restore_last', 'Восстанавливать последний проект'))
         self._section(l, 'Сеанс приложения')
         l.addRow('', self._check('restore_session', 'Восстанавливать открытые файлы при запуске'))
         l.addRow('', self._check('show_welcome', 'Показывать стартовую страницу'))
@@ -423,7 +460,7 @@ class SettingsWidget(QtWidgets.QWidget):
     def open_extensions_page(self):
         for item in self._nav_items:
             if item.text() == "Расширения":
-                self._select_page(item.data(QtCore.Qt.UserRole))
+                self._select_page(item.data(QtCore.Qt.ItemDataRole.UserRole))
                 break
 
     def _system_page(self):
@@ -437,7 +474,7 @@ class SettingsWidget(QtWidgets.QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
-        title = QtWidgets.QLabel('Обновления PyScribe')
+        title = QtWidgets.QLabel('Обновления CodeLane')
         title.setObjectName('settingsSectionTitle')
         layout.addWidget(title)
         version = QtWidgets.QLabel(
@@ -449,24 +486,24 @@ class SettingsWidget(QtWidgets.QWidget):
         check_now = QtWidgets.QPushButton('Проверить обновления…')
         check_now.clicked.connect(
             lambda: self.main_window.action_check_updates() if self.main_window else None)
-        layout.addWidget(check_now, 0, QtCore.Qt.AlignLeft)
+        layout.addWidget(check_now, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
         updates_hint = QtWidgets.QLabel(
             'Обновления берутся из GitHub-релизов stand4r/PyScribe. '
             'Для установленной версии скачивается установщик, для запуска из '
-            'исходников — git pull, после чего PyScribe перезапускается.')
+            'исходников — git pull, после чего CodeLane перезапускается.')
         updates_hint.setWordWrap(True)
         updates_hint.setObjectName('settingsHint')
         layout.addWidget(updates_hint)
 
         line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.HLine)
+        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
         layout.addWidget(line)
 
         explorer_title = QtWidgets.QLabel('Проводник Windows')
         explorer_title.setObjectName('settingsSectionTitle')
         layout.addWidget(explorer_title)
         self._shell_box = QtWidgets.QCheckBox(
-            'Пункт «Открыть в PyScribe» в проводнике')
+            'Пункт «Открыть в CodeLane» в проводнике')
         self._shell_box.setChecked(shell_integration.is_registered())
         self._shell_box.toggled.connect(self._toggle_shell_integration)
         layout.addWidget(self._shell_box)
@@ -476,7 +513,7 @@ class SettingsWidget(QtWidgets.QWidget):
         self._shell_status.setObjectName('settingsHint')
         layout.addWidget(self._shell_status)
         explorer_hint = QtWidgets.QLabel(
-            'PyScribe также появится в системном окне «Открыть с помощью». '
+            'CodeLane также появится в системном окне «Открыть с помощью». '
             'Файлы открываются в редакторе, папки — как проект. Записи создаются '
             'только для текущего пользователя и не требуют прав администратора.')
         explorer_hint.setWordWrap(True)
@@ -490,7 +527,7 @@ class SettingsWidget(QtWidgets.QWidget):
         if checked:
             ok, errors = shell_integration.register()
             self._shell_status.setText(
-                'Готово: PyScribe добавлен в меню проводника.' if ok
+                'Готово: CodeLane добавлен в меню проводника.' if ok
                 else 'Не удалось добавить записи: ' + '; '.join(errors[:2]))
         else:
             ok, errors = shell_integration.unregister()
@@ -555,7 +592,7 @@ class SettingsWidget(QtWidgets.QWidget):
                     if profile["id"] not in BUILTIN_PROFILE_IDS:
                         mode = "постоянный" if profile["persistent"] else "приватный"
                         item = QtWidgets.QListWidgetItem(f'{profile["name"]} · {mode}')
-                        item.setData(QtCore.Qt.UserRole, profile["id"])
+                        item.setData(QtCore.Qt.ItemDataRole.UserRole, profile["id"])
                         profile_list.addItem(item)
                 default.setCurrentIndex(default.findData(default_profile()["id"]))
             edit.setEnabled(False)
@@ -563,7 +600,7 @@ class SettingsWidget(QtWidgets.QWidget):
 
         def selected():
             item = profile_list.currentItem()
-            key = item.data(QtCore.Qt.UserRole) if item else None
+            key = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else None
             return next((profile for profile in profiles() if profile["id"] == key), None)
 
         def change(profile=None):
@@ -639,9 +676,9 @@ class SettingsWidget(QtWidgets.QWidget):
         hint.setWordWrap(True)
         hint.setObjectName("settingsHint")
         form.addRow(hint)
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
-        buttons.button(QtWidgets.QDialogButtonBox.Save).setText("Сохранить")
-        buttons.button(QtWidgets.QDialogButtonBox.Cancel).setText("Отмена")
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Save | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Save).setText("Сохранить")
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         form.addRow(buttons)
 
         def accept():
@@ -655,7 +692,7 @@ class SettingsWidget(QtWidgets.QWidget):
         buttons.accepted.connect(accept)
         buttons.rejected.connect(dialog.reject)
         dialog.resize(480, 0)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             dialog.deleteLater()
             return None
         result = {
@@ -676,7 +713,7 @@ class SettingsWidget(QtWidgets.QWidget):
         layout.setSpacing(8)
 
         intro = QtWidgets.QLabel(
-            'ИИ-агент PyScribe работает через API чат-моделей (OpenAI-совместимый '
+            'ИИ-агент CodeLane работает через API чат-моделей (OpenAI-совместимый '
             'формат). Поддерживаются DeepSeek, OpenAI, OpenRouter, локальные '
             'серверы (LM Studio, Ollama) и любые другие совместимые провайдеры.'
         )
@@ -686,7 +723,7 @@ class SettingsWidget(QtWidgets.QWidget):
 
         form = QtWidgets.QFormLayout()
         form.setSpacing(8)
-        form.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
+        form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
         self._section(form, "Подключение")
 
         enabled = QtWidgets.QCheckBox('Включить ИИ-агента')
@@ -731,7 +768,7 @@ class SettingsWidget(QtWidgets.QWidget):
         _fill_models(provider.currentData() or 'deepseek', keep_current=True)
 
         key_edit = QtWidgets.QLineEdit(str(self._value('ai_api_key')))
-        key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        key_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         key_edit.setPlaceholderText('sk-...')
         self.controls['ai_api_key'] = key_edit
         key_row = QtWidgets.QWidget()
@@ -742,7 +779,7 @@ class SettingsWidget(QtWidgets.QWidget):
         show_btn.setCheckable(True)
 
         def _toggle_secret(checked):
-            key_edit.setEchoMode(QtWidgets.QLineEdit.Normal if checked else QtWidgets.QLineEdit.Password)
+            key_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Normal if checked else QtWidgets.QLineEdit.EchoMode.Password)
             show_btn.setText('Скрыть' if checked else 'Показать')
 
         show_btn.toggled.connect(_toggle_secret)
@@ -785,7 +822,7 @@ class SettingsWidget(QtWidgets.QWidget):
         idx = reasoning.findData(str(self._value('ai_reasoning_effort') or 'auto'))
         reasoning.setCurrentIndex(max(0, idx))
         reasoning.setToolTip('Сколько «думать» перед ответом. Для моделей, которые не '
-                             'поддерживают параметр, PyScribe один раз повторит запрос без него.')
+                             'поддерживают параметр, CodeLane один раз повторит запрос без него.')
         self.controls['ai_reasoning_effort'] = reasoning
         form.addRow('Уровень размышлений', reasoning)
 
@@ -794,10 +831,11 @@ class SettingsWidget(QtWidgets.QWidget):
         self.controls['ai_system_prompt'] = prompt
         form.addRow('Системная подсказка', prompt)
 
-        # Context scope: project / file / none (default = независимый запрос).
+        # Context scope: project / open files / file / none.
         scope = QtWidgets.QComboBox()
         for key, label in (("none", "Без контекста (независимый запрос)"),
                            ("file", "Текущий файл"),
+                           ("open_files", "Открытые файлы (включая несохранённые правки)"),
                            ("project", "Проект целиком")):
             scope.addItem(label, key)
         idx = scope.findData(str(self._value('ai_context_scope')))
@@ -890,6 +928,7 @@ class SettingsWidget(QtWidgets.QWidget):
 
         mcp_row = QtWidgets.QHBoxLayout()
         mcp_test = QtWidgets.QPushButton('Проверить MCP')
+        self._mcp_test_button = mcp_test
         mcp_test.clicked.connect(self._test_mcp)
         mcp_example_btn = QtWidgets.QPushButton('Вставить пример')
         mcp_example_btn.clicked.connect(lambda: self.mcp_edit.setPlainText(MCP_EXAMPLE))
@@ -966,8 +1005,10 @@ class SettingsWidget(QtWidgets.QWidget):
         return page
 
     def _test_mcp(self):
-        """Connect every configured MCP server and report its tools."""
-        from services.mcp_client import MCPClient, parse_servers
+        """Connect to configured MCP servers in a background thread."""
+        from services.mcp_client import parse_servers
+        if self._mcp_test_worker is not None and self._mcp_test_worker.isRunning():
+            return
         try:
             servers = parse_servers(self.mcp_edit.toPlainText())
         except Exception as exc:  # noqa: BLE001
@@ -976,22 +1017,27 @@ class SettingsWidget(QtWidgets.QWidget):
         if not servers:
             self.mcp_status_label.setText('Список MCP-серверов пуст.')
             return
-        lines = []
-        for config in servers:
-            client = MCPClient(config, timeout=20)
-            try:
-                tools = client.connect()
-                lines.append(f'✓ {config.label}: {len(tools)} инструментов')
-            except Exception as exc:  # noqa: BLE001
-                lines.append(f'✗ {config.label}: {exc}')
-            finally:
-                client.close()
-        self.mcp_status_label.setText('\n'.join(lines))
+        self._mcp_test_button.setEnabled(False)
+        self._mcp_test_worker = _MCPCheckWorker(servers)
+        worker = self._mcp_test_worker
+        worker.progress.connect(self.mcp_status_label.setText)
+        worker.completed.connect(self._show_mcp_test_results)
+        worker.finished.connect(lambda w=worker: self._mcp_test_finished(w))
+        worker.start()
+
+    def _show_mcp_test_results(self, lines):
+        self.mcp_status_label.setText('\n'.join(lines) or 'Нет активных MCP-серверов.')
+
+    def _mcp_test_finished(self, worker):
+        if self._mcp_test_worker is worker:
+            self._mcp_test_worker = None
+        self._mcp_test_button.setEnabled(True)
+        worker.deleteLater()
 
     def _open_provider_keys_page(self):
         """Open the active provider's API-key page."""
-        from PyQt5.QtGui import QDesktopServices
-        from PyQt5.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
         provider = self.controls.get('ai_provider')
         key = provider.currentData() if provider is not None else 'deepseek'
         url = get_provider(key).key_url or "https://platform.deepseek.com/api_keys"
@@ -1050,9 +1096,14 @@ class SettingsWidget(QtWidgets.QWidget):
             self.ai_status_label.setText('Укажите API-ключ и модель, затем повторите проверку.')
             return
         self.ai_status_label.setText('Проверка подключения…')
-        QtWidgets.QApplication.processEvents()
-        ok, message = service.test_connection()
-        self.ai_status_label.setText(('✓ ' if ok else '✗ ') + message)
+        from services.background import run_async
+
+        def completed(result):
+            ok, message = result
+            self.ai_status_label.setText(('✓ ' if ok else '✗ ') + message)
+
+        run_async(service.test_connection, on_done=completed,
+                  on_error=lambda message: self.ai_status_label.setText('✗ ' + message))
 
     def _open_ai_agent(self):
         self._persist_ai_settings()

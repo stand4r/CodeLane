@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from core.code_analysis.lsp_client import LspLocation
 
@@ -156,7 +156,7 @@ class SymbolNavigationDialog(QtWidgets.QDialog):
                     loc.preview,
                 ])
                 item.setToolTip(1, loc.file_path)
-                item.setData(0, QtCore.Qt.UserRole, loc)
+                item.setData(0, QtCore.Qt.ItemDataRole.UserRole, loc)
 
                 # Color-code badges
                 if loc.kind == "openapi":
@@ -175,7 +175,7 @@ class SymbolNavigationDialog(QtWidgets.QDialog):
             self.tree.setCurrentItem(self.tree.topLevelItem(0))
 
     def _on_item_activated(self, item: QtWidgets.QTreeWidgetItem, _column: int):
-        loc = item.data(0, QtCore.Qt.UserRole)
+        loc = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if isinstance(loc, LspLocation):
             self.location_selected.emit(loc.file_path, loc.line, loc.col)
             self.accept()
@@ -199,5 +199,5 @@ def show_symbol_dialog(parent, title: str, locations: List[LspLocation], on_sele
                     return
             on_select(LspLocation(file_path=path, line=line, col=col))
         dlg.location_selected.connect(_cb)
-    dlg.exec_()
+    dlg.exec()
     return dlg

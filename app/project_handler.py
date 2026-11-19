@@ -4,12 +4,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from PyQt5 import QtCore
-from PyQt5.QtWidgets import QDialog, QMessageBox
+from PyQt6 import QtCore
+from PyQt6.QtWidgets import QDialog, QMessageBox
 
 from core.activity_log import record_action
 from core.logging_config import get_logger
-from utils.programs import loadSession
+from core.project_state import project_state_file, sync_project_config
+from utils.programs import load_session_state
 from widgets.AnalysisProfilesDialog import ProjectAnalyzerDialog
 from widgets.ProjectDialog import ProjectDialog
 
@@ -25,8 +26,8 @@ class ProjectHandler:
 
     def open_project(self):
         dialog = ProjectDialog(self.main_window)
-        result = dialog.exec_()
-        if result == QDialog.Accepted and dialog.selected_project is not None:
+        result = dialog.exec()
+        if result == QDialog.DialogCode.Accepted and dialog.selected_project is not None:
             self.on_project_opened(dialog.selected_project)
 
     def _choose_analyzers(self, project_config):
@@ -40,7 +41,7 @@ class ProjectHandler:
         except Exception:
             logger.exception("Не удалось открыть выбор профилей анализа")
             return current
-        if dialog.exec_() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
         if isinstance(project_config, dict):
             project_config['analyzers'] = dialog.selected_analyzers
@@ -77,6 +78,7 @@ class ProjectHandler:
         if hasattr(project_config, "root_path"):
             project_config.root_path = norm_root
 
+        sync_project_config(project_config, norm_root)
         enabled = getattr(self.main_window, "extension_enabled", lambda key: True)
         analyze = enabled("intelligence")
         analyzers = self._choose_analyzers(project_config) if choose_analyzers and analyze else None
@@ -87,13 +89,15 @@ class ProjectHandler:
             if analyzers is None:
                 analyzers = ['structure', 'dependencies', 'health']
 
-        if self.main_window.current_project:
-            self.main_window.save_current_session()
-        self.main_window.close_all_editor_tabs()
+        if self.main_window.close_all_editor_tabs() is False:
+            return
         self.main_window.close_special_tab('welcome')
         self.main_window.close_special_tab('settings')
 
         self.main_window.current_project = project_config
+        self.main_window._project_session_restoring = False
+        project_state_file(norm_root, "tasks.json", default={"version": 1, "tasks": []})
+        project_state_file(norm_root, "ai_chat.json", default={"version": 1, "messages": []})
         # Build the completion index in small batches instead of parsing the
         # whole project on the UI thread (that froze the window on big trees).
         # Even the file-list walk is deferred: it scans thousands of paths and
@@ -208,29 +212,28 @@ class ProjectHandler:
         while that runs every animation in the window stops. Spreading the work
         keeps the workbench painting between files.
         """
-        project_session_files = loadSession(project_path=norm_root)
-        valid_files = [f for f in project_session_files if Path(f).exists()]
-        if not valid_files:
+        state = load_session_state(project_path=norm_root)
+        if not state:
             self.open_project_files(project_config)
+            self.main_window.save_current_session()
             return
-        self._restore_queue = list(valid_files)
-        QtCore.QTimer.singleShot(0, self._restore_next_session_file)
+        files = iter(state["files"])
+        project = self.main_window.current_project
+        self._restore_token = token = object()
+        self.main_window._project_session_restoring = True
 
-    def _restore_next_session_file(self):
-        """Open the next restored tab, then yield to the event loop."""
-        queue = getattr(self, '_restore_queue', None) or []
-        if not queue:
-            self._restore_queue = []
-            return
-        path = queue.pop(0)
-        try:
-            self.main_window.file_manager.open_file(path)
-        except Exception:
-            pass
-        if queue:
-            # ~2 frames of breathing room so the tab bar and the busy overlay
-            # keep animating instead of freezing for the whole restore.
-            QtCore.QTimer.singleShot(24, self._restore_next_session_file)
+        def restore_next():
+            if token is not self._restore_token or self.main_window.current_project is not project:
+                return
+            path = next(files, None)
+            if path is None:
+                self.main_window._project_session_restoring = False
+                self.main_window.activate_session_file(state.get("active"))
+                return
+            self.main_window.restore_session_file(path, state.get("cursors"))
+            QtCore.QTimer.singleShot(24, restore_next)
+
+        QtCore.QTimer.singleShot(0, restore_next)
 
     def _init_workspace_dir(self, norm_root: str):
         project_root = Path(norm_root)
@@ -277,11 +280,11 @@ class ProjectHandler:
             reply = QMessageBox.question(
                 self.main_window, "Конфигурация проекта",
                 "Для этого проекта не настроена команда запуска. Настроить её сейчас?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
             )
 
-            if reply == QMessageBox.Yes:
+            if reply == QMessageBox.StandardButton.Yes:
                 self.main_window.action_project_settings()
             return
 

@@ -1,5 +1,5 @@
 """Project analysis selection expressed as goals and concrete checks."""
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class ProjectAnalyzerDialog(QtWidgets.QDialog):
@@ -39,15 +39,15 @@ class ProjectAnalyzerDialog(QtWidgets.QDialog):
         label = QtWidgets.QLabel(text)
         label.setObjectName(role)
         label.setWordWrap(True)
-        label.setTextFormat(QtCore.Qt.PlainText)
+        label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         parent_layout.addWidget(label)
         return label
 
     def _scroll(self, content):
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(content)
         return scroll
 
@@ -74,7 +74,7 @@ class ProjectAnalyzerDialog(QtWidgets.QDialog):
             layout.setContentsMargins(10, 8, 10, 8)
             layout.setSpacing(3)
             button = QtWidgets.QRadioButton(title)
-            button.setCursor(QtCore.Qt.PointingHandCursor)
+            button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
             button.setAccessibleName(title + ". " + description)
             self.profile_group.addButton(button)
             self._profile_buttons[key] = button
@@ -109,7 +109,7 @@ class ProjectAnalyzerDialog(QtWidgets.QDialog):
             layout.setContentsMargins(10, 9, 10, 9)
             layout.setSpacing(4)
             check = QtWidgets.QCheckBox(title)
-            check.setCursor(QtCore.Qt.PointingHandCursor)
+            check.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
             check.setAccessibleName(title + ". " + description)
             check.setChecked(key in self.selected_analyzers)
             layout.addWidget(check)
@@ -124,10 +124,10 @@ class ProjectAnalyzerDialog(QtWidgets.QDialog):
         root.addLayout(body, 1)
         self.result_hint = self._label("", "analysisChooserHint", root)
         buttons = QtWidgets.QDialogButtonBox()
-        self.open_button = buttons.addButton("Открыть проект", QtWidgets.QDialogButtonBox.AcceptRole)
+        self.open_button = buttons.addButton("Открыть проект", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
         self.open_button.setObjectName("primary")
         self.open_button.setDefault(True)
-        buttons.addButton("Отмена", QtWidgets.QDialogButtonBox.RejectRole)
+        buttons.addButton("Отмена", QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)

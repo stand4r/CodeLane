@@ -1,5 +1,5 @@
 """PyScribe widgets/CommandPalette.py: application module and reusable component."""
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class CommandPalette(QtWidgets.QDialog):
@@ -9,7 +9,7 @@ class CommandPalette(QtWidgets.QDialog):
     def __init__(self, commands=None, parent=None):
         super().__init__(parent)
         self.commands = commands or []
-        self.setWindowFlags(QtCore.Qt.Dialog | QtCore.Qt.FramelessWindowHint)
+        self.setWindowFlags(QtCore.Qt.WindowType.Dialog | QtCore.Qt.WindowType.FramelessWindowHint)
         self.setModal(True)
         self.resize(720, 420)
         self._build()
@@ -42,7 +42,7 @@ class CommandPalette(QtWidgets.QDialog):
         for label, command in self.commands:
             if query in label.lower():
                 item = QtWidgets.QListWidgetItem(label)
-                item.setData(QtCore.Qt.UserRole, command)
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, command)
                 self.list.addItem(item)
         if self.list.count():
             self.list.setCurrentRow(0)
@@ -50,7 +50,7 @@ class CommandPalette(QtWidgets.QDialog):
     def _activate(self):
         item = self.list.currentItem()
         if item:
-            self.command_triggered.emit(item.data(QtCore.Qt.UserRole))
+            self.command_triggered.emit(item.data(QtCore.Qt.ItemDataRole.UserRole))
             self.accept()
 
     def showEvent(self, event):
@@ -62,5 +62,5 @@ class CommandPalette(QtWidgets.QDialog):
         self._anim.setDuration(160)
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
-        self._anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+        self._anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
         self._anim.start()

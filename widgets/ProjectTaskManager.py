@@ -2,7 +2,7 @@
 import time
 
 import psutil
-from PyQt5 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 
 class ProcessSnapshot(QtCore.QThread):
@@ -98,7 +98,7 @@ class ProjectTaskManager(QtWidgets.QWidget):
         roots = []
         for tab in self.terminal.tabs.values():
             for process in (tab.process, getattr(tab, "_run_process", None)):
-                if process is not None and process.state() != QtCore.QProcess.NotRunning:
+                if process is not None and process.state() != QtCore.QProcess.ProcessState.NotRunning:
                     pid = int(process.processId())
                     if pid:
                         roots.append(pid)
@@ -127,12 +127,12 @@ class ProjectTaskManager(QtWidgets.QWidget):
         rows, self.previous = result
         expanded = set()
         selected = self.tree.currentItem()
-        selected_key = selected.data(0, QtCore.Qt.UserRole) if selected else None
+        selected_key = selected.data(0, QtCore.Qt.ItemDataRole.UserRole) if selected else None
         iterator = QtWidgets.QTreeWidgetItemIterator(self.tree)
         while iterator.value():
             item = iterator.value()
             if item.isExpanded():
-                expanded.add(item.data(0, QtCore.Qt.UserRole))
+                expanded.add(item.data(0, QtCore.Qt.ItemDataRole.UserRole))
             iterator += 1
         self.tree.setUpdatesEnabled(False)
         self.tree.clear()
@@ -141,7 +141,7 @@ class ProjectTaskManager(QtWidgets.QWidget):
             item = QtWidgets.QTreeWidgetItem([
                 row["name"], str(row["pid"]), self.cpu_text(row["cpu"]),
                 f'{row["memory"] / 1048576:.1f} МБ', str(len(row["threads"])), row["status"]])
-            item.setData(0, QtCore.Qt.UserRole, row["key"])
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, row["key"])
             items[row["pid"]] = item
         for row in rows:
             item = items[row["pid"]]
@@ -154,7 +154,7 @@ class ProjectTaskManager(QtWidgets.QWidget):
                 thread = QtWidgets.QTreeWidgetItem(
                     [f"Поток {tid}", str(tid), self.cpu_text(cpu), "Общая", "", ""])
                 key = (*row["key"], tid)
-                thread.setData(0, QtCore.Qt.UserRole, key)
+                thread.setData(0, QtCore.Qt.ItemDataRole.UserRole, key)
                 item.addChild(thread)
                 if key == selected_key:
                     self.tree.setCurrentItem(thread)

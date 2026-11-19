@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from PyQt5 import QtCore
+from PyQt6 import QtCore
 
 __all__ = ["run_async"]
 
@@ -68,12 +68,13 @@ def run_async(fn: Callable, on_done: Optional[Callable] = None,
     def _finish(callback, payload):
         _ACTIVE.discard(signals)
         _ACTIVE.discard(task)
-        if callback is None:
-            return
         try:
-            callback(payload)
+            if callback is not None:
+                callback(payload)
         except RuntimeError:
             pass
+        finally:
+            signals.deleteLater()
 
     signals.finished.connect(lambda result: _finish(on_done, result))
     signals.failed.connect(lambda message: _finish(on_error, message))

@@ -1,4 +1,4 @@
-"""PyScribe application lifecycle, settings management, and bootstrap."""
+"""CodeLane application lifecycle, settings management, and bootstrap."""
 from __future__ import annotations
 
 import os
@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from PyQt5 import QtCore, QtGui
-from PyQt5.QtWidgets import QApplication
+from PyQt6 import QtCore, QtGui
+from PyQt6.QtWidgets import QApplication
 
 from app.styling import _set_windows_app_identity, setup_application_style
 from core.logging_config import configure_logging, get_logger
@@ -173,14 +173,14 @@ def open_external_target(window, argument) -> str:
 def _initialize_browser(base_path: Path) -> str:
     """Prepare Qt WebEngine before creating the QApplication."""
     if getattr(sys, "frozen", False) and os.name == "nt":
-        qt_root = base_path / "PyQt5" / "Qt5"
+        qt_root = base_path / "PyQt6" / "Qt6"
         helper = qt_root / "bin" / "QtWebEngineProcess.exe"
         resources = qt_root / "resources"
         locales = qt_root / "translations" / "qtwebengine_locales"
         if not (helper.is_file() and (resources / "qtwebengine_resources.pak").is_file()
                 and (resources / "icudtl.dat").is_file() and (locales / "en-US.pak").is_file()):
             logger.error("Qt WebEngine runtime files missing from %s", qt_root)
-            return "В установке PyScribe отсутствуют компоненты встроенного браузера."
+            return "В установке CodeLane отсутствуют компоненты встроенного браузера."
         os.environ.setdefault("QTWEBENGINEPROCESS_PATH", str(helper))
         os.environ.setdefault("QTWEBENGINE_RESOURCES_PATH", str(resources))
         os.environ.setdefault("QTWEBENGINE_LOCALES_PATH", str(locales))
@@ -188,8 +188,7 @@ def _initialize_browser(base_path: Path) -> str:
         # Use Chromium's software path across Windows graphics drivers and VMs.
         os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
     try:
-        from PyQt5.QtWebEngine import QtWebEngine
-        QtWebEngine.initialize()
+        from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
     except (ImportError, OSError):
         logger.exception("Qt WebEngine initialization failed")
         return "Не удалось загрузить компоненты встроенного браузера."
@@ -197,11 +196,9 @@ def _initialize_browser(base_path: Path) -> str:
 
 
 def main():
-    """PyScribe main entry function."""
+    """CodeLane main entry function."""
     _set_windows_app_identity()
-    QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
-    QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps)
-    QApplication.setAttribute(QtCore.Qt.AA_ShareOpenGLContexts)
+    QApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
@@ -214,6 +211,7 @@ def main():
 
     browser_error = _initialize_browser(base_path)
     app = QApplication(sys.argv)
+    app.setApplicationName("CodeLane")
     app._pyscribe_browser_error = browser_error
     from utils.toolchain_detector import start_toolchain_detection
     start_toolchain_detection()
@@ -229,6 +227,16 @@ def main():
     from core.activity_log import install_activity_log
     install_activity_log(app, base_path)
     setup_application_style(app, base_path)
+
+    # Load the optional native grammar extension before project-analysis
+    # QThreads are started. On some Windows installs its first import from a
+    # worker thread raises a fatal COM error (0x8001010d), which cannot be
+    # caught by Python's exception handlers. Missing/broken installs still
+    # fall back to the lightweight analyzers.
+    try:
+        import tree_sitter_language_pack  # noqa: F401
+    except Exception as exc:  # noqa: BLE001 - optional acceleration
+        logger.info("Tree-sitter language pack unavailable; using fallback parsers: %s", exc)
 
     from app.main_window import ModernMainWindow
     window = ModernMainWindow(app_manager)
@@ -260,4 +268,4 @@ def main():
         # Explorer passes the clicked path as an argument; open it once the
         # window is actually on screen (the layout is not ready before that).
         QtCore.QTimer.singleShot(60, lambda: handle_external(sys.argv[1:]))
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

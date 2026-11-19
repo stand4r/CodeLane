@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from widgets.ChatMessage import (
     INLINE_PROP,
@@ -113,7 +113,7 @@ def test_long_snippet_is_scrollable():
     code = "\n".join(f"value_{i} = {i}" for i in range(80))
     snippet = CodeSnippet(code, "python")
     assert snippet.view.height() <= CodeSnippet.MAX_HEIGHT
-    assert snippet.view.verticalScrollBarPolicy() == QtCore.Qt.ScrollBarAsNeeded
+    assert snippet.view.verticalScrollBarPolicy() == QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
 
 
 def test_message_resizes_parts():
@@ -126,9 +126,8 @@ def test_message_resizes_parts():
 def test_numbered_list_uses_hanging_indent():
     """Wrapped item text must align under the text, not under the number."""
     html_text = markdown_to_html("1. Первый длинный пункт списка\n2. Второй пункт")
-    assert html_text.count("<table") == 2, html_text
-    assert 'width="32"' in html_text
-    assert "margin:0 0 7px 0" in html_text
+    assert html_text.count("<li>") == 2, html_text
+    assert '<ol start="1"' in html_text
 
 
 def test_fully_bold_line_becomes_subheading():
@@ -171,7 +170,7 @@ def test_code_snippet_wraps_long_lines_without_scrollbar():
     snippet._fit_height()
     view = snippet.view
     assert view.horizontalScrollBar().maximum() == 0, "long lines must wrap"
-    assert view.lineWrapMode() == view.WidgetWidth
+    assert view.lineWrapMode() == view.LineWrapMode.WidgetWidth
     needed = 3 * view.fontMetrics().lineSpacing() + 18
     assert view.height() >= needed - 6, (view.height(), needed)
     snippet.deleteLater()
@@ -179,7 +178,7 @@ def test_code_snippet_wraps_long_lines_without_scrollbar():
 
 def test_paragraph_lets_the_transcript_scroll():
     """Wheel over a fitted paragraph must scroll the chat, not the paragraph."""
-    from PyQt5 import QtGui
+    from PyQt6 import QtGui
     area = QtWidgets.QScrollArea()
     area.setWidgetResizable(True)
     content = QtWidgets.QWidget()
@@ -200,8 +199,8 @@ def test_paragraph_lets_the_transcript_scroll():
     target = content.findChildren(InlineCodeText)[0]
     event = QtGui.QWheelEvent(QtCore.QPointF(5, 5), QtCore.QPointF(5, 5),
                               QtCore.QPoint(0, 0), QtCore.QPoint(0, 120),
-                              QtCore.Qt.NoButton, QtCore.Qt.NoModifier,
-                              QtCore.Qt.NoScrollPhase, False)
+                              QtCore.Qt.MouseButton.NoButton, QtCore.Qt.KeyboardModifier.NoModifier,
+                              QtCore.Qt.ScrollPhase.NoScrollPhase, False)
     _APP.sendEvent(target.viewport(), event)
     assert bar.value() < before, "wheel must scroll the surrounding chat"
     area.deleteLater()

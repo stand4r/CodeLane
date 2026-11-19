@@ -2,7 +2,7 @@
 from pathlib import Path
 import re
 from design.icons import set_line_icon
-from PyQt5 import QtCore, QtWidgets, QtGui
+from PyQt6 import QtCore, QtWidgets, QtGui
 
 
 class SearchPanel(QtWidgets.QWidget):
@@ -64,7 +64,7 @@ class SearchPanel(QtWidgets.QWidget):
         self.regex.setCheckable(True)
         for button in (self.case_sensitive, self.whole_word, self.regex):
             button.setMinimumSize(32, 28)
-            button.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
+            button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Fixed)
             options.addWidget(button)
         options.addStretch()
         self.search_button = QtWidgets.QToolButton()
@@ -102,7 +102,7 @@ class SearchPanel(QtWidgets.QWidget):
         self.results.setAnimated(False)
         self.results.itemDoubleClicked.connect(self._open_item)
         self.results.setObjectName("searchResults")
-        self.results.setTextElideMode(QtCore.Qt.ElideMiddle)
+        self.results.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
         layout.addWidget(self.results, 1)
 
     def set_root(self, path):
@@ -174,7 +174,7 @@ class SearchPanel(QtWidgets.QWidget):
                 if file_item is None:
                     relative = str(path.relative_to(self.root_path))
                     file_item = QtWidgets.QTreeWidgetItem([f'{path.name}  ·  {relative}'])
-                    file_item.setData(0, QtCore.Qt.UserRole, str(path))
+                    file_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, str(path))
                     file_item.setToolTip(0, str(path))
                     self.results.addTopLevelItem(file_item)
                     file_count += 1
@@ -182,8 +182,8 @@ class SearchPanel(QtWidgets.QWidget):
                 if len(snippet) > 180:
                     snippet = snippet[:177] + '…'
                 child = QtWidgets.QTreeWidgetItem([f'{line_no}:  {snippet}'])
-                child.setData(0, QtCore.Qt.UserRole, str(path))
-                child.setData(0, QtCore.Qt.UserRole + 1, line_no)
+                child.setData(0, QtCore.Qt.ItemDataRole.UserRole, str(path))
+                child.setData(0, QtCore.Qt.ItemDataRole.UserRole + 1, line_no)
                 child.setToolTip(0, f'{path}:{line_no}\n{line.strip()}')
                 file_item.addChild(child)
                 total_matches += len(matches)
@@ -250,10 +250,10 @@ class SearchPanel(QtWidgets.QWidget):
         QtWidgets.QMessageBox.information(self, 'Заменить всё', message)
 
     def _open_item(self, item, column):
-        path = item.data(0, QtCore.Qt.UserRole)
+        path = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if not path:
             return
-        line = item.data(0, QtCore.Qt.UserRole + 1)
+        line = item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1)
         if line is not None:
             self.open_match_requested.emit(path, int(line))
         else:

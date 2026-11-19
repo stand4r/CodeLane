@@ -96,7 +96,7 @@ DEFAULT_SETTINGS = {
     "analysis_delay_ms": 350,
     "analysis_max_file_mb": 32,
     "recent_projects_limit": 10,
-    "project_restore_last": False,
+    "project_restore_last": True,
     "project_open_readme": True,
     "project_deduplicate_recent": True,
     "floating_terminal": True,

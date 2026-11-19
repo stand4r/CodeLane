@@ -1,7 +1,7 @@
 """PyScribe widgets/PushButtons.py: application module and reusable component."""
-from PyQt5.QtWidgets import QPushButton
-from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import QSize
+from PyQt6.QtWidgets import QPushButton
+from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import QSize
 
 class UpPushButton(QPushButton):
     def __init__(self, text):

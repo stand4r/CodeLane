@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
@@ -380,9 +380,110 @@ def test_ai_panel_has_model_and_scope_pickers():
     _APP.processEvents()
     assert panel.model_btn.text()
     assert panel.scope_btn.text() in panel_module.SCOPE_LABELS.values()
-    scope_items = [a.text() for a in panel._scope_menu.actions()]
-    assert len(scope_items) == 3
+    scope_items = [a for a in panel._scope_menu.actions() if a.data() in panel_module.SCOPE_LABELS]
+    assert len(scope_items) == 4
+    assert {a.data() for a in scope_items} == set(panel_module.SCOPE_LABELS)
+    assert any(a.text() == "Прикреплять выделение / строку"
+               for a in panel._scope_menu.actions())
     assert any(a.text() for a in panel._model_menu.actions())
+    panel.resize(190, 620)
+    panel.show()
+    _APP.processEvents()
+    assert panel.scope_btn.text() == "Конт."
+    assert panel.model_btn.text() == "ИИ"
+    controls = [panel.scope_btn, panel.model_btn, panel.send_btn]
+    for control in controls:
+        point = control.mapTo(panel.composer, QtCore.QPoint(0, 0))
+        assert point.x() >= 0
+        assert point.x() + control.width() <= panel.composer.width()
+    for index, first in enumerate(controls):
+        for second in controls[index + 1:]:
+            first_rect = QtCore.QRect(first.mapTo(panel.composer, QtCore.QPoint(0, 0)),
+                                      first.size())
+            second_rect = QtCore.QRect(second.mapTo(panel.composer, QtCore.QPoint(0, 0)),
+                                       second.size())
+            assert not first_rect.intersects(second_rect)
+    panel.send_btn.hide()
+    panel.stop_btn.show()
+    panel._fit_composer_buttons()
+    assert panel.stop_btn.isVisible()
+    assert not panel.send_btn.isVisible()
+    panel._restore_composer_after_request()
+    assert panel.send_btn.isVisible()
+    assert not panel.stop_btn.isVisible()
+
+
+def test_open_files_context_includes_unsaved_editor_buffers():
+    from types import SimpleNamespace
+    from widgets.AIAgentPanel import AIAgentPanel
+
+    class _Editor:
+        file_path = "src/live.py"
+
+        def get_code(self):
+            return "value = 'unsaved'\n"
+
+    class _Group:
+        def count(self):
+            return 1
+
+        def widget(self, index):
+            return _Editor()
+
+    panel = AIAgentPanel(None)
+    try:
+        panel.main_window = SimpleNamespace(editor_groups=lambda: [_Group()])
+        context = panel._collect_open_files_context()
+        assert "src/live.py" in context
+        assert "unsaved" in context
+    finally:
+        panel.deleteLater()
+
+
+def test_agent_edit_updates_an_open_editor_buffer_and_keeps_it_dirty():
+    from types import SimpleNamespace
+    from widgets.AIAgentPanel import AIAgentPanel
+
+    class _Editor:
+        file_path = "app.py"
+
+        def __init__(self):
+            self.editor = QtWidgets.QPlainTextEdit()
+            self.editor.setPlainText("value = 1\n")
+
+        def get_code(self):
+            return self.editor.toPlainText()
+
+    editor = _Editor()
+
+    class _Group:
+        def count(self):
+            return 1
+
+        def widget(self, index):
+            return editor
+
+    class _Window:
+        def editor_groups(self):
+            return [_Group()]
+
+        def save_current_session(self):
+            pass
+
+    panel = AIAgentPanel(None)
+    try:
+        panel.main_window = _Window()
+        event, result = threading.Event(), {}
+        panel._on_ui_tool_requested("edit_file", {
+            "path": "app.py", "expected": "value = 1\n",
+            "old_text": "value = 1", "new_text": "value = 2",
+        }, event, result)
+        assert event.is_set()
+        assert not result.get("error"), result
+        assert editor.get_code() == "value = 2\n"
+        assert editor.editor.document().isModified()
+    finally:
+        panel.deleteLater()
 
 
 def test_deepseek_models_are_current():
@@ -884,7 +985,7 @@ def test_ui_scale_stylesheet_math():
 
 def test_ui_scale_applies_and_restores():
     from app import ui_scale
-    from PyQt5 import QtGui
+    from PyQt6 import QtGui
     app = _APP
     base_point = app.font().pointSizeF()
     applied = ui_scale.apply_ui_scale(app, 150, stylesheet_provider=lambda: "QLabel { min-height: 20px; }")
@@ -925,8 +1026,8 @@ def test_panel_reasoning_chip_reflects_setting():
         sm.settings["ai_reasoning_effort"] = previous
 
 
-def test_chat_session_is_persisted_and_cleared():
-    """A conversation survives a restart per project; /clear removes it."""
+def test_chat_sessions_are_persisted_and_new_chat_keeps_previous_history():
+    """Starting a new chat keeps older project sessions available."""
     import tempfile
     from pathlib import Path as _Path
     from services.ai_service import AIMessage
@@ -945,13 +1046,23 @@ def test_chat_session_is_persisted_and_cleared():
         panel.main_window = _Window()
         panel._history = [AIMessage("user", "привет"), AIMessage("assistant", "ответ")]
         panel.save_chat_session()
-        saved = project / ".pyscribe" / "ai_chat.json"
+        saved = project / ".codelane" / "ai_chat.json"
         assert saved.is_file(), "session file must be written"
         panel._history = []
         assert panel.load_chat_session() == 2
         assert [m.role for m in panel._history] == ["user", "assistant"]
         panel.clear_conversation()
-        assert not saved.exists(), "/clear must delete the saved session"
+        payload = __import__("json").loads(saved.read_text(encoding="utf-8"))
+        assert payload["version"] == 2
+        assert len(payload["sessions"]) == 2
+        active = next(item for item in payload["sessions"]
+                      if item["id"] == payload["active_session_id"])
+        previous = next(item for item in payload["sessions"]
+                        if item["id"] != payload["active_session_id"])
+        assert active["messages"] == []
+        assert len(previous["messages"]) == 2
+        assert panel.switch_chat_session(previous["id"])
+        assert [message.content for message in panel._history] == ["привет", "ответ"]
     finally:
         panel.deleteLater()
 
@@ -967,11 +1078,11 @@ def test_agent_stats_footer_updates_and_resets():
         panel._request_started = _time.monotonic() - 1.0
         panel._record_session_stats({"prompt_tokens": 100, "completion_tokens": 50})
         text = panel.stats_label.text()
-        assert "50 tok" in text, text
+        assert "Токены 150" in text and "выход 50" in text, text
         assert "3 шагов" in text, text
         assert not panel.stats_label.isHidden()
         panel._record_session_stats({"prompt_tokens": 10, "completion_tokens": 10})
-        assert "60 tok" in panel.stats_label.text(), panel.stats_label.text()
+        assert "Токены 170" in panel.stats_label.text(), panel.stats_label.text()
         panel._reset_session_stats()
         assert panel.stats_label.isHidden()
     finally:

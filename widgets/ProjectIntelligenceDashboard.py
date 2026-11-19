@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from design.icons import line_icon, set_line_icon
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from core.logging_config import get_logger
 from core.project_intelligence import ProjectAnalysis, ProjectIntelligenceEngine, FileInfo, Issue
@@ -21,9 +21,9 @@ logger = get_logger("intelligence")
 def _ui_font(point_size: int = 9, weight=None, bold=False):
     """Neutral UI typography for analysis labels, metrics and graph painters."""
     font = QtGui.QFont("Segoe UI", point_size)
-    font.setStyleStrategy(QtGui.QFont.PreferAntialias)
+    font.setStyleStrategy(QtGui.QFont.StyleStrategy.PreferAntialias)
     if bold:
-        font.setWeight(QtGui.QFont.DemiBold)
+        font.setWeight(QtGui.QFont.Weight.DemiBold)
     elif weight is not None:
         font.setWeight(weight)
     return font
@@ -120,6 +120,8 @@ class AnalysisWorker(QtCore.QObject):
             pass
 
     def _progress(self, current, total, name):
+        if QtCore.QThread.currentThread().isInterruptionRequested():
+            raise InterruptedError("Project analysis cancelled")
         try:
             self.progress.emit(current, total, name)
         except RuntimeError:
@@ -147,7 +149,7 @@ class AnalysisNavigation(QtWidgets.QWidget):
             button.setObjectName("analysisPageButton")
             button.setText(tabs.tabText(index))
             button.setCheckable(True)
-            button.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda checked=False, i=index: tabs.setCurrentIndex(i))
             group.addButton(button)
             self.buttons.append(button)
@@ -188,7 +190,7 @@ class AnalysisNavigation(QtWidgets.QWidget):
 
     def changeEvent(self, event):
         super().changeEvent(event)
-        if event.type() in (QtCore.QEvent.StyleChange, QtCore.QEvent.FontChange):
+        if event.type() in (QtCore.QEvent.Type.StyleChange, QtCore.QEvent.Type.FontChange):
             self._columns = 0
             QtCore.QTimer.singleShot(0, self._arrange)
 
@@ -233,9 +235,9 @@ class GraphNodeItem(QtWidgets.QGraphicsObject):
         self.w = 190
         self.h = 64
         self.setAcceptHoverEvents(True)
-        self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
-        self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
-        self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         self.setZValue(2)
         self._hover = False
 
@@ -244,7 +246,7 @@ class GraphNodeItem(QtWidgets.QGraphicsObject):
 
     def paint(self, painter, option, widget=None):
         p = painter
-        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         base = self.scene().views()[0] if self.scene() and self.scene().views() else None
         palette = base.palette() if base is not None else QtWidgets.QApplication.palette()
         bg = palette.alternateBase().color()
@@ -258,10 +260,10 @@ class GraphNodeItem(QtWidgets.QGraphicsObject):
 
         kind = self.node.kind.upper()
         p.setPen(QtGui.QColor(border))
-        p.setFont(_ui_font(8, weight=QtGui.QFont.Medium))
+        p.setFont(_ui_font(8, weight=QtGui.QFont.Weight.Medium))
         p.drawText(12, 17, kind)
         p.setPen(QtGui.QColor(fg))
-        p.setFont(_ui_font(10, weight=QtGui.QFont.Medium))
+        p.setFont(_ui_font(10, weight=QtGui.QFont.Weight.Medium))
         name = self.node.name
         if len(name) > 24:
             name = name[:22] + '…'
@@ -272,7 +274,7 @@ class GraphNodeItem(QtWidgets.QGraphicsObject):
 
         if self.node.kind in {'module', 'class', 'function', 'method'}:
             p.setPen(QtGui.QColor(Palette.TEXT_MUTED))
-            p.setBrush(QtCore.Qt.NoBrush)
+            p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(self.w - 26, 20, 14, 14, 4, 4)
             p.drawLine(self.w - 22, 27, self.w - 16, 27)
             if not self.expanded:
@@ -289,7 +291,7 @@ class GraphNodeItem(QtWidgets.QGraphicsObject):
         super().hoverLeaveEvent(event)
 
     def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton and self.node.kind in {'module', 'class', 'function', 'method'}:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton and self.node.kind in {'module', 'class', 'function', 'method'}:
             if QtCore.QRectF(self.w - 34, 10, 30, 44).contains(event.pos()):
                 self.expanded = not self.expanded
                 self.toggled.emit(self.node.id, self.expanded)
@@ -298,7 +300,7 @@ class GraphNodeItem(QtWidgets.QGraphicsObject):
         super().mousePressEvent(event)
 
     def itemChange(self, change, value):
-        if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
+        if change == QtWidgets.QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             self.moved.emit(self.node.id, value)
         return super().itemChange(change, value)
 
@@ -314,13 +316,13 @@ class ProjectGraphView(QtWidgets.QGraphicsView):
         super().__init__(parent)
         self.setObjectName('projectGraphView')
         self.setScene(QtWidgets.QGraphicsScene(self))
-        self.setRenderHint(QtGui.QPainter.Antialiasing)
-        self.setRenderHint(QtGui.QPainter.TextAntialiasing)
-        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        self.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setBackgroundBrush(QtGui.QColor('#14181D'))
-        self.setDragMode(QtWidgets.QGraphicsView.ScrollHandDrag)
-        self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorUnderMouse)
-        self.setResizeAnchor(QtWidgets.QGraphicsView.AnchorViewCenter)
+        self.setDragMode(QtWidgets.QGraphicsView.DragMode.ScrollHandDrag)
+        self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self._nodes = {}
         self._node_data = []
         self._edge_data = []
@@ -446,7 +448,7 @@ class ProjectGraphView(QtWidgets.QGraphicsView):
         rect = self.scene().itemsBoundingRect().adjusted(-100, -100, 100, 100)
         self.scene().setSceneRect(rect)
         if not self._did_initial_fit:
-            self.fitInView(rect, QtCore.Qt.KeepAspectRatio)
+            self.fitInView(rect, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
             self._did_initial_fit = True
 
     def _node_moved(self, node_id, position):
@@ -488,10 +490,10 @@ class ProjectGraphView(QtWidgets.QGraphicsView):
     def zoom_out(self): self.scale(0.847, 0.847)
     def reset_zoom(self):
         rect = self.scene().sceneRect()
-        if rect.isValid(): self.fitInView(rect, QtCore.Qt.KeepAspectRatio)
+        if rect.isValid(): self.fitInView(rect, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
 
     def wheelEvent(self, event):
-        if event.modifiers() & QtCore.Qt.ControlModifier:
+        if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
             self.scale(1.15 if event.angleDelta().y() > 0 else 0.87, 1.15 if event.angleDelta().y() > 0 else 0.87)
             event.accept(); return
         super().wheelEvent(event)
@@ -563,14 +565,14 @@ class ProjectGraphEditorWidget(QtWidgets.QWidget):
         grid.addWidget(QtWidgets.QLabel('Файл'), 0, 2)
         self.file_combo = QtWidgets.QComboBox()
         self.file_combo.setMinimumWidth(220)
-        self.file_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.file_combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         self.file_combo.currentIndexChanged.connect(self._filters_changed)
         grid.addWidget(self.file_combo, 0, 3, 1, 2)
 
         grid.addWidget(QtWidgets.QLabel('Функция'), 0, 5)
         self.function_combo = QtWidgets.QComboBox()
         self.function_combo.setMinimumWidth(220)
-        self.function_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.function_combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         self.function_combo.currentIndexChanged.connect(self._filters_changed)
         grid.addWidget(self.function_combo, 0, 6, 1, 2)
 
@@ -736,8 +738,8 @@ class QualityBadgeWidget(QtWidgets.QWidget):
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing)
 
         size = min(self.width(), self.height()) - 8
         rect = QtCore.QRectF(4, 4, size, size)
@@ -745,12 +747,12 @@ class QualityBadgeWidget(QtWidgets.QWidget):
         # Background circular track
         track_pen = QtGui.QPen(QtGui.QColor(Palette.TRACK), 3.5)
         painter.setPen(track_pen)
-        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         painter.drawEllipse(rect)
 
         # Active circular progress arc
         if self._score > 0:
-            arc_pen = QtGui.QPen(self._color, 3.5, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap)
+            arc_pen = QtGui.QPen(self._color, 3.5, QtCore.Qt.PenStyle.SolidLine, QtCore.Qt.PenCapStyle.RoundCap)
             painter.setPen(arc_pen)
             start_angle = 90 * 16  # 12 o'clock
             span_angle = -int((min(100.0, max(0.0, self._score)) / 100.0) * 360 * 16)
@@ -759,25 +761,25 @@ class QualityBadgeWidget(QtWidgets.QWidget):
         # Exact numeric metric
         if self._score > 0:
             val_font = _ui_font(14, bold=True)
-            val_font.setStyleStrategy(QtGui.QFont.PreferAntialias)
+            val_font.setStyleStrategy(QtGui.QFont.StyleStrategy.PreferAntialias)
             painter.setFont(val_font)
             painter.setPen(QtGui.QColor('#FFFFFF'))
             score_text = f"{int(round(self._score))}"
             val_rect = QtCore.QRectF(rect.x(), rect.y() + 6, rect.width(), rect.height() * 0.45)
-            painter.drawText(val_rect, QtCore.Qt.AlignCenter, score_text)
+            painter.drawText(val_rect, QtCore.Qt.AlignmentFlag.AlignCenter, score_text)
 
-            sub_font = _ui_font(8, weight=QtGui.QFont.DemiBold)
-            sub_font.setStyleStrategy(QtGui.QFont.PreferAntialias)
+            sub_font = _ui_font(8, weight=QtGui.QFont.Weight.DemiBold)
+            sub_font.setStyleStrategy(QtGui.QFont.StyleStrategy.PreferAntialias)
             painter.setFont(sub_font)
             painter.setPen(self._color)
             sub_rect = QtCore.QRectF(rect.x(), rect.y() + rect.height() * 0.50, rect.width(), rect.height() * 0.35)
-            painter.drawText(sub_rect, QtCore.Qt.AlignCenter, "%")
+            painter.drawText(sub_rect, QtCore.Qt.AlignmentFlag.AlignCenter, "%")
         else:
             font = _ui_font(16, bold=True)
-            font.setStyleStrategy(QtGui.QFont.PreferAntialias)
+            font.setStyleStrategy(QtGui.QFont.StyleStrategy.PreferAntialias)
             painter.setFont(font)
             painter.setPen(QtGui.QColor('#8B949E'))
-            painter.drawText(rect, QtCore.Qt.AlignCenter, "—")
+            painter.drawText(rect, QtCore.Qt.AlignmentFlag.AlignCenter, "—")
 
 
 class ProjectIntelligenceDashboard(QtWidgets.QWidget):
@@ -843,8 +845,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         # Status lines are informative, not width-defining: without this the
         # long "Файлов: N · M мс" text forced the panel to ~800 px.
         for label in (title, self.status):
-            label.setSizePolicy(QtWidgets.QSizePolicy.Ignored,
-                                QtWidgets.QSizePolicy.Preferred)
+            label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,
+                                QtWidgets.QSizePolicy.Policy.Preferred)
             label.setMinimumWidth(0)
 
         self.refresh_button = QtWidgets.QToolButton()
@@ -885,8 +887,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self._build_overview_tab()
         self.overview_scroll = QtWidgets.QScrollArea()
         self.overview_scroll.setWidgetResizable(True)
-        self.overview_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.overview_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.overview_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.overview_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.overview_scroll.setWidget(self.overview_tab)
         self.tabs.addTab(self.overview_scroll, 'Сводка')
 
@@ -936,8 +938,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         """
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setWidget(page)
         return scroll
 
@@ -1125,7 +1127,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.tips_tree = QtWidgets.QTreeWidget()
         self.tips_tree.setHeaderLabels(['Замечание', 'Приоритет', 'Файл', 'Строка', 'Рекомендация'])
         self.tips_tree.setAlternatingRowColors(True)
-        self.tips_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.tips_tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.tips_tree.customContextMenuRequested.connect(self._on_tips_context_menu)
         self.tips_tree.itemDoubleClicked.connect(self._open_tip_item)
         layout.addWidget(self.tips_tree, 1)
@@ -1146,7 +1148,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             file_rel = item.text(2)
             line = item.text(3)
             action = item.text(4)
-            full_path = item.data(0, QtCore.Qt.UserRole) or file_rel
+            full_path = item.data(0, QtCore.Qt.ItemDataRole.UserRole) or file_rel
             explanation = item.toolTip(0) or action
             items.append({
                 "title": title,
@@ -1281,7 +1283,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         act_save = menu.addAction(line_icon("save"), "Сохранить список в файл…")
         act_save.triggered.connect(self._save_tips_to_file)
 
-        menu.exec_(self.tips_tree.viewport().mapToGlobal(pos))
+        menu.exec(self.tips_tree.viewport().mapToGlobal(pos))
 
     def _copy_single_tip(self, item):
         title = item.text(0)
@@ -1327,11 +1329,11 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         item = getattr(self, "tips_tree", None) and self.tips_tree.currentItem()
         if item is None:
             from widgets.Dialog import CustomDialog
-            CustomDialog("Выберите рекомендацию на вкладке «Советы».").exec_()
+            CustomDialog("Выберите рекомендацию на вкладке «Советы».").exec()
             return
         title = item.text(0)
-        file_path = item.data(0, QtCore.Qt.UserRole) or ""
-        line = item.data(1, QtCore.Qt.UserRole) or 0
+        file_path = item.data(0, QtCore.Qt.ItemDataRole.UserRole) or ""
+        line = item.data(1, QtCore.Qt.ItemDataRole.UserRole) or 0
         details = item.toolTip(0) or ""
         if self.main_window and hasattr(self.main_window, "todo_panel") and self.main_window.todo_panel:
             self.main_window.todo_panel.task_store.add(
@@ -1368,7 +1370,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.adversary_file_label.setStyleSheet(
             f'color: {Palette.TEXT}; font-size: 12px;')
         self.adversary_file_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+            QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         row.addWidget(self.adversary_file_label, 1)
         self.adversary_btn = QtWidgets.QPushButton('Испытать')
         self.adversary_btn.setStyleSheet(primary_button_qss("5px 12px", 6))
@@ -1418,7 +1420,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.adversary_tree.setHeaderLabels(['Функция (вход)', 'Результат'])
         self.adversary_tree.setColumnWidth(0, 120)
         self.adversary_tree.header().setStretchLastSection(True)
-        self.adversary_tree.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.adversary_tree.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.adversary_tree.setWordWrap(True)
         self.adversary_tree.itemDoubleClicked.connect(self._open_adversary_item)
         layout.addWidget(self.adversary_tree, 1)
@@ -1491,13 +1493,13 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         if self._adversary_thread is not None and self._adversary_thread.isRunning():
             return
         if not self._sync_adversary_file():
-            CustomDialog("Сначала откройте файл, который нужно испытать.").exec_()
+            CustomDialog("Сначала откройте файл, который нужно испытать.").exec()
             return
         path = Path(self._adversary_path)
         if path.suffix.lower() != ".py":
             CustomDialog(
                 f"«Адвокат дьявола» работает с Python-файлами, "
-                f"а открыт «{path.name}».").exec_()
+                f"а открыт «{path.name}».").exec()
             return
         self.adversary_tree.clear()
         self._adversary_report = None
@@ -1551,12 +1553,12 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             ])
             item.setToolTip(0, f"{finding.function}({finding.args_literal})")
             item.setToolTip(1, (finding.traceback or finding.summary)[:1500])
-            item.setData(0, QtCore.Qt.UserRole, finding)
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, finding)
             self.adversary_tree.addTopLevelItem(item)
         self._set_adversary_buttons(True)
 
     def _open_adversary_item(self, item, _column):
-        finding = item.data(0, QtCore.Qt.UserRole) if item else None
+        finding = item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item else None
         if finding is None or not self._adversary_path:
             return
         line = finding.line or 1
@@ -1578,7 +1580,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             Path(path).write_text(content, encoding="utf-8")
             self.adversary_summary.setText(f'Тесты сохранены: {Path(path).name}')
         except Exception as exc:  # noqa: BLE001
-            CustomDialog(f"Не удалось сохранить тесты: {exc}").exec_()
+            CustomDialog(f"Не удалось сохранить тесты: {exc}").exec()
 
     def _export_adversary(self):
         if not self._adversary_report:
@@ -1593,14 +1595,14 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             Path(path).write_text(report.to_markdown(), encoding="utf-8")
             self.adversary_summary.setText(f'Отчёт сохранён: {Path(path).name}')
         except Exception as exc:  # noqa: BLE001
-            CustomDialog(f"Не удалось сохранить отчёт: {exc}").exec_()
+            CustomDialog(f"Не удалось сохранить отчёт: {exc}").exec()
 
     def _ask_ai_about_adversary(self):
         """Send the selected finding to the AI panel for an explanation."""
         if not self._adversary_report:
             return
         item = self.adversary_tree.currentItem()
-        finding = item.data(0, QtCore.Qt.UserRole) if item else None
+        finding = item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item else None
         if finding is None:
             groups = self._adversary_report.groups()
             finding = groups[0][0] if groups else None
@@ -1634,7 +1636,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
 
         row = QtWidgets.QHBoxLayout()
         self.impact_combo = QtWidgets.QComboBox()
-        self.impact_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.impact_combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         row.addWidget(self.impact_combo, 1)
         self.impact_btn = QtWidgets.QPushButton('Проверить влияние')
         self.impact_btn.setStyleSheet(primary_button_qss("5px 12px", 6))
@@ -1672,41 +1674,6 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             if p_root and Path(str(p_root)).is_dir():
                 return str(Path(str(p_root)).resolve())
 
-        # 1b. Project manager current project
-        if hasattr(win, 'project_manager') and getattr(win.project_manager, 'current_project', None):
-            cp = win.project_manager.current_project
-            p_root = cp.get('root_path') if isinstance(cp, dict) else getattr(cp, 'root_path', None)
-            if p_root and Path(str(p_root)).is_dir():
-                return str(Path(str(p_root)).resolve())
-
-        # 2. Window workspace path
-        if hasattr(win, 'workspace_path') and win.workspace_path:
-            w_root = str(win.workspace_path)
-            if Path(w_root).is_dir():
-                return str(Path(w_root).resolve())
-
-        # 3. Current active file's folder
-        if hasattr(win, 'get_current_editor'):
-            ed = win.get_current_editor()
-            if ed and getattr(ed, 'file_path', None):
-                f_dir = Path(ed.file_path).parent
-                if f_dir.is_dir():
-                    return str(f_dir.resolve())
-
-        # 4. File explorer root
-        if hasattr(win, 'file_explorer') and win.file_explorer:
-            try:
-                rp = win.file_explorer.model.rootPath()
-                if rp and rp not in ('', 'C:/', 'C:\\') and Path(rp).is_dir():
-                    return str(Path(rp).resolve())
-            except Exception:
-                pass
-
-        # 5. Fallback to process cwd
-        cwd = Path.cwd()
-        if cwd.is_dir():
-            return str(cwd.resolve())
-
         return None
 
     def choose_and_analyze_folder(self):
@@ -1732,6 +1699,9 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self._clear_views()
         if not root:
             self.status.setText('Проект не открыт')
+            self._refresh_pending = False
+            self.loading_overlay.stop()
+            self.progress.hide()
         elif not self.enabled_analyzers:
             self.status.setText('Анализ отключён')
             # Nothing will finish the animation if no analysis starts.
@@ -1773,7 +1743,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
                 self.set_project(discovered)
                 return
             else:
-                self.choose_and_analyze_folder()
+                self.set_project(None)
                 return
 
         if self._thread is not None and self._thread.isRunning():
@@ -1849,6 +1819,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         Without this the analysis/adversary workers could be deleted while
         their threads were still running, which ends in a hard crash.
         """
+        self._refresh_pending = False
         for attr in ("_thread", "_adversary_thread"):
             thread = getattr(self, attr, None)
             if thread is None:
@@ -1857,7 +1828,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
                 if thread.isRunning():
                     thread.requestInterruption()
                     thread.quit()
-                    thread.wait(3000)
+                    thread.wait()
             except RuntimeError:
                 pass
             setattr(self, attr, None)
@@ -2020,8 +1991,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
                 str(line),
                 action
             ])
-            item.setData(0, QtCore.Qt.UserRole, file_path)
-            item.setData(1, QtCore.Qt.UserRole, line)
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, file_path)
+            item.setData(1, QtCore.Qt.ItemDataRole.UserRole, line)
             item.setToolTip(0, explanation)
             item.setToolTip(4, explanation)
 
@@ -2053,14 +2024,14 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             for fpath, finfo in sorted(a.files.items(), key=lambda x: self._relative(x[0])):
                 rel_path = self._relative(fpath)
                 file_item = QtWidgets.QTreeWidgetItem([rel_path, f"{finfo.language}", rel_path, f"{finfo.lines} стр."])
-                file_item.setData(0, QtCore.Qt.UserRole, fpath)
-                file_item.setData(1, QtCore.Qt.UserRole, 1)
+                file_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, fpath)
+                file_item.setData(1, QtCore.Qt.ItemDataRole.UserRole, 1)
                 count = len(symbols_by_file.get(fpath, []))
                 if count:
                     # A disabled item still shows the expander, and gives the
                     # user a placeholder until the children are built.
                     file_item.setChildIndicatorPolicy(
-                        QtWidgets.QTreeWidgetItem.ShowIndicator)
+                        QtWidgets.QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
                 top_items.append(file_item)
             self.structure_tree.addTopLevelItems(top_items)
         finally:
@@ -2070,7 +2041,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         """Build the symbol children of one file node on demand."""
         if file_item is None:
             return
-        fpath = file_item.data(0, QtCore.Qt.UserRole)
+        fpath = file_item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if not fpath or fpath in self._structure_populated:
             return
         self._structure_populated.add(fpath)
@@ -2080,8 +2051,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         children = []
         for s in symbols[:max_children]:
             sym_item = QtWidgets.QTreeWidgetItem([s.name, s.kind, rel_path, str(s.line)])
-            sym_item.setData(0, QtCore.Qt.UserRole, s.file)
-            sym_item.setData(1, QtCore.Qt.UserRole, s.line)
+            sym_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, s.file)
+            sym_item.setData(1, QtCore.Qt.ItemDataRole.UserRole, s.line)
             children.append(sym_item)
         if symbols:
             file_item.addChildren(children)
@@ -2130,8 +2101,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
 
         for info in impacted:
             item = QtWidgets.QTreeWidgetItem([info.module, self._relative(info.path), f"Сложность: {info.complexity}"])
-            item.setData(0, QtCore.Qt.UserRole, info.path)
-            item.setData(1, QtCore.Qt.UserRole, 1)
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, info.path)
+            item.setData(1, QtCore.Qt.ItemDataRole.UserRole, 1)
             self.impact_tree.addTopLevelItem(item)
 
     def _open_graph_editor(self):
@@ -2163,19 +2134,19 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         return Path(path).name
 
     def _open_tip_item(self, item, _column):
-        path = item.data(0, QtCore.Qt.UserRole)
-        line = item.data(1, QtCore.Qt.UserRole)
+        path = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        line = item.data(1, QtCore.Qt.ItemDataRole.UserRole)
         if path:
             self.open_file_requested.emit(str(path), int(line or 1))
 
     def _open_symbol_item(self, item, _column):
-        path = item.data(0, QtCore.Qt.UserRole)
-        line = item.data(1, QtCore.Qt.UserRole)
+        path = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        line = item.data(1, QtCore.Qt.ItemDataRole.UserRole)
         if path:
             self.open_file_requested.emit(str(path), int(line or 1))
 
     def _open_impact_item(self, item, _column):
-        path = item.data(0, QtCore.Qt.UserRole)
+        path = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if path:
             self.open_file_requested.emit(str(path), 1)
 

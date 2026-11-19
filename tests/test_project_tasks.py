@@ -18,7 +18,7 @@ def test_empty_store_has_no_file():
         store = TaskStore(td)
         assert store.tasks == []
         assert store.path.name == "tasks.json"
-        assert store.path.parent.name == ".pyscribe"
+        assert store.path.parent.name == ".codelane"
         assert not store.path.exists()
         assert store.stats()["total"] == 0
 
@@ -86,7 +86,7 @@ def test_sorting_puts_active_high_priority_first():
 
 def test_broken_file_is_reported_not_raised():
     with tempfile.TemporaryDirectory() as td:
-        folder = Path(td) / ".pyscribe"
+        folder = Path(td) / ".codelane"
         folder.mkdir()
         (folder / "tasks.json").write_text("{ broken", encoding="utf-8")
         store = TaskStore(td)
@@ -102,6 +102,7 @@ def test_unknown_values_are_normalized():
             '{"tasks": [{"title": "x", "status": "bogus", "priority": "nonexistent_priority"}]}',
             encoding="utf-8")
         store = TaskStore(td)
+        assert store.path.is_file()
         task = store.tasks[0]
         assert task.status in STATUSES
         assert task.status == "todo"

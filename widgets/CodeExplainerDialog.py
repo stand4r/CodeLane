@@ -1,5 +1,5 @@
-"""PyScribe widgets/CodeExplainerDialog.py: Professional Code Intelligence & Complexity Inspector."""
-from PyQt5 import QtCore, QtGui, QtWidgets
+"""CodeLane widgets/CodeExplainerDialog.py: Professional Code Intelligence & Complexity Inspector."""
+from PyQt6 import QtCore, QtGui, QtWidgets
 from typing import Dict, Any
 
 
@@ -10,7 +10,7 @@ class CodeExplainerDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.data = data or {}
         self.snippet = snippet or ""
-        self.setWindowTitle("PyScribe — Интеллектуальный анализ кода")
+        self.setWindowTitle("CodeLane — Интеллектуальный анализ кода")
         self.resize(760, 580)
         self.setMinimumSize(620, 460)
         self._build_ui()

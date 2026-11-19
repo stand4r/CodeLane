@@ -1,4 +1,4 @@
-"""Code Intelligence & Architecture Audit service for PyScribe IDE."""
+"""Code Intelligence & Architecture Audit service for CodeLane IDE."""
 import ast
 import re
 from pathlib import Path
@@ -348,7 +348,7 @@ class CodeIntelligenceService:
 
         guide = f"""# Архитектурный паспорт и технический отчёт проекта: {project_name}
 
-> **Сформировано автоматически в PyScribe IDE для технической документации, Code Review и системного анализа.**
+> **Сформировано автоматически в CodeLane IDE для технической документации, Code Review и системного анализа.**
 > Индекс здоровья кодовой базы: **{grade_info['label']} (Класс {grade_info['letter']} · {grade_info['grade']}/5) · {health_score}/100 баллов**
 
 ---
@@ -428,7 +428,7 @@ class CodeIntelligenceService:
 - **AST (Abstract Syntax Tree)** — древовидное представление синтаксической структуры исходного кода, применяемое компиляторами и статическими анализаторами.
 
 ---
-*Сформировано в PyScribe IDE · Project Intelligence & Quality Assurance*
+*Сформировано в CodeLane IDE · Project Intelligence & Quality Assurance*
 """
         return guide
 

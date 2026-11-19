@@ -1,6 +1,6 @@
 """Editor group with compact VS Code-like tabs and cross-group drag/drop."""
 from uuid import uuid4
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class EditorTabBar(QtWidgets.QTabBar):
@@ -12,13 +12,13 @@ class EditorTabBar(QtWidgets.QTabBar):
         self.setTabsClosable(True)
         self.setExpanding(False)
         self.setDrawBase(False)
-        self.setElideMode(QtCore.Qt.ElideRight)
+        self.setElideMode(QtCore.Qt.TextElideMode.ElideRight)
         self.setUsesScrollButtons(True)
         self._press_pos = None
         self._press_index = -1
         self.setAcceptDrops(True)
         self.setIconSize(QtCore.QSize(16, 16))
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         # Плавное подсвечивание таба под курсором.
         self._hover_index = -1
         self._hover_intensity = 0.0
@@ -32,7 +32,7 @@ class EditorTabBar(QtWidgets.QTabBar):
             self._hover_index = index
             self._animate_hover()
         if (self._press_pos is not None and self._press_index >= 0 and
-                event.buttons() & QtCore.Qt.LeftButton and
+                event.buttons() & QtCore.Qt.MouseButton.LeftButton and
                 (event.pos() - self._press_pos).manhattanLength() >= QtWidgets.QApplication.startDragDistance()):
             group = self.parentWidget()
             if isinstance(group, TabWidget):
@@ -42,7 +42,7 @@ class EditorTabBar(QtWidgets.QTabBar):
                 mime.setData('application/x-pyscribe-editor-tab', token.encode('ascii'))
                 drag = QtGui.QDrag(self)
                 drag.setMimeData(mime)
-                drag.exec_(QtCore.Qt.MoveAction)
+                drag.exec(QtCore.Qt.DropAction.MoveAction)
                 self._press_pos = None
                 self._press_index = -1
                 return
@@ -88,10 +88,10 @@ class EditorTabBar(QtWidgets.QTabBar):
         if rect.isNull():
             return
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         color = QtGui.QColor("#00F2FE")
         color.setAlphaF(0.10 * self._hover_intensity)
-        painter.setPen(QtCore.Qt.NoPen)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(color)
         painter.drawRoundedRect(rect.adjusted(1, 2, -1, -2), 6, 6)
         painter.end()
@@ -103,7 +103,7 @@ class EditorTabBar(QtWidgets.QTabBar):
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat('application/x-pyscribe-editor-tab'):
-            event.setDropAction(QtCore.Qt.MoveAction)
+            event.setDropAction(QtCore.Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -117,8 +117,8 @@ class EditorTabBar(QtWidgets.QTabBar):
         target = self.parentWidget()
         if source_info and isinstance(target, TabWidget):
             source, index = source_info
-            source.transfer_tab_to(index, target, self.tabAt(event.pos()))
-            event.setDropAction(QtCore.Qt.MoveAction)
+            source.transfer_tab_to(index, target, self.tabAt(event.position().toPoint()))
+            event.setDropAction(QtCore.Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -126,6 +126,7 @@ class EditorTabBar(QtWidgets.QTabBar):
 
 class TabWidget(QtWidgets.QTabWidget):
     groupActivated = QtCore.pyqtSignal(object)
+    tabMovedOut = QtCore.pyqtSignal()
 
     def __init__(self, parent=None, settings=None):
         super().__init__(parent)
@@ -137,7 +138,6 @@ class TabWidget(QtWidgets.QTabWidget):
         self.setTabBar(EditorTabBar(self))
         self.setObjectName("editorGroup")
 
-        self.currentChanged.connect(lambda _index: self.groupActivated.emit(self))
         self.tabBar().installEventFilter(self)
 
     # Compatibility attributes for older callers; toolbar actions were intentionally removed.
@@ -149,11 +149,8 @@ class TabWidget(QtWidgets.QTabWidget):
         if widget is None:
             return
         widget.installEventFilter(self)
-        widget.setAcceptDrops(True)
         for child in widget.findChildren(QtCore.QObject):
             child.installEventFilter(self)
-            if isinstance(child, QtWidgets.QWidget):
-                child.setAcceptDrops(True)
 
     def addTab(self, *args):
         index = super().addTab(*args)
@@ -167,14 +164,22 @@ class TabWidget(QtWidgets.QTabWidget):
             self._watch_page(args[1] if len(args) > 1 and isinstance(args[0], int) else args[0])
         return index
 
+    def removeTab(self, index):
+        page = self.widget(index)
+        if page is not None:
+            page.removeEventFilter(self)
+            for child in page.findChildren(QtCore.QObject):
+                child.removeEventFilter(self)
+        super().removeTab(index)
+
     def eventFilter(self, watched, event):
-        if event.type() in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.FocusIn):
+        if event.type() in (QtCore.QEvent.Type.MouseButtonPress, QtCore.QEvent.Type.FocusIn):
             self.groupActivated.emit(self)
-        if event.type() in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove):
+        if event.type() in (QtCore.QEvent.Type.DragEnter, QtCore.QEvent.Type.DragMove):
             if event.mimeData().hasFormat('application/x-pyscribe-editor-tab'):
                 event.acceptProposedAction()
                 return True
-        if event.type() == QtCore.QEvent.Drop and event.mimeData().hasFormat('application/x-pyscribe-editor-tab'):
+        if event.type() == QtCore.QEvent.Type.Drop and event.mimeData().hasFormat('application/x-pyscribe-editor-tab'):
             raw = bytes(event.mimeData().data('application/x-pyscribe-editor-tab')).decode('ascii', 'ignore')
             source_info = EditorTabBar._drag_sources.pop(raw, None)
             if source_info:
@@ -211,7 +216,7 @@ class TabWidget(QtWidgets.QTabWidget):
         else:
             event.ignore()
 
-    def transfer_tab_to(self, index, target, target_index=-1):
+    def transfer_tab_to(self, index, target, target_index=-1, *, notify=True):
         if not (0 <= index < self.count()):
             return
         if target is self:
@@ -229,6 +234,8 @@ class TabWidget(QtWidgets.QTabWidget):
         target.setTabToolTip(new_index, tip)
         target.setCurrentIndex(new_index)
         target.groupActivated.emit(target)
+        if notify:
+            self.tabMovedOut.emit()
 
     def _request_close(self, index):
         if 0 <= index < self.count():

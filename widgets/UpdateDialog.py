@@ -4,7 +4,7 @@ The network work runs on ``QThread`` objects; the dialog only renders state.
 Two paths are supported (see :mod:`services.updater`):
 
 * source checkout → ``git pull --ff-only`` then restart;
-* installed build → download ``PyScribe-Setup-*.exe``, verify SHA-256, start the
+* installed build → download ``CodeLane-Setup-*.exe``, verify SHA-256, start the
   installer with silent flags (it closes and restarts the running app).
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from core.app_version import current_version
 from services import updater
@@ -73,8 +73,8 @@ class UpdateDialog(QtWidgets.QDialog):
                  release: Optional[updater.ReleaseInfo] = None,
                  newer: Optional[bool] = None):
         super().__init__(parent)
-        self.setWindowTitle("Обновление PyScribe")
-        self.setWindowModality(QtCore.Qt.NonModal if auto else QtCore.Qt.WindowModal)
+        self.setWindowTitle("Обновление CodeLane")
+        self.setWindowModality(QtCore.Qt.WindowModality.NonModal if auto else QtCore.Qt.WindowModality.WindowModal)
         self.setMinimumWidth(580)
         self.setObjectName("updateDialog")
         self._auto = bool(auto)
@@ -225,7 +225,7 @@ class UpdateDialog(QtWidgets.QDialog):
             if skipped and _same_version(skipped, release.version):
                 self.close()
                 return
-            self._notify_window(f"Доступно обновление PyScribe v{release.version} — "
+            self._notify_window(f"Доступно обновление CodeLane v{release.version} — "
                                 "Справка → Проверить обновления")
             self.show()
 
@@ -316,7 +316,7 @@ class UpdateDialog(QtWidgets.QDialog):
             return
         self._set_busy(False)
         self.title_label.setText("Обновление загружено")
-        self._status("Перезапустите PyScribe, чтобы применить обновление.")
+        self._status("Перезапустите CodeLane, чтобы применить обновление.")
         self.action_btn.setText("Перезапустить")
         self.action_btn.setEnabled(True)
         try:
@@ -371,7 +371,7 @@ class UpdateDialog(QtWidgets.QDialog):
         self.progress.setVisible(False)
         self._set_busy(False)
         self.title_label.setText("Обновление скачано")
-        self._status("Файл проверен. Установить и перезапустить PyScribe?")
+        self._status("Файл проверен. Установить и перезапустить CodeLane?")
         self.action_btn.setText("Установить и перезапустить")
         self.action_btn.setEnabled(True)
         try:
@@ -399,11 +399,11 @@ class UpdateDialog(QtWidgets.QDialog):
             return
         answer = QtWidgets.QMessageBox.question(
             self, "Установка обновления",
-            "PyScribe будет закрыт, установщик обновит файлы и запустит "
+            "CodeLane будет закрыт, установщик обновит файлы и запустит "
             "приложение снова.\n\nПродолжить?",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.Yes)
-        if answer != QtWidgets.QMessageBox.Yes:
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.Yes)
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         self._save_work()
         try:
@@ -412,9 +412,9 @@ class UpdateDialog(QtWidgets.QDialog):
             self._status(f"Не удалось запустить установщик: {exc}", error=True)
             return
         # Do NOT quit here: the installer receives /CLOSEAPPLICATIONS and will
-        # close PyScribe itself, then /RESTARTAPPLICATIONS brings it back after
+        # close CodeLane itself, then /RESTARTAPPLICATIONS brings it back after
         # the files are replaced. Quitting first would leave nothing to restart.
-        self._status("Установщик запущен. PyScribe закроется и откроется снова.")
+        self._status("Установщик запущен. CodeLane закроется и откроется снова.")
         self.action_btn.setEnabled(False)
 
     def _restart(self):
@@ -438,7 +438,7 @@ class UpdateDialog(QtWidgets.QDialog):
             from utils.settings_manager import get_settings_manager
             manager = get_settings_manager()
             manager.settings["update_last_check"] = QtCore.QDateTime.currentDateTimeUtc() \
-                .toString(QtCore.Qt.ISODate)
+                .toString(QtCore.Qt.DateFormat.ISODate)
             manager.save_settings()
         except Exception:  # noqa: BLE001 - settings are best effort
             pass

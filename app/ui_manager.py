@@ -5,8 +5,8 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtWidgets import QLabel
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtWidgets import QLabel
 
 from app.top_bar import ExplorerHeader, WorkbenchTopBar
 from widgets.ActivityBar import ActivityBar
@@ -51,7 +51,7 @@ class UIManager:
         self.main_window.side_panel.setObjectName("sidePanel")
         self.main_window.side_panel.setMinimumWidth(260)
         self.main_window.side_panel.setMaximumWidth(620)
-        self.main_window.side_panel.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
+        self.main_window.side_panel.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Expanding)
         side_layout = QtWidgets.QVBoxLayout(self.main_window.side_panel)
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(0)
@@ -108,14 +108,15 @@ class UIManager:
         side_layout.addWidget(self.main_window.ai_panel)
 
     def _setup_splitters(self, root):
-        self.main_window.workspace_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.main_window.workspace_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.main_window.workspace_splitter.setChildrenCollapsible(False)
         self.main_window.workspace_splitter.setHandleWidth(1)
         self.main_window.workspace_splitter.setObjectName("workspaceSplitter")
         self.main_window.workspace_splitter.addWidget(self.main_window.side_panel)
+        self.main_window.workspace_splitter.setCollapsible(0, True)
 
-        self.main_window.editor_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        self.main_window.editor_area_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.main_window.editor_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.main_window.editor_area_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.main_window.editor_area_splitter.setChildrenCollapsible(False)
         self.main_window.editor_area_splitter.setHandleWidth(1)
 
@@ -154,7 +155,7 @@ class UIManager:
             button.setToolTip(tooltip)
             button.setAccessibleName(tooltip)
             button.setObjectName('explorerAction')
-            button.setCursor(QtCore.Qt.PointingHandCursor)
+            button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
             button.setAutoRaise(True)
             button.setFixedSize(24, 24)
             self.main_window.explorer_buttons[key] = button
@@ -170,10 +171,10 @@ class UIManager:
         section_label.setObjectName("explorerSectionTitle")
         section_label.setStyleSheet("background: transparent; border: none;")
         section_label.setMinimumWidth(0)
-        section_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        section_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
         hl.addWidget(section_label, 1)
         for button in self.main_window.explorer_buttons.values():
-            hl.addWidget(button, 0, QtCore.Qt.AlignVCenter)
+            hl.addWidget(button, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.main_window.explorer_section_title = section_label
         # The folder being shown is reported in the tooltip instead of a second
         # text line (that was the source of the duplicated title strip).
@@ -243,7 +244,7 @@ class UIManager:
         try:
             if not Path(file_path).exists():
                 return
-            action = QtWidgets.QAction(f"   {file_path}", self.main_window)
+            action = QtGui.QAction(f"   {file_path}", self.main_window)
             action.triggered.connect(partial(self.main_window.open_recent_file, file_path))
             menu.addAction(action)
         except Exception:

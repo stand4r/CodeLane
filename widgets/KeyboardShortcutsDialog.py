@@ -1,5 +1,5 @@
 """Keyboard shortcut reference for PyScribe."""
-from PyQt5 import QtWidgets, QtCore
+from PyQt6 import QtWidgets, QtCore
 
 
 class KeyboardShortcutsDialog(QtWidgets.QDialog):
@@ -37,7 +37,8 @@ class KeyboardShortcutsDialog(QtWidgets.QDialog):
         ("Редактор кода", [
             ("Увеличить шрифт", "Ctrl++"), ("Уменьшить шрифт", "Ctrl+-"),
             ("Сбросить масштаб", "Ctrl+0"), ("Комментарий строки", "Ctrl+/"),
-            ("Дублировать строку", "Ctrl+D"), ("Удалить строку", "Ctrl+Shift+K"),
+            ("Выделить следующее вхождение", "Ctrl+D"), ("Удалить строку", "Ctrl+Shift+K"),
+            ("Дублировать строку вверх / вниз", "Shift+Alt+Up / Down"),
             ("Отступ блока", "Tab"), ("Уменьшить отступ", "Shift+Tab"),
         ]),
     ]
@@ -63,7 +64,7 @@ class KeyboardShortcutsDialog(QtWidgets.QDialog):
 
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         body = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 8, 0)
@@ -84,7 +85,7 @@ class KeyboardShortcutsDialog(QtWidgets.QDialog):
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
 
-        close = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        close = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(self.reject)
         close.accepted.connect(self.accept)
         root.addWidget(close)
@@ -93,6 +94,6 @@ class KeyboardShortcutsDialog(QtWidgets.QDialog):
     def _key_label(text):
         label = QtWidgets.QLabel(text)
         label.setObjectName("shortcutKey")
-        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         label.setMinimumWidth(120)
         return label

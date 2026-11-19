@@ -2,7 +2,7 @@
 from os import path
 from json import dumps, load
 from pathlib import Path
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class ArgsWindow(QtWidgets.QWidget):
@@ -75,13 +75,13 @@ class ArgsWindow(QtWidgets.QWidget):
         row.addStretch()
 
         self.pushButton = QtWidgets.QPushButton("Сохранить")
-        self.pushButton.setCursor(QtCore.Qt.PointingHandCursor)
+        self.pushButton.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.pushButton.clicked.connect(self.saveSettings)
         row.addWidget(self.pushButton)
 
         cancel_btn = QtWidgets.QPushButton("Отмена")
         cancel_btn.setStyleSheet("background-color: #333333; color: #cccccc;")
-        cancel_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        cancel_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         cancel_btn.clicked.connect(self.close)
         row.addWidget(cancel_btn)
         return row
@@ -127,7 +127,7 @@ class ArgsWindow(QtWidgets.QWidget):
             return ""
 
     def keyPressEvent(self, event):
-        if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+        if event.key() in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
             self.saveSettings()
         else:
             super().keyPressEvent(event)

@@ -1,6 +1,6 @@
 """PyScribe widgets/LoadingSpinner.py: Reusable animated spinners and loading overlays."""
 import math
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class LoadingSpinner(QtWidgets.QWidget):
@@ -17,7 +17,7 @@ class LoadingSpinner(QtWidgets.QWidget):
 
         size = int((radius + stroke_width) * 2 + 4)
         self.setFixedSize(size, size)
-        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(speed_ms)
@@ -52,7 +52,7 @@ class LoadingSpinner(QtWidgets.QWidget):
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
 
         w = self.width()
         h = self.height()
@@ -60,14 +60,14 @@ class LoadingSpinner(QtWidgets.QWidget):
 
         # Draw subtle track
         track_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 25), self.stroke_width)
-        track_pen.setCapStyle(QtCore.Qt.RoundCap)
+        track_pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
         painter.setPen(track_pen)
-        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         painter.drawEllipse(QtCore.QPointF(w / 2.0, h / 2.0), r, r)
 
         # Draw animated spinning arc
         arc_pen = QtGui.QPen(self.color, self.stroke_width)
-        arc_pen.setCapStyle(QtCore.Qt.RoundCap)
+        arc_pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
         painter.setPen(arc_pen)
 
         rect = QtCore.QRectF(w / 2.0 - r, h / 2.0 - r, r * 2.0, r * 2.0)
@@ -84,7 +84,7 @@ class MiniSpinner(QtWidgets.QWidget):
         self.color = QtGui.QColor(color)
         self.angle = 0
         self.setFixedSize(16, 16)
-        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(25)
@@ -105,7 +105,7 @@ class MiniSpinner(QtWidgets.QWidget):
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         r = 5.5
         w, h = self.width(), self.height()
 
@@ -114,7 +114,7 @@ class MiniSpinner(QtWidgets.QWidget):
         painter.drawEllipse(QtCore.QPointF(w / 2.0, h / 2.0), r, r)
 
         pen = QtGui.QPen(self.color, 2.0)
-        pen.setCapStyle(QtCore.Qt.RoundCap)
+        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         rect = QtCore.QRectF(w / 2.0 - r, h / 2.0 - r, r * 2.0, r * 2.0)
         painter.drawArc(rect, int(-self.angle * 16), int(-100 * 16))
@@ -126,7 +126,7 @@ class LoadingOverlay(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget):
         super().__init__(parent)
         self.setObjectName("loadingOverlay")
-        self.setAttribute(QtCore.Qt.WA_NoSystemBackground, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.hide()
 
         # Track parent geometry
@@ -134,7 +134,7 @@ class LoadingOverlay(QtWidgets.QWidget):
             parent.installEventFilter(self)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setAlignment(QtCore.Qt.AlignCenter)
+        layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         layout.setContentsMargins(20, 20, 20, 20)
 
         # Centered card
@@ -149,19 +149,19 @@ class LoadingOverlay(QtWidgets.QWidget):
             }
         """)
         card_layout = QtWidgets.QVBoxLayout(self.card)
-        card_layout.setAlignment(QtCore.Qt.AlignCenter)
+        card_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         card_layout.setSpacing(10)
 
         self.spinner = LoadingSpinner(self.card, radius=16, stroke_width=3.5, color="#58A6FF")
-        card_layout.addWidget(self.spinner, 0, QtCore.Qt.AlignCenter)
+        card_layout.addWidget(self.spinner, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
 
         self.title_label = QtWidgets.QLabel("Загрузка...")
-        self.title_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.title_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.title_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #FFFFFF; background: transparent;")
         card_layout.addWidget(self.title_label)
 
         self.status_label = QtWidgets.QLabel("")
-        self.status_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.status_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.status_label.setStyleSheet("font-size: 11px; color: #8B949E; background: transparent;")
         self.status_label.setWordWrap(True)
         self.status_label.setMaximumWidth(280)
@@ -184,12 +184,12 @@ class LoadingOverlay(QtWidgets.QWidget):
             }
         """)
         self.progress_bar.hide()
-        card_layout.addWidget(self.progress_bar, 0, QtCore.Qt.AlignCenter)
+        card_layout.addWidget(self.progress_bar, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
 
         layout.addWidget(self.card)
 
     def eventFilter(self, watched, event):
-        if watched == self.parent() and event.type() in (QtCore.QEvent.Resize, QtCore.QEvent.Move):
+        if watched == self.parent() and event.type() in (QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.Move):
             self.setGeometry(self.parent().rect())
         return super().eventFilter(watched, event)
 

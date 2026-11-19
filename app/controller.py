@@ -1,4 +1,4 @@
-"""PyScribe workbench orchestration controller."""
+"""CodeLane workbench orchestration controller."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
 
 class WorkbenchController:
-    """Single orchestration layer for the running PyScribe workbench.
+    """Single orchestration layer for the running CodeLane workbench.
 
     UI widgets stay focused on presentation; all launch/terminal/project
     hand-offs pass through this object so Run, project launch, tests and
@@ -27,7 +27,7 @@ class WorkbenchController:
             return
         current = tab._current()
         if current:
-            current.append_system_line(f"[PyScribe] {message}")
+            current.append_system_line(f"[CodeLane] {message}")
 
     def run_file(self, file_path):
         self.window.run_target(str(file_path), False)

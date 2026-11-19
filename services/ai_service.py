@@ -1,4 +1,4 @@
-"""PyScribe AI assistant service.
+"""CodeLane AI assistant service.
 
 Talks to LLM providers over two wire protocols, both implemented with the Python
 standard library only (no extra dependencies, works in the frozen executable):
@@ -87,7 +87,7 @@ REASONING_SHORT = {"auto": "Авто", "none": "Нет", "low": "Низк.",
 ANTHROPIC_THINKING_BUDGET = {"low": 2048, "medium": 8192, "high": 16000}
 
 SYSTEM_PROMPT = (
-    "Ты — PyScribe AI, встроенный инженерный ассистент в IDE PyScribe. "
+    "Ты — CodeLane AI, встроенный инженерный ассистент в IDE CodeLane. "
     "Отвечай по-русски, кратко и по делу. "
     "Если тебе доступны инструменты проекта — ИЗМЕНЯЙ ФАЙЛЫ ИМИ (write_file), а не выводи код в чат: "
     "в чате только краткое объяснение того, что сделано и как это проверить. "
@@ -102,7 +102,7 @@ SYSTEM_PROMPT = (
 # Base prompt for teaching mode: same assistant identity, but WITHOUT the
 # "give ready-to-run code" instruction, which would fight the Socratic rules.
 PROMPT_FOR_TEACHING_BASE = (
-    "Ты — PyScribe AI, встроенный инженерный ассистент в IDE PyScribe. "
+    "Ты — CodeLane AI, встроенный инженерный ассистент в IDE CodeLane. "
     "Отвечай по-русски, кратко и по делу. "
     "Не выдумывай API: если данных не хватает, задай уточняющий вопрос. "
     "Если тебе доступны инструменты (MCP) — используй их, когда нужны файлы проекта "
@@ -220,7 +220,7 @@ class ToolCall:
 
 @dataclass
 class AIService:
-    """Provider-agnostic chat client for PyScribe."""
+    """Provider-agnostic chat client for CodeLane."""
 
     config: Dict = field(default_factory=dict)
     timeout: int = DEFAULT_TIMEOUT
@@ -525,7 +525,7 @@ class AIService:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "PyScribe/1.0 AI",
+            "User-Agent": "CodeLane/1.0 AI",
         }
         if self.is_anthropic:
             # Claude uses its own auth + version headers.
@@ -695,6 +695,18 @@ class AIService:
                       + "\n\n" + TEACH_STRICTNESS_ADDENDUM[level])
         if extra:
             prompt += "\n\n" + extra
+        prompt += (
+            "\n\nДля работы с файлами CodeLane используй open_file, read_file, "
+            "edit_file и write_file. Эти инструменты связаны с QCodeEditor и его "
+            "несохранёнными буферами. Для определения активной вкладки используй "
+            "editor_state. Открывай файл через open_file перед правкой. "
+            "Для актуального состояния браузера, проводника и анализа вызывай workspace_state. "
+            "Повторяй получение состояния во время работы, поскольку пользователь может менять вкладки. "
+            "Браузером управляй через browser_navigate, анализ обновляй через analysis_refresh. "
+            "Изменения файлов выполняй через edit_file или write_file. "
+            "Терминал используй для сборки, запуска и диагностики. "
+            "После правки сообщай, что изменения находятся в редакторе и ожидают сохранения."
+        )
         return prompt
 
     def build_messages(self, user_prompt: str, history: Optional[List[AIMessage]] = None,
@@ -765,6 +777,8 @@ class AIService:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        if stream:
+            payload["stream_options"] = {"include_usage": True}
         return self._apply_reasoning(payload)
 
     def complete(self, user_prompt: str, history: Optional[List[AIMessage]] = None,

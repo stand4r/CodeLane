@@ -34,7 +34,7 @@ __all__ = [
 # real project files), so nothing that could be source is hidden.
 IGNORED_DIR_NAMES: Set[str] = {
     # version control / tooling metadata
-    ".git", ".hg", ".svn", ".bzr", "_darcs", ".idea", ".vscode", ".vs",
+    ".git", ".hg", ".svn", ".bzr", "_darcs", ".idea", ".vscode", ".vs", ".pyscribe", ".codelane",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".nox", ".eggs",
     ".ipynb_checkpoints", ".terraform", ".serverless", ".parcel-cache",
     ".next", ".nuxt", ".svelte-kit", ".angular", ".turbo", ".yarn", ".pnpm-store",

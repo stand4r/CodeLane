@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtCore, QtWidgets  # noqa: E402
+from PyQt6 import QtCore, QtWidgets  # noqa: E402
 
 _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 

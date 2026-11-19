@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class LogShareDialog(QtWidgets.QDialog):
@@ -26,16 +26,16 @@ class LogShareDialog(QtWidgets.QDialog):
         self.preview = QtWidgets.QPlainTextEdit()
         self.preview.setReadOnly(True)
         self.preview.setAccessibleName("Предпросмотр журнала")
-        self.preview.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont))
+        self.preview.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
         layout.addWidget(self.preview, 1)
         self.status = QtWidgets.QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
-        self.copy_button = buttons.addButton("Скопировать файл", QtWidgets.QDialogButtonBox.ActionRole)
+        self.copy_button = buttons.addButton("Скопировать файл", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
         self.copy_button.clicked.connect(self.copy_file)
-        refresh = buttons.addButton("Обновить список", QtWidgets.QDialogButtonBox.ActionRole)
+        refresh = buttons.addButton("Обновить список", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
         refresh.clicked.connect(self.refresh)
         layout.addWidget(buttons)
         self.refresh()
@@ -51,7 +51,7 @@ class LogShareDialog(QtWidgets.QDialog):
         for path in paths:
             if re.fullmatch(r".+\.log(?:\.\d+)?", path.name) and path.is_file() and not path.is_symlink():
                 self.files.addItem(path.name)
-        matches = self.files.findItems(selected, QtCore.Qt.MatchExactly)
+        matches = self.files.findItems(selected, QtCore.Qt.MatchFlag.MatchExactly)
         if matches:
             self.files.setCurrentItem(matches[0])
         elif self.files.count():
@@ -77,7 +77,7 @@ class LogShareDialog(QtWidgets.QDialog):
             self.status.setText(f"Не удалось прочитать журнал. {exc.strerror or exc}")
             return
         self.preview.setPlainText(contents)
-        self.preview.moveCursor(QtGui.QTextCursor.End)
+        self.preview.moveCursor(QtGui.QTextCursor.MoveOperation.End)
         self.copy_button.setEnabled(True)
         if size > limit:
             self.status.setText("Показаны последние 256 КБ. Копируется весь файл.")

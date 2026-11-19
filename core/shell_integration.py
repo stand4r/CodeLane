@@ -3,15 +3,15 @@
 Everything is registered under ``HKCU\\Software\\Classes`` — per-user, no
 administrator rights, easy to remove:
 
-* ``Applications\\PyScribe`` makes PyScribe appear in the system **«Открыть с
+* ``Applications\\PyScribe`` makes CodeLane appear in the system **«Открыть с
   помощью»** dialog (``SupportedTypes`` lists the extensions);
-* ``*\\shell\\PyScribe`` adds **«Открыть в PyScribe»** to the context menu of any
+* ``*\\shell\\PyScribe`` adds **«Открыть в CodeLane»** to the context menu of any
   file, ``Directory`` / ``Directory\\Background`` for folders;
 * ``PyScribe.File`` + ``*\\OpenWithProgids`` covers files whose extension is not
   associated with anything yet.
 
 The launcher for a source checkout is ``pythonw.exe main.py "%1"``; frozen
-builds point at ``PyScribe.exe`` directly.
+builds point at ``CodeLane.exe`` directly.
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def _quote(value: str) -> str:
 
 
 def launcher() -> Tuple[str, List[str]]:
-    """Executable and leading arguments that start PyScribe."""
+    """Executable and leading arguments that start CodeLane."""
     if getattr(sys, "frozen", False):
         return sys.executable, []
     executable = Path(sys.executable)
@@ -95,7 +95,7 @@ def supported_types() -> Tuple[str, ...]:
 
 
 def registration_entries() -> List[dict]:
-    """Describe every registry value PyScribe owns (pure, no writes).
+    """Describe every registry value CodeLane owns (pure, no writes).
 
     Each entry is ``{"key": <subkey under HKCU>, "name": <value name or "" >,
     "value": <data>}``. The tests check the generated commands and paths without
@@ -103,34 +103,34 @@ def registration_entries() -> List[dict]:
     """
     entries: List[dict] = [
         # --- "Open with" application entry -----------------------------
-        {"key": APPLICATIONS_KEY, "name": "ApplicationName", "value": "PyScribe"},
+        {"key": APPLICATIONS_KEY, "name": "ApplicationName", "value": "CodeLane"},
         {"key": APPLICATIONS_KEY, "name": "ApplicationCompany",
-         "value": "PyScribe Development Team"},
+         "value": "CodeLane Development Team"},
         {"key": rf"{APPLICATIONS_KEY}\shell\open\command",
          "name": "", "value": command_line()},
         {"key": rf"{APPLICATIONS_KEY}\shell\open", "name": "FriendlyAppName",
-         "value": "PyScribe"},
+         "value": "CodeLane"},
         # --- ProgID used by OpenWithProgids ----------------------------
-        {"key": FILE_PROGID_KEY, "name": "FriendlyTypeName", "value": "Файл PyScribe"},
+        {"key": FILE_PROGID_KEY, "name": "FriendlyTypeName", "value": "Файл CodeLane"},
         {"key": rf"{FILE_PROGID_KEY}\DefaultIcon", "name": "", "value": icon_value()},
         {"key": rf"{FILE_PROGID_KEY}\shell\open\command", "name": "",
          "value": command_line()},
         {"key": rf"{CLASSES}\*\OpenWithProgids", "name": PROGID, "value": ""},
         # --- Explorer context menu -------------------------------------
         {"key": rf"{CLASSES}\*\shell\{APP_KEY_NAME}", "name": "MUIVerb",
-         "value": "Открыть в PyScribe"},
+         "value": "Открыть в CodeLane"},
         {"key": rf"{CLASSES}\*\shell\{APP_KEY_NAME}", "name": "Icon",
          "value": icon_value()},
         {"key": rf"{CLASSES}\*\shell\{APP_KEY_NAME}\command", "name": "",
          "value": command_line()},
         {"key": rf"{CLASSES}\Directory\shell\{APP_KEY_NAME}", "name": "MUIVerb",
-         "value": "Открыть папку в PyScribe"},
+         "value": "Открыть папку в CodeLane"},
         {"key": rf"{CLASSES}\Directory\shell\{APP_KEY_NAME}", "name": "Icon",
          "value": icon_value()},
         {"key": rf"{CLASSES}\Directory\shell\{APP_KEY_NAME}\command", "name": "",
          "value": command_line()},
         {"key": rf"{CLASSES}\Directory\Background\shell\{APP_KEY_NAME}", "name": "MUIVerb",
-         "value": "Открыть в PyScribe"},
+         "value": "Открыть в CodeLane"},
         {"key": rf"{CLASSES}\Directory\Background\shell\{APP_KEY_NAME}", "name": "Icon",
          "value": icon_value()},
         {"key": rf"{CLASSES}\Directory\Background\shell\{APP_KEY_NAME}\command",

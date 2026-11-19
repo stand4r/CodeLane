@@ -1,12 +1,11 @@
 PyMuPDF
 pylint
 # Основные GUI зависимости
-PyQt5==5.15.9
-PyQt5-sip>=12.13,<13
-PyQtWebEngine==5.15.7
+PyQt6==6.12.1
+PyQt6-WebEngine==6.140.1
 
 # Работа с процессами и системой
-psutil==5.9.5
+psutil==7.2.2
 
 # Обработка терминальных данных
 pyte==0.8.2
@@ -16,18 +15,18 @@ terminaltables==3.1.10
 
 # Дополнительные утилиты (опционально)
 ansi2html==1.7.0
-asyncssh==2.13.2
+asyncssh==2.24.1
 
 # Для разработки и тестирования
-pytest==7.3.1
-pytest-qt==4.2.0
-pytest-cov==4.1.0
-black==23.3.0
-flake8==6.0.0
-mypy==1.2.0
+pytest==9.2.0
+pytest-qt==4.5.0
+pytest-cov==7.1.0
+black==26.10.1
+flake8==7.5.0
+mypy==2.4.1
 # Project Intelligence - optional advanced analyzers
 # Tree-sitter language pack provides parsers for many programming languages.
-tree-sitter-language-pack>=1.1.0
+tree-sitter-language-pack==1.9.1
 # Executable format parsing: PE / ELF / Mach-O and related formats.
 lief>=0.16
 # Multi-architecture disassembly backend.

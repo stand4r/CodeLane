@@ -1,7 +1,7 @@
 """Browser settings shared by the settings page and the web view."""
 import re
 
-from PyQt5 import QtCore
+from PyQt6 import QtCore
 
 from utils.settings_manager import get_settings_manager
 

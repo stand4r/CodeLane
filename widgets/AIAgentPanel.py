@@ -1,4 +1,4 @@
-"""PyScribe AI agent panel — DeepSeek Harness / opencode style chat UI.
+"""CodeLane AI agent panel — DeepSeek Harness / opencode style chat UI.
 
 Layout reference (measured from DeepSeek Harness):
 
@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from core.logging_config import get_logger
 from design.icons import codicon_icon, line_icon
@@ -34,10 +34,12 @@ from services.ai_service import AIMessage, AIService, AIError, extract_code_bloc
 from services.mcp_client import MCPClient, MCPServerConfig, parse_servers, run_tool
 
 logger = get_logger("ai_agent")
+_detached_workers = set()
 
 SCOPE_LABELS = {
     "none": "без контекста",
     "file": "текущий файл",
+    "open_files": "открытые файлы",
     "project": "проект",
 }
 SKIP_DIRS = {
@@ -176,6 +178,15 @@ class AIWorker(QtCore.QThread):
         tools: List[dict] = []
         for config in self.mcp_servers:
             client = self.mcp_clients.get(config.name)
+            if client is not None and client.config != config:
+                # Settings may be edited while the chat stays open. Never
+                # route a request through a stale process/URL/credential set.
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                self.mcp_clients.pop(config.name, None)
+                client = None
             if client is None:
                 client = MCPClient(config, timeout=15)
                 try:
@@ -197,14 +208,18 @@ class AIWorker(QtCore.QThread):
                     # closed and the thread actually ends instead of draining
                     # the whole answer in the background.
                     raise _RequestStopped()
-                self._buffer.append(piece)
-                self.chunk.emit(piece)
+                if not self._buffer:
+                    self._buffer.append(piece)
+                    self.chunk.emit(piece)
+
+            reasoning_parts = []
 
             def emit_reasoning(piece: str):
                 if self._stop or not piece:
                     return
-                self.reasoning_text += piece
-                self.reasoning.emit(piece)
+                if not reasoning_parts:
+                    self.reasoning.emit(piece)
+                reasoning_parts.append(piece)
 
             tools = list(self.tools)
             restricted = self.local_tools is not None and self.local_tools.access_mode != "full"
@@ -235,8 +250,21 @@ class AIWorker(QtCore.QThread):
                 if self.on_tool:
                     self.on_tool(name, args)
 
+            context = self.context
+            project_context = getattr(self, "project_context", None)
+            if project_context is not None and not self._stop:
+                from services.ai_context import render_project_context
+                root, mentions = project_context
+                rendered = render_project_context(Path(root), mentions)
+                context = "\n\n".join(part for part in (context, rendered) if part)
+            if self.local_tools is not None and self.local_tools.access_mode != "write_only":
+                try:
+                    state = self.local_tools.workspace_state()
+                    context = ((context or "") + "\n\nАктуальное состояние CodeLane перед запросом:\n" + state)
+                except Exception as exc:
+                    logger.debug("Workspace context unavailable: %s", exc)
             answer = self.service.converse(
-                self.prompt, self.history, self.context,
+                self.prompt, self.history, context,
                 tools=tools or None,
                 tool_runner=tool_runner,
                 on_text=emit,
@@ -251,6 +279,7 @@ class AIWorker(QtCore.QThread):
             self.usage = dict(getattr(self.service, "last_usage", {}) or {})
             self.stop_reason = str(getattr(self.service, "last_stop_reason", "") or "")
             self.tool_runs = list(getattr(self.service, "last_tool_runs", []) or [])
+            self.reasoning_text = "".join(reasoning_parts)
             self.finished_ok.emit("" if self._stop else answer)
         except _RequestStopped:
             self.finished_ok.emit("")
@@ -310,11 +339,11 @@ class _CompletionPopup(QtWidgets.QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("aiCompletion")
-        self.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setUniformItemSizes(True)
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.setAttribute(QtCore.Qt.WA_ShowWithoutActivating, True)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.hide()
         self.itemClicked.connect(lambda _item: self.accepted.emit())
 
@@ -324,7 +353,7 @@ class _CompletionPopup(QtWidgets.QListWidget):
             icon = {"dir": "📁", "file": "📄", "cmd": "›"}.get(kind, "•")
             item = QtWidgets.QListWidgetItem(f"{icon}  {label}")
             item.setToolTip(detail or label)
-            item.setData(QtCore.Qt.UserRole, label)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, label)
             self.addItem(item)
         rows = max(1, min(len(items), 8))
         row_h = max(20, self.fontMetrics().height() + 8)
@@ -340,7 +369,7 @@ class _CompletionPopup(QtWidgets.QListWidget):
 
     def current_label(self) -> str:
         item = self.currentItem()
-        return str(item.data(QtCore.Qt.UserRole)) if item is not None else ""
+        return str(item.data(QtCore.Qt.ItemDataRole.UserRole)) if item is not None else ""
 
     def move_selection(self, delta: int):
         row = self.currentRow()
@@ -350,10 +379,10 @@ class _CompletionPopup(QtWidgets.QListWidget):
         self.hide()
 
     def keyPressEvent(self, event):
-        if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter, QtCore.Qt.Key_Tab):
+        if event.key() in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter, QtCore.Qt.Key.Key_Tab):
             self.accepted.emit()
             return
-        if event.key() == QtCore.Qt.Key_Escape:
+        if event.key() == QtCore.Qt.Key.Key_Escape:
             self.hide_popup()
             return
         super().keyPressEvent(event)
@@ -362,17 +391,17 @@ class _CompletionPopup(QtWidgets.QListWidget):
 class _TranscriptView(QtWidgets.QTextBrowser, QtGui.QTextObjectInterface):
     """Read-only transcript that can host real widgets (chat bubbles).
 
-    PyQt5 only dispatches ``intrinsicSize``/``drawObject`` when the handler
+    PyQt6 only dispatches ``intrinsicSize``/``drawObject`` when the handler
     object also inherits ``QTextObjectInterface``, so the view implements both
     the widget and the document-object interface.
     """
 
-    USER_OBJECT_TYPE = int(QtGui.QTextFormat.UserObject) + 10
+    USER_OBJECT_TYPE = int(QtGui.QTextFormat.ObjectTypes.UserObject) + 10
     # Custom QTextFormat property carrying the widget itself.
-    WIDGET_PROPERTY = int(QtGui.QTextFormat.UserProperty) + 1
+    WIDGET_PROPERTY = int(QtGui.QTextFormat.Property.UserProperty) + 1
     # Inline object height, stored on the format (also a user property).
-    HEIGHT_PROPERTY = int(QtGui.QTextFormat.UserProperty) + 2
-    WIDTH_PROPERTY = int(QtGui.QTextFormat.UserProperty) + 3
+    HEIGHT_PROPERTY = int(QtGui.QTextFormat.Property.UserProperty) + 2
+    WIDTH_PROPERTY = int(QtGui.QTextFormat.Property.UserProperty) + 3
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -415,12 +444,12 @@ class _ComposerInput(QtWidgets.QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("aiInput")
-        self.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setPlaceholderText("Спросите что-нибудь о коде")
         self.setTabChangesFocus(True)
-        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self._min_height = 56
         self._max_height = 210
         self.setFixedHeight(self._min_height)
@@ -437,11 +466,11 @@ class _ComposerInput(QtWidgets.QPlainTextEdit):
             self.updateGeometry()
 
     def keyPressEvent(self, event):
-        if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
-            if event.modifiers() & QtCore.Qt.ShiftModifier:
+        if event.key() in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
+            if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
                 super().keyPressEvent(event)
                 return
-            if event.modifiers() & QtCore.Qt.ControlModifier:
+            if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
                 super().keyPressEvent(event)
                 return
             self.submitted.emit()
@@ -463,14 +492,14 @@ class _RoundActionButton(QtWidgets.QAbstractButton):
         self._icon_name = icon_name
         self._accent = accent
         self.setFixedSize(diameter, diameter)
-        self.setCursor(QtCore.Qt.PointingHandCursor)
-        self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setToolTip(tooltip)
         self.setAccessibleName(tooltip)
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
         rect = QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         if not self.isEnabled():
             background = QtGui.QColor("#313134")
@@ -481,7 +510,7 @@ class _RoundActionButton(QtWidgets.QAbstractButton):
         else:
             background = QtGui.QColor("#4A4A4C" if self.underMouse() else "#3A3A3C")
             text_color = QtGui.QColor("#E7E7E7")
-        painter.setPen(QtCore.Qt.NoPen)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(background)
         painter.drawEllipse(rect)
         icon_rect = QtCore.QRect(0, 0, 16, 16)
@@ -505,17 +534,18 @@ class _ContextChip(QtWidgets.QToolButton):
         self.setText(text)
         self.setToolTip(tip)
         self.setCheckable(True)
-        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.setObjectName("aiChip")
-        self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
 
 class AIAgentPanel(QtWidgets.QWidget):
-    """Chat panel for the PyScribe AI agent (DeepSeek Harness style)."""
+    """Chat panel for the CodeLane AI agent (DeepSeek Harness style)."""
 
     # Emitted (tool name, short arguments) whenever the model calls an MCP tool.
     _tool_called = QtCore.pyqtSignal(str, str)
     _approval_requested = QtCore.pyqtSignal(object, object, object, object, object)
+    _ui_tool_requested = QtCore.pyqtSignal(object, object, object, object)
 
     def __init__(self, main_window=None, parent=None):
         super().__init__(parent or main_window)
@@ -535,11 +565,15 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._reasoning_chars = 0
         self._tool_counters: dict = {}
         self._session_root = None
+        self._active_session_id = None
+        self._session_records: List[dict] = []
+        self._loaded_session_preferences = False
         self._session_stats: Optional[dict] = None
         self._request_started: Optional[float] = None
         self._activity_label: Optional[QtWidgets.QLabel] = None
         self._tool_called.connect(self._on_tool_called)
         self._approval_requested.connect(self._on_approval_requested)
+        self._ui_tool_requested.connect(self._on_ui_tool_requested)
         self._build()
 
     def _on_tool_called(self, name: str, arguments: str):
@@ -587,6 +621,7 @@ class AIAgentPanel(QtWidgets.QWidget):
             first = output.strip().splitlines()[0][:160] if output.strip() else "ошибка"
             self._show_activity(f"{name}" + (f" · {target}" if target else "")
                                 + f": {first}", "✗")
+            self._append_step(f"Сбой инструмента · {name} · {target or first}", "✗")
             return
         if name == "write_file":
             verb = "создан" if "Создан" in output else "изменён"
@@ -594,6 +629,15 @@ class AIAgentPanel(QtWidgets.QWidget):
         elif name == "run_terminal_command":
             first = output.strip().splitlines()[0][:80] if output.strip() else "готово"
             self._show_activity(first, "✓")
+        else:
+            self._show_activity(f"Готово · {name}" + (f" · {target}" if target else ""), "✓")
+        duration = int(getattr(run, "duration_ms", 0) or 0)
+        location = target or (str(arguments.get("query") or "")
+                              if isinstance(arguments, dict) else "")
+        detail = f"{name}" + (f" · {location}" if location else "")
+        if duration:
+            detail += f" · {duration} мс"
+        self._append_step(detail, "✓")
 
     @staticmethod
     def _short_json(value) -> str:
@@ -620,8 +664,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         self.transcript = QtWidgets.QScrollArea()
         self.transcript.setObjectName("aiTranscript")
         self.transcript.setWidgetResizable(True)
-        self.transcript.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.transcript.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.transcript.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.transcript.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         # Messages are real widgets in a vertical layout (Telegram style).
         # A QTextDocument cannot measure rich-text bubbles reliably, and plain
@@ -698,6 +742,24 @@ class AIAgentPanel(QtWidgets.QWidget):
         act_export.setEnabled(bool(self.transcript_text().strip()))
         act_export.triggered.connect(self.export_conversation)
 
+        act_mcp = menu.addAction("Инструменты MCP…")
+        act_mcp.triggered.connect(self._show_mcp)
+
+        sessions = menu.addMenu("Сессии проекта")
+        sessions.setObjectName("aiContextMenu")
+        create_session = sessions.addAction("＋  Новый диалог")
+        create_session.triggered.connect(self.clear_conversation)
+        sessions.addSeparator()
+        for item in self._read_session_index():
+            session_id = str(item.get("id") or "")
+            action = sessions.addAction(str(item.get("title") or "Новый диалог")[:48])
+            action.setCheckable(True)
+            action.setChecked(session_id == getattr(self, "_active_session_id", None))
+            action.setToolTip(str(item.get("updated_at") or ""))
+            action.triggered.connect(
+                lambda _=False, sid=session_id: self.switch_chat_session(sid))
+        sessions.setEnabled(self._session_path() is not None)
+
         if self.pending_count():
             act_clear_queue = menu.addAction(f"Очистить очередь ({self.pending_count()})")
             act_clear_queue.triggered.connect(self.clear_queue)
@@ -725,7 +787,7 @@ class AIAgentPanel(QtWidgets.QWidget):
 
     def _show_context_menu(self, global_pos: QtCore.QPoint):
         menu = self._build_context_menu()
-        menu.exec_(global_pos)
+        menu.exec(global_pos)
         menu.deleteLater()
 
     def contextMenuEvent(self, event):
@@ -746,6 +808,7 @@ class AIAgentPanel(QtWidgets.QWidget):
 
         title = QtWidgets.QLabel("ИИ-агент")
         title.setObjectName("aiHeaderTitle")
+        self.header_title = title
         layout.addWidget(title)
 
         # Quiet marker shown only while the Socratic mode is active.
@@ -763,25 +826,25 @@ class AIAgentPanel(QtWidgets.QWidget):
         self.reasoning_btn = QtWidgets.QToolButton()
         self.reasoning_btn.setObjectName("aiAccessMode")
         self.reasoning_btn.setAccessibleName("Уровень размышлений")
-        self.reasoning_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.reasoning_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.reasoning_btn.setFocusPolicy(QtCore.Qt.NoFocus)
-        self.reasoning_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed,
-                                          QtWidgets.QSizePolicy.Fixed)
+        self.reasoning_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.reasoning_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.reasoning_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.reasoning_btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
+                                          QtWidgets.QSizePolicy.Policy.Fixed)
         self._reasoning_menu = QtWidgets.QMenu(self.reasoning_btn)
         self.reasoning_btn.setMenu(self._reasoning_menu)
         layout.addWidget(self.reasoning_btn)
 
         self.access_button = QtWidgets.QToolButton()
-        self.access_button.setSizePolicy(QtWidgets.QSizePolicy.Fixed,
-                                          QtWidgets.QSizePolicy.Fixed)
+        self.access_button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed,
+                                          QtWidgets.QSizePolicy.Policy.Fixed)
         self.access_button.setObjectName("aiAccessMode")
         self.access_button.setAccessibleName("Разрешения агента")
-        self.access_button.setCursor(QtCore.Qt.PointingHandCursor)
-        self.access_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.access_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.access_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QtWidgets.QMenu(self.access_button)
         menu.setObjectName("aiAccessMenu")
-        group = QtWidgets.QActionGroup(menu)
+        group = QtGui.QActionGroup(menu)
         group.setExclusive(True)
         self._access_actions = {}
         for key, label in ACCESS_MODES.items():
@@ -819,9 +882,9 @@ class AIAgentPanel(QtWidgets.QWidget):
         button.setIconSize(QtCore.QSize(16, 16))
         button.setFixedSize(24, 24)
         button.setToolTip(tip)
-        button.setCursor(QtCore.Qt.PointingHandCursor)
+        button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         button.setAutoRaise(True)
-        button.setFocusPolicy(QtCore.Qt.NoFocus)
+        button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         return button
 
     def _build_composer(self) -> QtWidgets.QWidget:
@@ -873,9 +936,9 @@ class AIAgentPanel(QtWidgets.QWidget):
         self.scope_btn = QtWidgets.QToolButton()
         self.scope_btn.setObjectName("aiScopeButton")
         self.scope_btn.setToolTip("Что прикреплять к запросу (Ctrl+Shift+C)")
-        self.scope_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.scope_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.scope_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.scope_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.scope_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.scope_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self._scope_menu = QtWidgets.QMenu(self.scope_btn)
         self.scope_btn.setMenu(self._scope_menu)
         toolbar.addWidget(self.scope_btn)
@@ -883,9 +946,9 @@ class AIAgentPanel(QtWidgets.QWidget):
         self.model_btn = QtWidgets.QToolButton()
         self.model_btn.setObjectName("aiModelButton")
         self.model_btn.setToolTip("Выбор модели (Ctrl+Shift+M)")
-        self.model_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.model_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.model_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.model_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.model_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.model_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self._model_menu = QtWidgets.QMenu(self.model_btn)
         self.model_btn.setMenu(self._model_menu)
         toolbar.addWidget(self.model_btn)
@@ -893,16 +956,16 @@ class AIAgentPanel(QtWidgets.QWidget):
 
         self.stop_btn = _RoundActionButton("stop", "Остановить ответ (Esc)", 30, accent=False)
         self.stop_btn.setToolTip("Остановить ответ (Esc)")
-        self.stop_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.stop_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.stop_btn.setVisible(False)
-        self.stop_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.stop_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.stop_btn.clicked.connect(self.stop_request)
         toolbar.addWidget(self.stop_btn)
 
         self.send_btn = _RoundActionButton("send", "Отправить (Enter)", 30, accent=True)
         self.send_btn.setToolTip("Отправить (Enter)")
-        self.send_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.send_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.send_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.send_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.send_btn.clicked.connect(self.send_message)
         toolbar.addWidget(self.send_btn)
         box.addLayout(toolbar)
@@ -927,7 +990,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         # answers · steps · tok/s · tokens · cache hit rate.
         self.stats_label = QtWidgets.QLabel("")
         self.stats_label.setObjectName("aiStatsLine")
-        self.stats_label.setAlignment(QtCore.Qt.AlignHCenter)
+        self.stats_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
         self.stats_label.setVisible(False)
         outer_layout.addWidget(self.stats_label)
         return wrapper
@@ -987,7 +1050,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         sm.save_settings()
         self._sync_access_button()
 
-    def _build_local_tools(self):
+    def _build_local_tools(self, should_stop=None):
         """Project tools (files, terminal, apps) for the agent."""
         from services.agent_tools import LocalToolbox
         from utils.settings_manager import get_settings_manager
@@ -998,7 +1061,209 @@ class AIAgentPanel(QtWidgets.QWidget):
             allow_write=bool(sm.get_setting("ai_allow_file_edits", True)),
             allow_commands=bool(sm.get_setting("ai_allow_commands", True)),
             access_mode=self._access_mode(),
+            ui_action=self._request_ui_tool,
+            should_stop=should_stop,
         )
+
+    def _request_ui_tool(self, kind: str, payload: dict) -> str:
+        """Run editor and tab operations on Qt's UI thread."""
+        import threading
+        event = threading.Event()
+        result = {"value": "", "error": ""}
+        try:
+            self._ui_tool_requested.emit(kind, payload, event, result)
+        except RuntimeError:
+            raise RuntimeError("Окно редактора уже закрыто.") from None
+        if not event.wait(180):
+            raise RuntimeError("Редактор не ответил на запрос агента вовремя.")
+        if result.get("error"):
+            raise RuntimeError(result["error"])
+        return str(result.get("value") or "Готово.")
+
+    def _on_ui_tool_requested(self, kind, payload, event, result):
+        """Open project files or apply an exact edit on the UI thread."""
+        def same_path(left, right):
+            import os
+            try:
+                return os.path.normcase(os.path.abspath(str(left))) == \
+                    os.path.normcase(os.path.abspath(str(right)))
+            except (OSError, TypeError, ValueError):
+                return str(left) == str(right)
+
+        try:
+            window = self.main_window
+            if window is None:
+                raise RuntimeError("Окно редактора недоступно.")
+            path = str((payload or {}).get("path") or "")
+            if kind == "workspace_state":
+                from dataclasses import asdict
+                explorer = getattr(window, "file_explorer", None)
+                explorer_state = {}
+                if explorer is not None:
+                    model = explorer.model()
+                    explorer_state["root"] = model.filePath(explorer.rootIndex())
+                    explorer_state["selected"] = [
+                        model.filePath(index) for index in explorer.selectedIndexes()
+                        if index.column() == 0
+                    ]
+                browsers = []
+                for group in window.editor_groups():
+                    for index in range(group.count()):
+                        widget = group.widget(index)
+                        if widget.__class__.__name__ == "WebBrowserWidget":
+                            for tab_index in range(widget.tabs.count()):
+                                tab = widget.tabs.tabData(tab_index)
+                                view = getattr(tab, "view", None)
+                                browsers.append({
+                                    "title": widget.tabs.tabText(tab_index),
+                                    "url": view.url().toString(QtCore.QUrl.UrlFormattingOption.RemovePassword) if view else "",
+                                    "active": tab_index == widget.tabs.currentIndex(),
+                                    "loading": view.isLoading() if view else False,
+                                })
+                panel = getattr(window, "intelligence_panel", None)
+                analysis = getattr(panel, "analysis", None)
+                analysis_state = {"available": analysis is not None}
+                if analysis is not None:
+                    analysis_state["issues"] = [asdict(issue) for issue in analysis.issues[:100]]
+                    analysis_state["files_count"] = len(analysis.files)
+                    analysis_state["issues_count"] = len(analysis.issues)
+                result["value"] = json.dumps({
+                    "project_root": self._project_root(),
+                    "explorer": explorer_state, "browser_tabs": browsers,
+                    "analysis": analysis_state,
+                }, ensure_ascii=False, default=str)
+            elif kind == "browser_navigate":
+                url = QtCore.QUrl.fromUserInput(str(payload.get("url") or ""))
+                if url.scheme() not in ("http", "https"):
+                    raise RuntimeError("Укажи адрес http:// или https://.")
+                window.action_open_browser()
+                browser = window.get_current_editor()
+                if browser is None or browser.__class__.__name__ != "WebBrowserWidget":
+                    raise RuntimeError("Браузер недоступен. Проверь расширение браузера.")
+                browser.navigate(url.toString())
+                result["value"] = "Навигация запущена. Проверь workspace_state после загрузки."
+            elif kind == "analysis_refresh":
+                panel = getattr(window, "intelligence_panel", None)
+                if panel is None or getattr(panel, "engine", None) is None:
+                    raise RuntimeError("Анализатор проекта недоступен.")
+                panel.refresh()
+                result["value"] = "Обновление анализа запущено."
+            elif kind == "editor_state":
+                tabs = []
+                for group in window.editor_groups():
+                    for index in range(group.count()):
+                        candidate = group.widget(index)
+                        tabs.append(str(getattr(candidate, "file_path", "") or ""))
+                active = window.get_current_editor()
+                text_editor = getattr(active, "editor", None)
+                state = {"open_files": tabs, "active_file": str(getattr(active, "file_path", "") or "")}
+                if text_editor is not None:
+                    cursor = text_editor.textCursor()
+                    state.update(line=cursor.blockNumber() + 1,
+                                 column=cursor.positionInBlock() + 1,
+                                 selection=cursor.selectedText().replace("\u2029", "\n"))
+                result["value"] = json.dumps(state, ensure_ascii=False)
+            elif kind == "editor_cursor":
+                active = window.get_current_editor()
+                text_editor = getattr(active, "editor", None)
+                if text_editor is None:
+                    raise RuntimeError("Активная вкладка не является редактором.")
+                block = text_editor.document().findBlockByNumber(int(payload["line"]) - 1)
+                if not block.isValid():
+                    raise RuntimeError("Строка вне документа.")
+                cursor = QtGui.QTextCursor(block)
+                cursor.setPosition(block.position() + min(int(payload["column"]) - 1, len(block.text())))
+                text_editor.setTextCursor(cursor)
+                text_editor.ensureCursorVisible()
+                result["value"] = f"Курсор установлен в строку {cursor.blockNumber() + 1}, столбец {cursor.positionInBlock() + 1}."
+            elif kind == "read_buffer":
+                editor = None
+                for group in window.editor_groups():
+                    for index in range(group.count()):
+                        candidate = group.widget(index)
+                        if same_path(getattr(candidate, "file_path", ""), path) and hasattr(candidate, "get_code"):
+                            editor = candidate
+                            break
+                    if editor is not None:
+                        break
+                result["value"] = (editor.get_code() if editor is not None
+                                   else "__NO_OPEN_EDITOR_BUFFER__")
+            elif kind == "replace_buffer":
+                editor = None
+                for group in window.editor_groups():
+                    for index in range(group.count()):
+                        candidate = group.widget(index)
+                        if same_path(getattr(candidate, "file_path", ""), path) and hasattr(candidate, "get_code"):
+                            editor = candidate
+                            break
+                    if editor is not None:
+                        break
+                if editor is None:
+                    raise RuntimeError("Открытая вкладка редактора не найдена.")
+                if editor.get_code() != payload.get("expected"):
+                    raise RuntimeError("Содержимое вкладки изменилось. Перечитай файл.")
+                updated = str(payload.get("content") or "")
+                text_editor = getattr(editor, "editor", None)
+                if text_editor is not None:
+                    cursor = text_editor.textCursor()
+                    cursor.beginEditBlock()
+                    cursor.select(QtGui.QTextCursor.SelectionType.Document)
+                    cursor.insertText(updated)
+                    cursor.endEditBlock()
+                    text_editor.setTextCursor(cursor)
+                else:
+                    editor.set_code(updated)
+                result["value"] = f"Открытая вкладка {Path(path).name} обновлена; файл отмечен как изменённый."
+            elif kind == "open_file":
+                window.file_manager.open_text_editor(path)
+                editor = window.get_current_editor()
+                if editor is None or not same_path(getattr(editor, "file_path", ""), path):
+                    raise RuntimeError("Файл не открылся как редактируемая вкладка.")
+                result["value"] = f"Открыт в редакторе: {Path(path).name}"
+            elif kind == "edit_file":
+                # If the file is open, update its unsaved editor buffer so the
+                # visible tab never goes stale behind a disk write.
+                editor = None
+                for group in window.editor_groups():
+                    for index in range(group.count()):
+                        candidate = group.widget(index)
+                        if same_path(getattr(candidate, "file_path", ""), path):
+                            editor = candidate
+                            break
+                    if editor is not None:
+                        break
+                if editor is None:
+                    window.file_manager.open_text_editor(path)
+                    editor = window.get_current_editor()
+                if editor is None or not hasattr(editor, "get_code"):
+                    raise RuntimeError("Файл нельзя редактировать как текстовый документ.")
+                current = editor.get_code()
+                expected = str(payload.get("expected") or "")
+                old_text = str(payload.get("old_text") or "")
+                if current != expected:
+                    raise RuntimeError("Содержимое вкладки изменилось после чтения. Перечитай файл.")
+                if current.count(old_text) != 1:
+                    raise RuntimeError("Фрагмент больше не уникален. Перечитай файл.")
+                updated = current.replace(old_text, str(payload.get("new_text") or ""), 1)
+                text_editor = getattr(editor, "editor", None)
+                if text_editor is not None:
+                    cursor = text_editor.textCursor()
+                    cursor.beginEditBlock()
+                    cursor.select(QtGui.QTextCursor.SelectionType.Document)
+                    cursor.insertText(updated)
+                    cursor.endEditBlock()
+                    text_editor.setTextCursor(cursor)
+                else:
+                    editor.set_code(updated)
+                if hasattr(window, "save_current_session"):
+                    window.save_current_session()
+                result["value"] = f"Правка применена во вкладке {Path(path).name}; файл отмечен как изменённый."
+            else:
+                raise RuntimeError(f"Неизвестная операция редактора: {kind}")
+        except Exception as exc:  # noqa: BLE001 - returned as a tool result
+            result["error"] = str(exc)
+        finally:
+            event.set()
 
     def _request_tool_approval(self, kind: str, title: str, details: str) -> bool:
         """Ask the user to allow a mutating tool call (called from the worker)."""
@@ -1016,17 +1281,17 @@ class AIAgentPanel(QtWidgets.QWidget):
         """Show the confirmation dialog on the UI thread."""
         try:
             box = QtWidgets.QMessageBox(self.window())
-            box.setIcon(QtWidgets.QMessageBox.Question)
+            box.setIcon(QtWidgets.QMessageBox.Icon.Question)
             box.setWindowTitle("Подтверждение действия агента")
             box.setText(str(title))
             box.setInformativeText(str(details)[:1500])
             if len(str(details)) > 1500:
                 box.setDetailedText(str(details))
-            box.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-            box.setDefaultButton(QtWidgets.QMessageBox.No)
-            box.button(QtWidgets.QMessageBox.Yes).setText("Разрешить")
-            box.button(QtWidgets.QMessageBox.No).setText("Отклонить")
-            result["ok"] = box.exec_() == QtWidgets.QMessageBox.Yes
+            box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
+            box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
+            box.button(QtWidgets.QMessageBox.StandardButton.Yes).setText("Разрешить")
+            box.button(QtWidgets.QMessageBox.StandardButton.No).setText("Отклонить")
+            result["ok"] = box.exec() == QtWidgets.QMessageBox.StandardButton.Yes
         finally:
             event.set()
 
@@ -1130,6 +1395,21 @@ class AIAgentPanel(QtWidgets.QWidget):
         composer_width = composer.width()
         if composer_width < 120:
             composer_width = max(120, self.width() - 20)
+        if self.width() < 250:
+            scope = getattr(self, "scope_btn", None)
+            model = getattr(self, "model_btn", None)
+            if scope is not None and model is not None:
+                scope.setText("Конт.")
+                model.setText("ИИ")
+                scope.setMaximumWidth(48)
+                model.setMaximumWidth(42)
+                return
+        for button in buttons:
+            button.setMaximumWidth(16777215)
+        if getattr(self, "scope_btn", None) is not None:
+            self.scope_btn.setText(getattr(self.scope_btn, "_full_label", self.scope_btn.text()))
+        if getattr(self, "model_btn", None) is not None:
+            self.model_btn.setText(getattr(self.model_btn, "_full_label", self.model_btn.text()))
         available = composer_width - 26 - send_width - SPACING * len(buttons) - 6
         if available <= 0:
             return
@@ -1172,7 +1452,7 @@ class AIAgentPanel(QtWidgets.QWidget):
             budget = budgets[button]
             text_budget = max(20, budget - PAD)
             metrics = button.fontMetrics()
-            text = metrics.elidedText(labels[button], QtCore.Qt.ElideRight,
+            text = metrics.elidedText(labels[button], QtCore.Qt.TextElideMode.ElideRight,
                                       text_budget)
             if not text or text == labels[button]:
                 text = self._manual_elide(labels[button], text_budget)
@@ -1303,7 +1583,7 @@ class AIAgentPanel(QtWidgets.QWidget):
 
         # Context scope — exclusive selection.
         self._scope_menu.clear()
-        self._scope_group = QtWidgets.QActionGroup(self)
+        self._scope_group = QtGui.QActionGroup(self)
         self._scope_group.setExclusive(True)
         for key, label in SCOPE_LABELS.items():
             action = self._scope_menu.addAction(label)
@@ -1312,6 +1592,16 @@ class AIAgentPanel(QtWidgets.QWidget):
             action.setChecked(key == current_scope)
             action.setData(key)
             action.triggered.connect(lambda _=False, k=key: self._set_scope(k))
+        self._scope_menu.addSeparator()
+        for box, label in (
+            (self.include_file, "Прикреплять активный файл"),
+            (self.include_selection, "Прикреплять выделение / строку"),
+            (self.include_problems, "Прикреплять проблемы проекта"),
+        ):
+            action = self._scope_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(box.isChecked())
+            action.toggled.connect(box.setChecked)
         self._scope_actions = {a.data(): a for a in self._scope_menu.actions()}
         self._set_button_label(self.scope_btn,
                                SCOPE_LABELS.get(current_scope, current_scope))
@@ -1443,10 +1733,10 @@ class AIAgentPanel(QtWidgets.QWidget):
     def _append_html(self, html_text: str, force_scroll: bool = True):
         """Append a small rich-text line (step chips, notices)."""
         label = QtWidgets.QLabel(html_text)
-        label.setTextFormat(QtCore.Qt.RichText)
+        label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         label.setWordWrap(True)
-        label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
-        label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+        label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         self._add_message_widget(label)
         if force_scroll:
             QtCore.QTimer.singleShot(0, self._scroll_to_latest)
@@ -1481,9 +1771,9 @@ class AIAgentPanel(QtWidgets.QWidget):
             f'<div style="color:{TEXT}; font-size:16px; margin-bottom:8px;">Чем помочь?</div>'
             f'<table cellspacing="0" cellpadding="0">{rows}</table></div>')
         label.setObjectName("aiWelcome")
-        label.setTextFormat(QtCore.Qt.RichText)
+        label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         label.setWordWrap(True)
-        label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self._welcome_widget = label
         self._welcome_visible = True
         self._add_message_widget(label)
@@ -1526,8 +1816,21 @@ class AIAgentPanel(QtWidgets.QWidget):
         # The composer gets its final width only after the layout pass.
         QtCore.QTimer.singleShot(0, self._fit_composer_buttons)
         self._refresh_reasoning_label()
+        title = getattr(self, "header_title", None)
+        if title is not None:
+            title.setText("ИИ" if self.width() < 250 else "ИИ-агент")
 
     def _relayout_transcript(self):
+        timer = getattr(self, "_transcript_layout_timer", None)
+        if timer is None:
+            timer = self._transcript_layout_timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(16)
+            timer.timeout.connect(self._apply_transcript_layout)
+        if not timer.isActive():
+            timer.start()
+
+    def _apply_transcript_layout(self):
         """Re-measure every bubble after a width change or a text update."""
         width = max(160, self.transcript.viewport().width())
         for bubble in getattr(self, "_bubbles", []) or []:
@@ -1566,7 +1869,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                 chunks.append(widget.label.text())
             elif isinstance(widget, QtWidgets.QLabel):
                 raw = widget.text()
-                if widget.textFormat() == QtCore.Qt.RichText:
+                if widget.textFormat() == QtCore.Qt.TextFormat.RichText:
                     # Step chips carry inline styling; export/copy must not see
                     # raw <div style=...> markup.
                     document = QtGui.QTextDocument()
@@ -1627,10 +1930,10 @@ class AIAgentPanel(QtWidgets.QWidget):
         if label is None:
             label = QtWidgets.QLabel("")
             label.setObjectName("aiActivityLine")
-            label.setTextFormat(QtCore.Qt.RichText)
+            label.setTextFormat(QtCore.Qt.TextFormat.RichText)
             label.setWordWrap(True)
-            label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
-            label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+            label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
             self._add_message_widget(label)
             self._activity_label = label
         label.setText(
@@ -1722,6 +2025,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         )
 
     def clear_conversation(self):
+        """Start a new chat while keeping earlier project conversations."""
+        self.save_chat_session()
         self.stop_request()
         # A worker that was running for the old dialog must not deliver its
         # answer (or auto-send the old queue) into the fresh conversation.
@@ -1732,7 +2037,15 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._reasoning_chars = 0
         self._render_queue_chip()
         self._history.clear()
-        self._forget_chat_session()
+        self._restore_composer_after_request()
+        import uuid
+        self._active_session_id = uuid.uuid4().hex
+        now = self._now_iso()
+        self._session_records.append({
+            "id": self._active_session_id, "title": "Новый диалог",
+            "created_at": now, "updated_at": now, "messages": [],
+            "preferences": self._session_preferences(),
+        })
         self._current_answer.clear()
         self._stream_open = False
         self._thinking_bubbles = []
@@ -1752,9 +2065,10 @@ class AIAgentPanel(QtWidgets.QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         self._append_welcome()
+        self.save_chat_session()
 
     # ------------------------------------------------------------------
-    # Chat session persistence (project/.pyscribe/ai_chat.json)
+    # Chat session persistence (project/.codelane/ai_chat.json)
     # ------------------------------------------------------------------
     def _session_path(self) -> Optional[Path]:
         window = self.main_window
@@ -1763,30 +2077,81 @@ class AIAgentPanel(QtWidgets.QWidget):
         if not root:
             return None
         try:
-            return Path(str(root)) / ".pyscribe" / "ai_chat.json"
+            from core.project_state import project_state_file
+            return project_state_file(root, "ai_chat.json")
         except (OSError, ValueError):
             return None
 
-    def save_chat_session(self) -> None:
-        """Persist the conversation so it survives an IDE restart."""
+    @staticmethod
+    def _now_iso() -> str:
+        import datetime
+        return datetime.datetime.now().isoformat(timespec="seconds")
+
+    def _session_preferences(self) -> dict:
+        service = self._service()
+        return {"provider": service.provider.key, "model": service.model,
+                "mode": service.mode, "context": self._scope(),
+                "include_file": self.include_file.isChecked(),
+                "include_selection": self.include_selection.isChecked(),
+                "include_problems": self.include_problems.isChecked()}
+
+    def _read_session_index(self) -> List[dict]:
         path = self._session_path()
-        if path is None or not self._history:
+        if path is None or not path.is_file():
+            return list(getattr(self, "_session_records", []) or [])
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return list(getattr(self, "_session_records", []) or [])
+        sessions = payload.get("sessions") if isinstance(payload, dict) else None
+        return [item for item in sessions if isinstance(item, dict)] if isinstance(sessions, list) else []
+
+    def save_chat_session(self) -> None:
+        """Persist the active conversation and the project session index."""
+        path = self._session_path()
+        if path is None:
             return
         try:
-            import datetime
-            payload = {
-                "version": 1,
-                "saved_at": datetime.datetime.now().isoformat(timespec="seconds"),
-                "messages": [message.as_dict() for message in self._history],
-            }
+            import uuid
+            if not self._active_session_id:
+                self._active_session_id = uuid.uuid4().hex
+            records = list(getattr(self, "_session_records", []) or self._read_session_index())
+            active = next((item for item in records
+                           if item.get("id") == self._active_session_id), None)
+            if active is None:
+                now = self._now_iso()
+                active = {"id": self._active_session_id, "title": "Новый диалог",
+                          "created_at": now, "updated_at": now, "messages": []}
+                records.append(active)
+            active["messages"] = [message.as_dict() for message in self._history]
+            active["updated_at"] = self._now_iso()
+            active["preferences"] = self._session_preferences()
+            first_user = next((message.content.strip().splitlines()[0]
+                               for message in self._history if message.role == "user"
+                               and message.content.strip()), None)
+            if first_user and active.get("title") in (None, "", "Новый диалог"):
+                active["title"] = first_user[:56] + ("…" if len(first_user) > 56 else "")
+            # Keep the most recent 30 sessions, with the active one never lost.
+            records.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+            self._session_records = records[:30]
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
-                            encoding="utf-8")
+            payload = {"version": 2, "active_session_id": self._active_session_id,
+                       "sessions": self._session_records}
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
         except OSError:
             logger.debug("Не удалось сохранить сессию чата", exc_info=True)
 
     def load_chat_session(self) -> int:
-        """Restore the saved conversation; returns how many messages were loaded."""
+        """Restore the active chat, migrating the former single-chat format."""
+        # A project without a saved chat must never inherit the previous
+        # project's in-memory transcript or session picker entries.
+        self._session_records = []
+        self._active_session_id = None
+        self._loaded_session_preferences = False
+        self._history = []
+        self._clear_transcript_widgets()
+        self._append_welcome()
+        self._reset_session_stats()
         path = self._session_path()
         if path is None or not path.is_file():
             return 0
@@ -1794,22 +2159,120 @@ class AIAgentPanel(QtWidgets.QWidget):
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return 0
-        messages = payload.get("messages") if isinstance(payload, dict) else None
-        if not isinstance(messages, list):
+        if not isinstance(payload, dict):
             return 0
-        restored = [
-            AIMessage(str(item.get("role") or "user"), str(item.get("content") or ""))
-            for item in messages
-            if isinstance(item, dict) and str(item.get("content") or "").strip()
-        ]
+        sessions = payload.get("sessions")
+        if isinstance(sessions, list):
+            self._session_records = [item for item in sessions if isinstance(item, dict)]
+        else:
+            # Version 1 stored one transcript directly under "messages".
+            messages = payload.get("messages")
+            self._session_records = []
+            if isinstance(messages, list):
+                import uuid
+                migrated_id = uuid.uuid4().hex
+                self._session_records.append({"id": migrated_id, "title": "Импортированный диалог",
+                                              "created_at": payload.get("saved_at") or self._now_iso(),
+                                              "updated_at": payload.get("saved_at") or self._now_iso(),
+                                              "messages": messages})
+                payload = {"active_session_id": migrated_id}
+        active_id = payload.get("active_session_id")
+        active = next((item for item in self._session_records if item.get("id") == active_id), None)
+        if active is None and self._session_records:
+            active = max(self._session_records, key=lambda item: str(item.get("updated_at") or ""))
+        if active is None:
+            return 0
+        self._active_session_id = str(active.get("id") or "") or None
+        preferences = active.get("preferences") or {}
+        if preferences:
+            self._apply_session_preferences(preferences)
+            self._loaded_session_preferences = True
+        messages = active.get("messages") or []
+        restored = [AIMessage(str(item.get("role") or "user"), str(item.get("content") or ""))
+                    for item in messages if isinstance(item, dict)
+                    and str(item.get("content") or "").strip()]
         if not restored:
             return 0
         self._history = restored
-        self._append_html(
-            f'<p align="center" style="margin:10px 0 6px 0; color:{TEXT_DIM};'
-            f' font-size:{self._meta_px()}px;">Восстановлен диалог: {len(restored)} сообщений'
-            f' &nbsp;·&nbsp; /clear — начать заново</p>')
+        self._clear_transcript_widgets()
+        for message in restored:
+            if message.role == "user":
+                self._append_user(message.content)
+            elif message.role == "assistant":
+                self._append_assistant(message.content, mark_thinking=False)
+        self._last_author = restored[-1].role
+        self._refresh_menus()
+        self._scroll_to_latest()
         return len(restored)
+
+    def _clear_transcript_widgets(self):
+        self._clear_activity()
+        self._bubbles = []
+        self._thinking_bubbles = []
+        self._thinking_bubble = None
+        self._last_author = None
+        self._welcome_visible = False
+        self._welcome_widget = None
+        while self.messages.count() > 1:
+            item = self.messages.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def switch_chat_session(self, session_id: str) -> bool:
+        if session_id == self._active_session_id:
+            return True
+        self.save_chat_session()
+        target = next((item for item in self._read_session_index()
+                       if str(item.get("id")) == str(session_id)), None)
+        if target is None:
+            return False
+        self.stop_request()
+        self._discard_worker()
+        self._restore_composer_after_request()
+        self._queue = []
+        self._render_queue_chip()
+        self._active_session_id = str(session_id)
+        self._history = [AIMessage(str(item.get("role") or "user"),
+                                   str(item.get("content") or ""))
+                         for item in target.get("messages", [])
+                         if isinstance(item, dict) and item.get("content")]
+        self._clear_transcript_widgets()
+        if self._history:
+            for message in self._history:
+                if message.role == "user":
+                    self._append_user(message.content)
+                elif message.role == "assistant":
+                    self._append_assistant(message.content, mark_thinking=False)
+            self._last_author = self._history[-1].role
+            self._scroll_to_latest()
+        else:
+            self._append_welcome()
+        preferences = target.get("preferences") or {}
+        self._apply_session_preferences(preferences)
+        self._refresh_menus()
+        self._reset_session_stats()
+        self.save_chat_session()
+        return True
+
+    def _apply_session_preferences(self, preferences: dict) -> None:
+        from utils.settings_manager import get_settings_manager
+        sm = get_settings_manager()
+        if preferences.get("context") in SCOPE_LABELS:
+            sm.settings["ai_context_scope"] = preferences["context"]
+        if preferences.get("mode") in ("solve", "teach"):
+            sm.settings["ai_mode"] = preferences["mode"]
+        if preferences.get("provider") in PROVIDERS:
+            spec = get_provider(preferences["provider"])
+            sm.settings["ai_provider"] = spec.key
+            sm.settings["ai_base_url"] = spec.base_url
+        if preferences.get("model"):
+            sm.settings["ai_model"] = str(preferences["model"])
+        self.include_file.setChecked(bool(preferences.get("include_file", False)))
+        self.include_selection.setChecked(bool(preferences.get("include_selection", False)))
+        self.include_problems.setChecked(bool(preferences.get("include_problems", False)))
+        sm.save_settings()
 
     def _forget_chat_session(self) -> None:
         path = self._session_path()
@@ -1840,7 +2303,13 @@ class AIAgentPanel(QtWidgets.QWidget):
             worker.finished.disconnect()
         except (TypeError, RuntimeError):
             pass
-        worker.deleteLater()
+        # QThread must outlive run(), including an outstanding network call.
+        worker.setParent(None)
+        _detached_workers.add(worker)
+        worker.finished.connect(worker.deleteLater)
+        worker.destroyed.connect(lambda: _detached_workers.discard(worker))
+        if worker.isFinished():
+            worker.deleteLater()
 
     def shutdown(self):
         """Stop the worker and terminate every MCP server this panel started."""
@@ -1868,7 +2337,7 @@ class AIAgentPanel(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Context gathering
     # ------------------------------------------------------------------
-    def _collect_context(self) -> str:
+    def _collect_context(self, exclude_file: bool = False) -> str:
         window = self.main_window
         if window is None:
             return ""
@@ -1879,11 +2348,11 @@ class AIAgentPanel(QtWidgets.QWidget):
         selection = None
         if editor is not None:
             text_editor = getattr(editor, "editor", None)
-            if text_editor is not None:
+            if self.include_selection.isChecked() and text_editor is not None:
                 cursor = text_editor.textCursor()
                 if cursor.hasSelection():
                     selection = cursor.selectedText().replace("\u2029", "\n")
-            if self.include_file.isChecked() or selection:
+            if self.include_file.isChecked() and not exclude_file:
                 code = editor.get_code() if hasattr(editor, "get_code") else None
             if not selection and self.include_selection.isChecked() and text_editor is not None:
                 block = text_editor.textCursor().block().text()
@@ -1918,7 +2387,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         code = editor.get_code() if hasattr(editor, "get_code") else None
         selection = None
         text_editor = getattr(editor, "editor", None)
-        if text_editor is not None:
+        if self.include_selection.isChecked() and text_editor is not None:
             cursor = text_editor.textCursor()
             if cursor.hasSelection():
                 selection = cursor.selectedText().replace("\u2029", "\n")
@@ -1926,7 +2395,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         try:
             console = getattr(window, "console_widget", None)
             lst = getattr(console, "problems_list", None) if console else None
-            if lst is not None:
+            if self.include_problems.isChecked() and lst is not None:
                 problems = [lst.item(i).text() for i in range(min(lst.count(), 40))]
         except Exception:
             problems = None
@@ -1960,7 +2429,7 @@ class AIAgentPanel(QtWidgets.QWidget):
     def _scope(self) -> str:
         from utils.settings_manager import get_settings_manager
         value = str(get_settings_manager().get_setting("ai_context_scope", "none") or "none")
-        return value if value in ("project", "file", "none") else "none"
+        return value if value in ("project", "file", "open_files", "none") else "none"
 
     def _set_scope(self, scope: str):
         if scope not in SCOPE_LABELS:
@@ -1983,7 +2452,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         * opening a project selects ``project`` (unless the user deliberately
           picked a different scope for this project before);
         * closing the project falls back to ``none``;
-        * ``file`` chosen explicitly is never overwritten.
+        * an explicit file/open-files choice is never overwritten.
 
         The previous version forced ``project``/``none`` on every call, which
         silently reverted the "текущий файл" option back to a project scope.
@@ -1996,14 +2465,29 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._entries_cache = None
         # Restore the saved conversation once per project.
         if root and str(root) != getattr(self, "_session_root", None):
+            if self._worker is not None:
+                self.stop_request()
+                self._discard_worker()
+                self._restore_composer_after_request()
+                self._queue = []
+                self._render_queue_chip()
+            for client in list(getattr(self, "_mcp_clients", {}).values()):
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            self._mcp_clients = {}
             self._session_root = str(root)
             self.load_chat_session()
+            if self._loaded_session_preferences:
+                self._refresh_menus()
+                return
         elif not root:
             self._session_root = None
         if root:
-            # A project is open: keep an explicit "file" choice, otherwise use
+            # A project is open: keep an explicit file choice, otherwise use
             # the project-wide context.
-            if current == "file":
+            if current in ("file", "open_files"):
                 self._refresh_menus()
                 return
             wanted = "project"
@@ -2043,6 +2527,9 @@ class AIAgentPanel(QtWidgets.QWidget):
                 root = Path(str(file_path)).parent
         if root is None or not root.is_dir():
             return ""
+        if getattr(self, "_defer_project_context", False):
+            self._pending_project_context = (str(root), list(mentions or []))
+            return ""
         from services.ai_context import render_project_context
         return render_project_context(root, mentions)
 
@@ -2058,7 +2545,14 @@ class AIAgentPanel(QtWidgets.QWidget):
         text = parsed.text or raw
         self.input.clear()
         self._clear_welcome()
-        context = self._context_for(mentions)
+        self._pending_project_context = None
+        self._defer_project_context = True
+        try:
+            context = self._context_for(mentions)
+        finally:
+            self._defer_project_context = False
+        if self._pending_project_context is not None:
+            context = (context, self._pending_project_context)
         self._send(text, context, mentions=mentions)
 
     def _context_for(self, mentions=None) -> str:
@@ -2067,12 +2561,52 @@ class AIAgentPanel(QtWidgets.QWidget):
         scope = self._scope()
         if mentions:
             base = self._collect_project_context(mentions)
-            return (base + "\n\n" + self._collect_file_context()) if self._scope() == "file" else base
+            if self._scope() == "file":
+                base = (base + "\n\n" + self._collect_file_context()).strip()
+                return base
+            extras = self._collect_context(exclude_file=(self._scope() == "file"))
+            return (base + "\n\n" + extras).strip() if extras else base
         if scope == "project":
-            return self._collect_project_context(None)
-        if scope == "file":
+            base = self._collect_project_context(None)
+        elif scope == "open_files":
+            base = self._collect_open_files_context()
+        elif scope == "file":
             return self._collect_file_context()
-        return ""
+        else:
+            base = ""
+        extras = self._collect_context(exclude_file=(scope == "file"))
+        return (base + "\n\n" + extras).strip() if extras else base
+
+    def _collect_open_files_context(self) -> str:
+        """Attach current editor buffers, including unsaved changes."""
+        window = self.main_window
+        if window is None or not hasattr(window, "editor_groups"):
+            return ""
+        parts = []
+        seen = set()
+        for group in window.editor_groups():
+            for index in range(group.count()):
+                editor = group.widget(index)
+                path = getattr(editor, "file_path", None)
+                if not path or not hasattr(editor, "get_code"):
+                    continue
+                try:
+                    identity = str(Path(path).resolve())
+                except OSError:
+                    identity = str(path)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                text = str(editor.get_code() or "")
+                if len(text) > 60_000:
+                    text = text[:60_000] + "\n… (контекст ограничен 60 000 символами)"
+                parts.append(f"Открытый файл {path}:\n```\n{text}\n```")
+                if len(parts) >= 12:
+                    parts.append("… (показаны первые 12 текстовых файлов)")
+                    break
+            if len(parts) >= 12:
+                break
+        return ("<open_files>\n" + "\n\n".join(parts) + "\n</open_files>") if parts else ""
 
     def _run_command(self, parsed) -> bool:
         """Execute a slash command; returns True when it was handled."""
@@ -2114,7 +2648,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                 self._set_scope(arg)
             else:
                 self._append_step(f"Контекст: {SCOPE_LABELS.get(self._scope())} "
-                                  "· /context project|file|none")
+                                  "· /context project|open_files|file|none")
             return True
         if command.name == "mode":
             from services.ai_service import TEACHING_MODE_LABELS
@@ -2206,13 +2740,23 @@ class AIAgentPanel(QtWidgets.QWidget):
 
     def _show_mcp(self):
         servers = getattr(self, "_mcp_clients", {}) or {}
-        if not servers:
-            self._append_step("MCP: серверы не подключены (Настройки → ИИ-агент → MCP)")
+        configs = self._mcp_server_configs()
+        if not configs:
+            self._append_assistant(
+                "MCP-серверы не настроены. Их можно добавить в **Настройки → ИИ-агент → MCP**.\n\n"
+                "Встроенные инструменты CodeLane уже умеют читать и открывать файлы проекта, "
+                "применять точечные правки в редакторе, запускать приложения и команды.",
+                mark_thinking=False)
             return
         lines = []
-        for key, client in servers.items():
-            names = ", ".join(t.name for t in client.tools) or "нет инструментов"
-            lines.append(f"**{key}** ({client.config.transport}) — {names}")
+        for config in configs:
+            client = servers.get(config.name)
+            if client is None:
+                state = "подключится при следующем запросе"
+            else:
+                names = ", ".join(tool.name for tool in client.tools) or "инструментов нет"
+                state = "подключён · " + names
+            lines.append(f"- **{config.label}** ({config.transport}) — {state}")
         self._append_assistant("MCP-серверы:\n\n" + "\n".join(lines), mark_thinking=False)
 
     def _set_model(self, model: str):
@@ -2260,16 +2804,23 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._stream_open = False
         self._tool_counters = {}
         self.send_btn.setEnabled(False)
+        self.send_btn.setVisible(False)
         self.stop_btn.setVisible(True)
         self.status_label.setVisible(False)
 
         access_mode = self._access_mode()
+        project_context = None
+        if isinstance(context, tuple):
+            context, project_context = context
         if access_mode == "write_only":
             context = ""
+            project_context = None
         worker = AIWorker(service, prompt, [] if access_mode == "write_only" else list(self._history), context, self,
                           mcp_servers=self._mcp_server_configs(),
                           mcp_clients=getattr(self, "_mcp_clients", {}),
-                          local_tools=self._build_local_tools())
+                          local_tools=None)
+        worker.project_context = project_context
+        worker.local_tools = self._build_local_tools(should_stop=lambda: worker._stop)
         worker.chunk.connect(self._on_chunk)
         worker.reasoning.connect(self._on_reasoning)
         worker.tool_started.connect(self._on_tool_started)
@@ -2277,7 +2828,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         worker.finished_ok.connect(lambda answer: self._on_finished(prompt, answer))
         worker.failed.connect(self._on_failed)
         worker.finished.connect(self._cleanup_worker)
-        self._last_request = (prompt, context, mentions)
+        saved_context = (context, project_context) if project_context is not None else context
+        self._last_request = (prompt, saved_context, mentions)
         self._history_before_request = len(self._history)
         self._request_started = time.monotonic()
         self._worker = worker
@@ -2367,23 +2919,13 @@ class AIAgentPanel(QtWidgets.QWidget):
             self._stream_open = True
             self._thinking_bubbles = []
             bubble = _UserBubble(self._thinking_placeholder(), side="in")
-            bubble.label.setTextFormat(QtCore.Qt.PlainText)
+            bubble.label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
             bubble.setObjectName("aiThinkingBubble")
             self._thinking_bubbles.append(bubble)
             self._thinking_bubble = bubble
             self._insert_bubble(bubble)
             self._relayout_transcript()
-            self._pulse_thinking()
             return
-        bubble = getattr(self, "_thinking_bubble", None)
-        if bubble is None:
-            return
-        # Only the hint is shown; the reasoning text itself is never rendered.
-        try:
-            bubble.label.setText(self._thinking_placeholder())
-            self._relayout_transcript()
-        except RuntimeError:
-            pass
 
     def _pulse_thinking(self):
         """Gently pulse the "thinking" bubble so it reads as live activity."""
@@ -2434,6 +2976,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         # markdown. Telegram-style chat keeps only the final message, so drop it
         # and render the finished answer once, in a single clean bubble.
         self._stream_open = False
+        self._current_answer[:] = [answer] if answer else []
         self._answer_truncated = bool(getattr(self._worker, "truncated", False))
         usage = dict(getattr(self._worker, "usage", {}) or {})
         # Keep the servers this request connected so the next one reuses them.
@@ -2507,8 +3050,11 @@ class AIAgentPanel(QtWidgets.QWidget):
             parts.append(f"{stats['steps']} шагов")
         if speed:
             parts.append(f"{speed} tok/s")
-        if tokens:
-            parts.append(f"{tokens} tok")
+        prompt = int(stats.get("prompt", 0))
+        if tokens or prompt:
+            parts.append(f"Токены {prompt + tokens} · вход {prompt} · выход {tokens}")
+        else:
+            parts.append("Расход токенов не передан провайдером")
         if hit:
             parts.append(f"кэш {hit}%")
         label.setText(" · ".join(parts))
@@ -2549,14 +3095,26 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._append_notice("⚠ " + message, "warn")
 
     def _cleanup_worker(self):
-        if self._worker is not None:
-            self._worker.deleteLater()
+        worker = self._worker
+        if worker is not None:
+            # A request can fail after connecting MCP servers but before it
+            # returns a final answer. Keep those clients reachable for cleanup
+            # and reuse on the next turn instead of orphaning their processes.
+            clients = dict(getattr(worker, "mcp_clients", {}) or {})
+            if clients:
+                self._mcp_clients.update(clients)
+            worker.deleteLater()
         self._worker = None
-        self.stop_btn.setVisible(False)
-        self.send_btn.setEnabled(True)
-        self.refresh_status()
+        self._restore_composer_after_request()
         # Keep a queued conversation flowing.
         self._drain_queue()
+
+    def _restore_composer_after_request(self):
+        """Return the composer to its idle controls after a request ends."""
+        self.stop_btn.setVisible(False)
+        self.send_btn.setVisible(True)
+        self.send_btn.setEnabled(True)
+        self.refresh_status()
 
     def stop_request(self):
         if self._worker is not None:
@@ -2564,7 +3122,7 @@ class AIAgentPanel(QtWidgets.QWidget):
 
     def keyPressEvent(self, event):
         # Esc stops a streaming answer, like the reference chat UIs.
-        if event.key() == QtCore.Qt.Key_Escape and self._worker is not None:
+        if event.key() == QtCore.Qt.Key.Key_Escape and self._worker is not None:
             self.stop_request()
             event.accept()
             return
@@ -2641,7 +3199,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         new_text = text[:start] + choice + " "
         self.input.setPlainText(new_text)
         cursor = self.input.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         self.input.setTextCursor(cursor)
         self.completion.hide_popup()
 
@@ -2656,21 +3214,21 @@ class AIAgentPanel(QtWidgets.QWidget):
 
     def eventFilter(self, watched, event):
         """Intercept Up/Down/Tab/Enter while the completion popup is open."""
-        if watched is self.input and event.type() == QtCore.QEvent.KeyPress:
+        if watched is self.input and event.type() == QtCore.QEvent.Type.KeyPress:
             if self.completion.isVisible():
-                if event.key() in (QtCore.Qt.Key_Up, QtCore.Qt.Key_Down):
-                    self.completion.move_selection(-1 if event.key() == QtCore.Qt.Key_Up else 1)
+                if event.key() in (QtCore.Qt.Key.Key_Up, QtCore.Qt.Key.Key_Down):
+                    self.completion.move_selection(-1 if event.key() == QtCore.Qt.Key.Key_Up else 1)
                     return True
-                if event.key() == QtCore.Qt.Key_Tab:
+                if event.key() == QtCore.Qt.Key.Key_Tab:
                     self._accept_completion()
                     return True
-                if event.key() == QtCore.Qt.Key_Escape:
+                if event.key() == QtCore.Qt.Key.Key_Escape:
                     self.completion.hide_popup()
                     return True
-                if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+                if event.key() in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
                     self._accept_completion()
                     return True
-            elif event.key() == QtCore.Qt.Key_Tab:
+            elif event.key() == QtCore.Qt.Key.Key_Tab:
                 if self._current_token():
                     self._update_completion()
                     return True
@@ -2697,12 +3255,12 @@ class AIAgentPanel(QtWidgets.QWidget):
         text_editor.setFocus()
         cursor.beginEditBlock()
         try:
-            cursor.movePosition(QtGui.QTextCursor.StartOfBlock)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
             prefix = "\n\n" if text_editor.toPlainText().strip() else ""
             cursor.insertText(prefix + code + "\n")
             start = cursor.position() - len(code) - 1
             cursor.setPosition(max(0, start))
-            cursor.setPosition(max(0, start) + len(code), QtGui.QTextCursor.KeepAnchor)
+            cursor.setPosition(max(0, start) + len(code), QtGui.QTextCursor.MoveMode.KeepAnchor)
         finally:
             cursor.endEditBlock()
         text_editor.setTextCursor(cursor)
@@ -2719,7 +3277,7 @@ class AIAgentPanel(QtWidgets.QWidget):
 
     def conversation_markdown(self) -> str:
         """The whole dialog as Markdown, for export."""
-        lines = ["# Диалог с ИИ-агентом PyScribe", ""]
+        lines = ["# Диалог с ИИ-агентом CodeLane", ""]
         model = self._service().model
         lines.append(f"Модель: `{model}`")
         lines.append(f"Контекст: {SCOPE_LABELS.get(self._scope(), self._scope())}")
@@ -2771,7 +3329,7 @@ class _BubbleFrame(QtWidgets.QFrame):
         super().__init__(parent)
         self._side = side
         self._grouped = grouped
-        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName(
             "aiUserBubblePill" if side == "out" else "aiAssistantBubbleBody")
 
@@ -2797,10 +3355,10 @@ class _UserBubble(QtWidgets.QWidget):
         # The widget stretches across the row so alignment works; the visible
         # pill inside hugs its content.
         self.setObjectName("aiUserBubble" if side == "out" else "aiAssistantBubble")
-        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         # The widget must stay at its content height; without a fixed policy the
         # row stretch makes each bubble fill the viewport and look airy.
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
 
         outer = QtWidgets.QHBoxLayout(self)
         # Generous gap between messages, tight gap inside one author's group.
@@ -2812,8 +3370,8 @@ class _UserBubble(QtWidgets.QWidget):
             outer.addStretch(1)
 
         self.pill = _BubbleFrame(side, grouped, self)
-        self.pill.setSizePolicy(QtWidgets.QSizePolicy.Maximum,
-                                QtWidgets.QSizePolicy.Minimum)
+        self.pill.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum,
+                                QtWidgets.QSizePolicy.Policy.Minimum)
         pill_layout = QtWidgets.QVBoxLayout(self.pill)
         if side == "out":
             pill_layout.setContentsMargins(14, 10, 14, 10)
@@ -2833,24 +3391,24 @@ class _UserBubble(QtWidgets.QWidget):
             # must not be used for bubble bodies.
             self.label = QtWidgets.QLabel(self.pill)
             self.label.setObjectName("aiAssistantBubbleText")
-            self.label.setTextFormat(QtCore.Qt.RichText)
+            self.label.setTextFormat(QtCore.Qt.TextFormat.RichText)
             self.label.setWordWrap(True)
             self.label.setTextInteractionFlags(
-                QtCore.Qt.TextSelectableByMouse | QtCore.Qt.LinksAccessibleByMouse)
+                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse | QtCore.Qt.TextInteractionFlag.LinksAccessibleByMouse)
             self.label.setOpenExternalLinks(True)
-            self.label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
-            self.label.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
-                                     QtWidgets.QSizePolicy.Minimum)
+            self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+            self.label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred,
+                                     QtWidgets.QSizePolicy.Policy.Minimum)
             self.label.setText(body_html)
         else:
             self.label = QtWidgets.QLabel(text, self.pill)
             self.label.setObjectName("aiUserBubbleText" if side == "out" else "aiAssistantBubbleText")
-            self.label.setTextFormat(QtCore.Qt.PlainText)
+            self.label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
             self.label.setWordWrap(True)
-            self.label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-            self.label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
-            self.label.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
-                                     QtWidgets.QSizePolicy.Minimum)
+            self.label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+            self.label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred,
+                                     QtWidgets.QSizePolicy.Policy.Minimum)
         pill_layout.addWidget(self.label)
 
         # Push the content to the top and keep the pill height content-driven.
@@ -2867,15 +3425,15 @@ class _UserBubble(QtWidgets.QWidget):
             self.copy_btn = QtWidgets.QToolButton(self.actions)
             self.copy_btn.setObjectName("aiMessageAction")
             self.copy_btn.setText("Копировать")
-            self.copy_btn.setCursor(QtCore.Qt.PointingHandCursor)
-            self.copy_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+            self.copy_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            self.copy_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
             self.copy_btn.clicked.connect(lambda: self.copy_requested.emit(self))
             row.addWidget(self.copy_btn)
             self.retry_btn = QtWidgets.QToolButton(self.actions)
             self.retry_btn.setObjectName("aiMessageAction")
             self.retry_btn.setText("Повторить")
-            self.retry_btn.setCursor(QtCore.Qt.PointingHandCursor)
-            self.retry_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+            self.retry_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            self.retry_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
             self.retry_btn.clicked.connect(lambda: self.regenerate_requested.emit(self))
             row.addWidget(self.retry_btn)
             row.addStretch(1)

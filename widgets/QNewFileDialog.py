@@ -2,7 +2,7 @@
 from core.logging_config import get_logger
 from fileinput import filename
 
-from PyQt5.QtWidgets import QWidget, QFileDialog
+from PyQt6.QtWidgets import QWidget, QFileDialog
 
 
 class FileSaveWindow(QWidget):

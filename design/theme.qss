@@ -1732,3 +1732,59 @@ QLabel#workbenchMenuSection {
     font-weight: 600;
     padding: 4px 16px 2px;
 }
+
+/* Refined workbench surfaces and interaction states. */
+QFrame#workbenchTopBar { border-bottom: 1px solid @soft_border@; }
+QFrame#activityBar, QFrame#sidePanel { border-right: 1px solid @soft_border@; }
+QFrame#explorerHeader { border-bottom: 1px solid @soft_border@; }
+QLabel#sideTitle, QLabel#explorerSectionTitle {
+    letter-spacing: 0px;
+    font-size: 12px;
+    font-weight: 500;
+    color: @muted_text@;
+}
+QPushButton {
+    border: 1px solid @soft_border@;
+    border-radius: 8px;
+    padding: 5px 12px;
+    background: @glass_surface@;
+    color: @glass_text@;
+}
+QPushButton:hover { background: @glass_hover@; border-color: @glass_border@; }
+QPushButton:pressed { background: #37373D; }
+QPushButton:focus { border-color: @glass_focus@; }
+QPushButton:disabled { color: @muted_text@; }
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+    border: 1px solid @soft_border@;
+    border-radius: 7px;
+    padding: 4px 8px;
+    selection-background-color: #264F78;
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+    border-color: @glass_focus@;
+}
+QGroupBox {
+    border: 1px solid @soft_border@;
+    border-radius: 10px;
+    margin-top: 14px;
+    padding: 12px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 5px;
+    color: @muted_text@;
+}
+QTreeView, QListView { outline: 0; border: none; }
+QTreeView::item, QListView::item { border-radius: 5px; padding: 2px 4px; }
+QTreeView::item:hover, QListView::item:hover { background: @glass_surface@; }
+QMenu { border: 1px solid @soft_border@; border-radius: 9px; padding: 5px; }
+QMenu::item { border-radius: 5px; padding: 6px 18px; }
+QMenu::separator { height: 1px; background: @soft_border@; margin: 5px 8px; }
+QToolTip {
+    background: @glass_menu@;
+    color: @glass_text@;
+    border: 1px solid @glass_border@;
+    border-radius: 6px;
+    padding: 6px 9px;
+}

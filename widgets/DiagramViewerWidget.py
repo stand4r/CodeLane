@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 import zlib
 
 from design.icons import set_line_icon
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 MAX_XML_BYTES = 16 * 1024 * 1024
 DIAGRAM_EXTENSIONS = {".drawio", ".dio"}
@@ -65,8 +65,8 @@ def _number(element, key, default=0):
 class _DiagramCanvas(QtWidgets.QGraphicsView):
     def __init__(self, scene):
         super().__init__(scene)
-        self.viewport().grabGesture(QtCore.Qt.PinchGesture)
-        self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorUnderMouse)
+        self.viewport().grabGesture(QtCore.Qt.GestureType.PinchGesture)
+        self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
     def zoom(self, factor):
         if factor <= 0:
@@ -76,15 +76,15 @@ class _DiagramCanvas(QtWidgets.QGraphicsView):
         self.scale(target / current, target / current)
 
     def viewportEvent(self, event):
-        if event.type() == QtCore.QEvent.NativeGesture:
-            if event.gestureType() == QtCore.Qt.ZoomNativeGesture:
+        if event.type() == QtCore.QEvent.Type.NativeGesture:
+            if event.gestureType() == QtCore.Qt.NativeGestureType.ZoomNativeGesture:
                 self.zoom(1 + event.value())
                 event.accept()
                 return True
-        elif event.type() == QtCore.QEvent.Gesture:
-            pinch = event.gesture(QtCore.Qt.PinchGesture)
+        elif event.type() == QtCore.QEvent.Type.Gesture:
+            pinch = event.gesture(QtCore.Qt.GestureType.PinchGesture)
             if pinch is not None:
-                if pinch.changeFlags() & QtWidgets.QPinchGesture.ScaleFactorChanged:
+                if pinch.changeFlags() & QtWidgets.QPinchGesture.ChangeFlag.ScaleFactorChanged:
                     previous = pinch.lastScaleFactor()
                     self.zoom(pinch.scaleFactor() / previous if previous > 0 else pinch.scaleFactor())
                 event.accept(pinch)
@@ -92,7 +92,7 @@ class _DiagramCanvas(QtWidgets.QGraphicsView):
         return super().viewportEvent(event)
 
     def wheelEvent(self, event):
-        if event.modifiers() & QtCore.Qt.ControlModifier:
+        if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
             delta = event.angleDelta().y() or event.pixelDelta().y()
             self.zoom(1.2 ** (delta / 120))
             event.accept()
@@ -134,8 +134,8 @@ class DiagramViewerWidget(QtWidgets.QWidget):
         layout.addWidget(self.status)
         self.scene = QtWidgets.QGraphicsScene(self)
         self.view = _DiagramCanvas(self.scene)
-        self.view.setDragMode(QtWidgets.QGraphicsView.ScrollHandDrag)
-        self.view.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.TextAntialiasing)
+        self.view.setDragMode(QtWidgets.QGraphicsView.DragMode.ScrollHandDrag)
+        self.view.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing | QtGui.QPainter.RenderHint.TextAntialiasing)
         self.view.setToolTip("Щипок или Ctrl + прокрутка — масштаб")
         layout.addWidget(self.view, 1)
         self.reload()
@@ -159,7 +159,7 @@ class DiagramViewerWidget(QtWidgets.QWidget):
 
     def _fit(self):
         if not self.scene.sceneRect().isEmpty():
-            self.view.fitInView(self.scene.sceneRect(), QtCore.Qt.KeepAspectRatio)
+            self.view.fitInView(self.scene.sceneRect(), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
 
     def _render_page(self, index):
         if not 0 <= index < len(self._pages):
@@ -212,7 +212,7 @@ class DiagramViewerWidget(QtWidgets.QWidget):
             rect = box_for(key)
             style = dict(part.split("=", 1) for part in cell.get("style", "").split(";") if "=" in part)
             fill = QtGui.QColor(style.get("fillColor", palette.alternateBase().color().name()))
-            brush = QtGui.QBrush(fill) if fill.isValid() else QtGui.QBrush(QtCore.Qt.NoBrush)
+            brush = QtGui.QBrush(fill) if fill.isValid() else QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush)
             path = QtGui.QPainterPath()
             tokens = cell.get("style", "").split(";")
             shape = style.get("shape", "")
@@ -240,7 +240,7 @@ class DiagramViewerWidget(QtWidgets.QWidget):
                 )
                 item.setTextWidth(max(1, rect.width() - 10))
                 option = item.document().defaultTextOption()
-                option.setAlignment(QtCore.Qt.AlignCenter)
+                option.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                 item.document().setDefaultTextOption(option)
                 item.setPos(rect.left() + 5, rect.center().y() - item.boundingRect().height() / 2)
                 item.setZValue(1)

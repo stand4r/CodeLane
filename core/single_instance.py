@@ -5,7 +5,7 @@ Uses QtLocalServer/QtLocalSocket so no third-party dependency is required.
 """
 import json
 from pathlib import Path
-from PyQt5 import QtCore, QtNetwork
+from PyQt6 import QtCore, QtNetwork
 
 
 class SingleInstance(QtCore.QObject):

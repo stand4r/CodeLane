@@ -1,11 +1,11 @@
 """PyScribe widgets/ProjectDialog.py: application module and reusable component."""
 from core.logging_config import get_logger
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QFileDialog, QTextEdit,
                              QListWidget, QListWidgetItem, QMessageBox, QTabWidget,
                              QWidget, QFormLayout, QComboBox, QFrame, QScrollArea, QMenu)
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QFont, QIcon, QPixmap, QPalette
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QFont, QIcon, QPixmap, QPalette
 from pathlib import Path
 import json
 import os
@@ -105,7 +105,7 @@ class ModernProjectCard(QFrame):
     
     def setup_ui(self):
         self.setObjectName("project-card")
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update_card_style()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)
@@ -122,7 +122,7 @@ class ModernProjectCard(QFrame):
         path_label.setObjectName("projectPath")
         path_label.setStyleSheet("background: transparent; background-color: transparent; border: none; font-size: 12px; color: #858585;")
         path_label.setWordWrap(False)
-        path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         title_info_layout.addWidget(name_label)
         title_info_layout.addWidget(path_label)
         title_layout.addLayout(title_info_layout, 1)
@@ -152,7 +152,7 @@ class ModernProjectCard(QFrame):
         
         # Разделитель
         separator = QFrame()
-        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShape(QFrame.Shape.HLine)
         separator.setStyleSheet("background-color: #2B2B2B; max-height: 1px;")
         layout.addWidget(separator)
         
@@ -208,7 +208,7 @@ class ModernProjectCard(QFrame):
             """)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             if self.parent_dialog and hasattr(self.parent_dialog, 'select_card'):
                 self.parent_dialog.select_card(self)
         super().mousePressEvent(event)
@@ -226,7 +226,7 @@ class ModernProjectCard(QFrame):
         config_action = menu.addAction("Настроить...")
         menu.addSeparator()
         delete_action = menu.addAction("Удалить из списка")
-        chosen = menu.exec_(event.globalPos())
+        chosen = menu.exec(event.globalPos())
         if chosen == open_action:
             self.on_open_clicked()
         elif chosen == config_action:
@@ -246,11 +246,11 @@ class ModernProjectCard(QFrame):
             "Удалить проект",
             f"Вы уверены, что хотите удалить проект «{self.project.name}» из списка?\n\n"
             "Примечание: проект будет удален только из списка PyScribe, файлы на диске останутся нетронутыми.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
         )
         
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             from widgets.ProjectManager import project_manager
             if project_manager.delete_project(self.project.root_path):
                 if self.parent_dialog:
@@ -340,8 +340,8 @@ class ProjectDialog(QDialog):
         # Область прокрутки для карточек
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         
         scroll_widget = QWidget()
         self.recent_layout = QVBoxLayout(scroll_widget)
@@ -354,7 +354,7 @@ class ProjectDialog(QDialog):
         
         # Сообщение если нет проектов
         
-        self.recent_empty_label.setAlignment(Qt.AlignCenter)
+        self.recent_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.recent_empty_label)
         
         self.update_empty_state()
@@ -415,14 +415,14 @@ class ProjectDialog(QDialog):
         
         folder_icon = QLabel("📂")
         folder_icon.setStyleSheet("font-size: 48px; text-align: center;")
-        folder_icon.setAlignment(Qt.AlignCenter)
+        folder_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         folder_title = QLabel("Открыть папку как проект")
         folder_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #FFFFFF; text-align: center;")
         
         folder_desc = QLabel("Быстро откройте любую папку и начните разработку.\nPyScribe автоматически определит структуру проекта.")
         folder_desc.setStyleSheet("color: #CCCCCC; text-align: center; line-height: 1.4;")
-        folder_desc.setAlignment(Qt.AlignCenter)
+        folder_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         folder_desc.setWordWrap(True)
         
         open_folder_btn = QPushButton("Выбрать папку…")
@@ -460,7 +460,7 @@ class ProjectDialog(QDialog):
 
     def keyPressEvent(self, event):
         """Удаление выбранного проекта по клавише Delete/Backspace"""
-        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and getattr(self, 'selected_card', None):
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and getattr(self, 'selected_card', None):
             self.selected_card.on_delete_clicked()
             return
         super().keyPressEvent(event)
@@ -499,7 +499,7 @@ class ProjectDialog(QDialog):
         if not all_projects:
             empty_label = QLabel("Проекты не найдены.\nСоздайте новый проект, чтобы начать работу.")
             empty_label.setStyleSheet("color: #666666; font-size: 14px; text-align: center; padding: 40px;")
-            empty_label.setAlignment(Qt.AlignCenter)
+            empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.all_layout.addWidget(empty_label)
     
     def update_empty_state(self):
@@ -522,7 +522,7 @@ class ProjectDialog(QDialog):
     def show_new_project_dialog(self):
         """Показать диалог создания нового проекта"""
         dialog = NewProjectDialog(self)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             if getattr(dialog, 'created_project', None):
                 self.selected_project = dialog.created_project
                 self.accept()
@@ -536,7 +536,7 @@ class ProjectDialog(QDialog):
             self, 
             "Выберите папку проекта",
             "",
-            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontResolveSymlinks
         )
         
         if folder:
@@ -569,7 +569,9 @@ class ProjectDialog(QDialog):
     def configure_project(self, project):
         """Настройка проекта"""
         dialog = ProjectConfigDialog(project, self)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            from widgets.ProjectManager import project_manager
+            project_manager.update_project_config(dialog.get_config())
             self.load_recent_projects()
             self.load_all_projects()
 
@@ -595,7 +597,7 @@ class NewProjectDialog(QDialog):
         # Форма
         form_layout = QFormLayout()
         form_layout.setSpacing(15)
-        form_layout.setLabelAlignment(Qt.AlignRight)
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         
         # Название проекта
         self.name_edit = QLineEdit()
@@ -852,7 +854,7 @@ class ProjectConfigDialog(QDialog):
         # Форма настроек
         form_layout = QFormLayout()
         form_layout.setSpacing(15)
-        form_layout.setLabelAlignment(Qt.AlignRight)
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         
         # Название проекта
         self.name_edit = QLineEdit(self.project_config.name)

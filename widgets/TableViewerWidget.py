@@ -23,7 +23,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 def _parse_number(val: str) -> Optional[float]:
@@ -72,7 +72,7 @@ class TableViewModel(QtCore.QAbstractTableModel):
             return 0
         return self._col_count
 
-    def data(self, index: QtCore.QModelIndex, role: int = QtCore.Qt.DisplayRole) -> Any:
+    def data(self, index: QtCore.QModelIndex, role: int = QtCore.Qt.ItemDataRole.DisplayRole) -> Any:
         if not index.isValid():
             return None
         r, c = index.row(), index.column()
@@ -80,30 +80,30 @@ class TableViewModel(QtCore.QAbstractTableModel):
             return None
 
         val = self._raw_rows[r][c]
-        if role == QtCore.Qt.DisplayRole:
+        if role == QtCore.Qt.ItemDataRole.DisplayRole:
             return str(val)
-        if role == QtCore.Qt.TextAlignmentRole:
+        if role == QtCore.Qt.ItemDataRole.TextAlignmentRole:
             num = _parse_number(val)
             if num is not None:
-                return int(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-            return int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        if role == QtCore.Qt.ToolTipRole:
+                return int(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            return int(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        if role == QtCore.Qt.ItemDataRole.ToolTipRole:
             return str(val)
-        if role == QtCore.Qt.UserRole:
+        if role == QtCore.Qt.ItemDataRole.UserRole:
             # Used for sorting: return float if numeric, else lowercase string
             num = _parse_number(val)
             return (0, num) if num is not None else (1, str(val).lower())
         return None
 
-    def headerData(self, section: int, orientation: QtCore.Qt.Orientation, role: int = QtCore.Qt.DisplayRole) -> Any:
-        if role == QtCore.Qt.DisplayRole:
-            if orientation == QtCore.Qt.Horizontal:
+    def headerData(self, section: int, orientation: QtCore.Qt.Orientation, role: int = QtCore.Qt.ItemDataRole.DisplayRole) -> Any:
+        if role == QtCore.Qt.ItemDataRole.DisplayRole:
+            if orientation == QtCore.Qt.Orientation.Horizontal:
                 if 0 <= section < len(self._raw_headers):
                     return self._raw_headers[section]
                 return f"Колонка {section + 1}"
             return str(section + 1)
-        if role == QtCore.Qt.TextAlignmentRole:
-            return int(QtCore.Qt.AlignCenter)
+        if role == QtCore.Qt.ItemDataRole.TextAlignmentRole:
+            return int(QtCore.Qt.AlignmentFlag.AlignCenter)
         return None
 
     def get_row(self, row: int) -> List[str]:
@@ -124,7 +124,7 @@ class TableSortFilterProxy(QtCore.QSortFilterProxyModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._filter_text = ""
-        self.setSortRole(QtCore.Qt.UserRole)
+        self.setSortRole(QtCore.Qt.ItemDataRole.UserRole)
         self.setDynamicSortFilter(True)
 
     def set_filter_query(self, text: str):
@@ -140,14 +140,14 @@ class TableSortFilterProxy(QtCore.QSortFilterProxyModel):
         cols = model.columnCount(source_parent)
         for c in range(cols):
             idx = model.index(source_row, c, source_parent)
-            val = model.data(idx, QtCore.Qt.DisplayRole)
+            val = model.data(idx, QtCore.Qt.ItemDataRole.DisplayRole)
             if val and self._filter_text in str(val).lower():
                 return True
         return False
 
     def lessThan(self, left: QtCore.QModelIndex, right: QtCore.QModelIndex) -> bool:
-        left_data = self.sourceModel().data(left, QtCore.Qt.UserRole)
-        right_data = self.sourceModel().data(right, QtCore.Qt.UserRole)
+        left_data = self.sourceModel().data(left, QtCore.Qt.ItemDataRole.UserRole)
+        right_data = self.sourceModel().data(right, QtCore.Qt.ItemDataRole.UserRole)
         if left_data is None or right_data is None:
             return super().lessThan(left, right)
         return left_data < right_data
@@ -330,7 +330,7 @@ class TableViewerWidget(QtWidgets.QWidget):
         # Export button
         self.export_btn = QtWidgets.QToolButton()
         self.export_btn.setText("Экспорт ▾")
-        self.export_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.export_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         export_menu = QtWidgets.QMenu(self.export_btn)
         act_exp_csv = export_menu.addAction("Экспорт в CSV…")
         act_exp_csv.triggered.connect(self.export_to_csv)
@@ -353,19 +353,19 @@ class TableViewerWidget(QtWidgets.QWidget):
         self.table_view.setObjectName("mainTableView")
         self.table_view.setAlternatingRowColors(True)
         self.table_view.setSortingEnabled(True)
-        self.table_view.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.table_view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectItems)
+        self.table_view.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table_view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectItems)
         self.table_view.horizontalHeader().setSectionsMovable(True)
         self.table_view.horizontalHeader().setStretchLastSection(False)
         self.table_view.verticalHeader().setDefaultSectionSize(24)
-        self.table_view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table_view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.table_view.customContextMenuRequested.connect(self._show_context_menu)
         root.addWidget(self.table_view, 1)
 
         # 3. Sheet Bar (for multi-sheet Excel files)
         self.sheet_tab_bar = QtWidgets.QTabBar()
         self.sheet_tab_bar.setDocumentMode(True)
-        self.sheet_tab_bar.setShape(QtWidgets.QTabBar.RoundedSouth)
+        self.sheet_tab_bar.setShape(QtWidgets.QTabBar.Shape.RoundedSouth)
         self.sheet_tab_bar.currentChanged.connect(self._on_sheet_changed)
         self.sheet_tab_bar.setVisible(False)
         root.addWidget(self.sheet_tab_bar)
@@ -383,14 +383,14 @@ class TableViewerWidget(QtWidgets.QWidget):
         root.addWidget(self.status_bar)
 
         # Keyboard shortcuts
-        QtWidgets.QShortcut(QtGui.QKeySequence.Find, self, activated=self.search_edit.setFocus)
-        QtWidgets.QShortcut(QtGui.QKeySequence.Copy, self.table_view, activated=self.copy_selection)
+        QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Find, self, activated=self.search_edit.setFocus)
+        QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Copy, self.table_view, activated=self.copy_selection)
 
     @staticmethod
     def _separator() -> QtWidgets.QFrame:
         line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.VLine)
-        line.setFrameShadow(QtWidgets.QFrame.Sunken)
+        line.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+        line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
         line.setStyleSheet("color: #444444;")
         return line
 
@@ -599,7 +599,7 @@ class TableViewerWidget(QtWidgets.QWidget):
         count = len(indexes)
         numbers = []
         for idx in indexes:
-            val = idx.data(QtCore.Qt.DisplayRole)
+            val = idx.data(QtCore.Qt.ItemDataRole.DisplayRole)
             parsed = _parse_number(val)
             if parsed is not None:
                 numbers.append(parsed)
@@ -643,7 +643,7 @@ class TableViewerWidget(QtWidgets.QWidget):
         act_select_all = menu.addAction("Выделить всё (Ctrl+A)")
         act_select_all.triggered.connect(self.table_view.selectAll)
 
-        menu.exec_(self.table_view.viewport().mapToGlobal(pos))
+        menu.exec(self.table_view.viewport().mapToGlobal(pos))
 
     def copy_selection(self, delimiter: str = "\t"):
         """Copy selected cells into clipboard formatted as tabular text."""
@@ -656,7 +656,7 @@ class TableViewerWidget(QtWidgets.QWidget):
         for idx in indexes:
             r = idx.row()
             c = idx.column()
-            val = idx.data(QtCore.Qt.DisplayRole) or ""
+            val = idx.data(QtCore.Qt.ItemDataRole.DisplayRole) or ""
             if r not in rows:
                 rows[r] = {}
             rows[r][c] = str(val)

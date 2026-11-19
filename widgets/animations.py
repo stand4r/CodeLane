@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Callable, Iterable, List, Optional, Sequence
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 __all__ = [
     "DURATION",
@@ -50,10 +50,10 @@ DURATION = {
 }
 
 EASING = {
-    "out": QtCore.QEasingCurve.OutCubic,
-    "in": QtCore.QEasingCurve.InCubic,
-    "in_out": QtCore.QEasingCurve.InOutCubic,
-    "back": QtCore.QEasingCurve.OutBack,
+    "out": QtCore.QEasingCurve.Type.OutCubic,
+    "in": QtCore.QEasingCurve.Type.InCubic,
+    "in_out": QtCore.QEasingCurve.Type.InOutCubic,
+    "back": QtCore.QEasingCurve.Type.OutBack,
 }
 
 
@@ -99,7 +99,7 @@ def animate_property(
     start,
     end,
     duration: int = DURATION["normal"],
-    easing=QtCore.QEasingCurve.OutCubic,
+    easing=QtCore.QEasingCurve.Type.OutCubic,
     on_finished: Optional[Callable] = None,
     owner: Optional[QtWidgets.QWidget] = None,
 ) -> QtCore.QVariantAnimation:
@@ -208,7 +208,7 @@ class _OpacityRamp(QtCore.QObject):
         self._clock = QtCore.QElapsedTimer()
         self._done = False
         self._timer = QtCore.QTimer(self)
-        self._timer.setTimerType(QtCore.Qt.PreciseTimer)
+        self._timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
         self._timer.setInterval(self.INTERVAL_MS)
         self._timer.timeout.connect(self._tick)
 
@@ -260,7 +260,7 @@ def fade_opacity(
     target: float,
     duration: int = DURATION["normal"],
     on_finished: Optional[Callable] = None,
-    easing=QtCore.QEasingCurve.InOutCubic,
+    easing=QtCore.QEasingCurve.Type.InOutCubic,
     show_first: bool = True,
 ):
     """Tween the widget opacity towards *target* (0.0 .. 1.0)."""
@@ -344,7 +344,7 @@ def slide_reveal(container: QtWidgets.QWidget, target_height: Optional[int] = No
     container.setVisible(True)
     return animate_property(
         container, b"maximumHeight", 0, int(target_height),
-        duration=duration, easing=QtCore.QEasingCurve.OutCubic,
+        duration=duration, easing=QtCore.QEasingCurve.Type.OutCubic,
         on_finished=lambda: _finish_reveal(container, on_finished),
     )
 
@@ -374,7 +374,7 @@ def slide_conceal(container: QtWidgets.QWidget, duration: int = DURATION["fast"]
 
     return animate_property(
         container, b"maximumHeight", start, 0,
-        duration=duration, easing=QtCore.QEasingCurve.InCubic,
+        duration=duration, easing=QtCore.QEasingCurve.Type.InCubic,
         on_finished=_done,
     )
 
@@ -397,12 +397,12 @@ def pulse(widget: QtWidgets.QWidget, times: int = 2, duration: int = DURATION["s
         down.setDuration(duration // 2)
         down.setStartValue(1.0)
         down.setEndValue(max(0.05, 1.0 - strength))
-        down.setEasingCurve(QtCore.QEasingCurve.InOutSine)
+        down.setEasingCurve(QtCore.QEasingCurve.Type.InOutSine)
         up = QtCore.QPropertyAnimation(effect, b"opacity", seq)
         up.setDuration(duration // 2)
         up.setStartValue(max(0.05, 1.0 - strength))
         up.setEndValue(1.0)
-        up.setEasingCurve(QtCore.QEasingCurve.InOutSine)
+        up.setEasingCurve(QtCore.QEasingCurve.Type.InOutSine)
         seq.addAnimation(down)
         seq.addAnimation(up)
 
@@ -434,7 +434,7 @@ def flash(widget: QtWidgets.QWidget, color: str = "#00F2FE", alpha: int = 70,
     anim.setDuration(max(1, int(duration)))
     anim.setStartValue(alpha)
     anim.setEndValue(0)
-    anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+    anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
 
     def _step(v):
         overlay.set_intensity(int(v))
@@ -456,9 +456,9 @@ class _FlashOverlay(QtWidgets.QWidget):
         super().__init__(parent)
         self._color = QtGui.QColor(color)
         self._alpha = alpha
-        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        self.setAttribute(QtCore.Qt.WA_NoSystemBackground, True)
-        self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.installEventFilter(self)
 
     def set_intensity(self, value: int):
@@ -532,7 +532,7 @@ class AnimatedSplitterHeight:
             safe_call(on_finished)
             return None
         total = max(
-            self.splitter.height() if self.splitter.orientation() == QtCore.Qt.Vertical
+            self.splitter.height() if self.splitter.orientation() == QtCore.Qt.Orientation.Vertical
             else self.splitter.width(),
             1,
         )
@@ -548,7 +548,7 @@ class AnimatedSplitterHeight:
 
         anim = QtCore.QVariantAnimation(self.owner)
         anim.setDuration(max(0, int(duration)))
-        anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+        anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
         anim.setStartValue(start)
         anim.setEndValue(target)
 

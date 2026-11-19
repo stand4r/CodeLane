@@ -1,10 +1,10 @@
-"""PyScribe top title bar, menu strip, and explorer header components."""
+"""CodeLane top title bar, menu strip, and explorer header components."""
 from __future__ import annotations
 
 from pathlib import Path
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QColor, QIcon, QPainter
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QColor, QIcon, QPainter
 
 from design.themes import THEMES
 from design import icons as codicons
@@ -24,11 +24,11 @@ class OmniSearchPill(QtWidgets.QFrame):
     def __init__(self, base_path: Path, parent=None):
         super().__init__(parent)
         self.setObjectName("omniSearchPill")
-        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(26)
         self.setMinimumWidth(36)
         self.setMaximumWidth(420)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         self.setToolTip("Поиск файлов и команд (Ctrl+P)")
         pill_layout = QtWidgets.QHBoxLayout(self)
         pill_layout.setContentsMargins(6, 0, 8, 0)
@@ -38,12 +38,12 @@ class OmniSearchPill(QtWidgets.QFrame):
         lens_icon.setPixmap(codicons.codicon_icon("search", 16, "#9D9D9D").pixmap(16, 16))
         lens_icon.setFixedSize(16, 16)
         lens_icon.setStyleSheet("background: transparent; border: none;")
-        pill_layout.addWidget(lens_icon, 0, QtCore.Qt.AlignVCenter)
+        pill_layout.addWidget(lens_icon, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
 
         prompt = QtWidgets.QLabel("Поиск файлов и команд")
         prompt.setObjectName("omniSearchPrompt")
-        prompt.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
-        pill_layout.addWidget(prompt, 1, QtCore.Qt.AlignVCenter)
+        prompt.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        pill_layout.addWidget(prompt, 1, QtCore.Qt.AlignmentFlag.AlignVCenter)
         self._prompt = prompt
 
     def sizeHint(self):
@@ -54,7 +54,7 @@ class OmniSearchPill(QtWidgets.QFrame):
         self._prompt.setVisible(event.size().width() > 150)
 
     def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self.clicked.emit()
             event.accept()
             return
@@ -68,12 +68,12 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         self.window = window
         self.setObjectName("workbenchTopBar")
         self.setFixedHeight(TITLE_BAR_HEIGHT)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 0, 0)
         layout.setSpacing(2)
         self.menu_group = QtWidgets.QWidget(self)
-        self.menu_group.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+        self.menu_group.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
         menu_layout = QtWidgets.QHBoxLayout(self.menu_group)
         menu_layout.setContentsMargins(0, 0, 0, 0)
         menu_layout.setSpacing(2)
@@ -82,30 +82,30 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         base_path = getattr(getattr(window, "app_manager", None), "base_path", Path(__file__).resolve().parent.parent)
         self._base_path = Path(base_path)
 
-        # Brand mark sits to the left of the "PyScribe" wordmark. A dedicated
+        # Brand mark sits to the left of the "CodeLane" wordmark. A dedicated
         # monochrome glyph is used so it stays crisp at 16 px on any background
         # (the coloured app icon turns to mush at that size).
         brand = QtWidgets.QLabel()
         brand.setObjectName("appBrandIcon")
         brand.setStyleSheet("background: transparent; border: none;")
         brand.setFixedSize(20, 20)
-        brand.setAlignment(QtCore.Qt.AlignCenter)
+        brand.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         glyph = self._base_path / "src" / "icon_titlebar_2x.png"
         if not glyph.exists():
             glyph = self._base_path / "src" / "icon_titlebar.png"
         pixmap = QtGui.QPixmap(str(glyph))
         if not pixmap.isNull():
-            brand.setPixmap(pixmap.scaled(16, 16, QtCore.Qt.KeepAspectRatio,
-                                          QtCore.Qt.SmoothTransformation))
+            brand.setPixmap(pixmap.scaled(16, 16, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                                          QtCore.Qt.TransformationMode.SmoothTransformation))
         else:
             icon = self._base_path / "src" / "icon_app_32.png"
             brand.setPixmap(QtGui.QIcon(str(icon)).pixmap(16, 16))
-        menu_layout.addWidget(brand, 0, QtCore.Qt.AlignVCenter)
+        menu_layout.addWidget(brand, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
 
-        title = QtWidgets.QLabel("PyScribe")
+        title = QtWidgets.QLabel("CodeLane")
         title.setObjectName("appTitle")
         title.setStyleSheet("background: transparent; border: none; color: #CCCCCC; font-size: 13px;")
-        menu_layout.addWidget(title, 0, QtCore.Qt.AlignVCenter)
+        menu_layout.addWidget(title, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         menu_layout.addSpacing(10)
 
         self.menus = {}
@@ -134,7 +134,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         self.search_pill = OmniSearchPill(self._base_path, self)
         self.search_pill.clicked.connect(self.window.action_quick_open)
         layout.addStretch()
-        layout.addWidget(self.search_pill, 0, QtCore.Qt.AlignVCenter)
+        layout.addWidget(self.search_pill, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         layout.addStretch()
         self.search_balance = QtWidgets.QSpacerItem(0, 0)
         layout.addItem(self.search_balance)
@@ -147,7 +147,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         # Native title-bar replacement, right-aligned like VS Code on Windows.
         self.window_controls = QtWidgets.QWidget(self)
         self.window_controls.setObjectName("windowControls")
-        self.window_controls.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+        self.window_controls.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
         self.window_controls.setStyleSheet("background: transparent; border: none;")
         controls = QtWidgets.QHBoxLayout(self.window_controls)
         controls.setContentsMargins(0, 0, 0, 0)
@@ -158,7 +158,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         self.close_button = self._window_button("chrome-close", "Закрыть", self.window.close, "windowClose")
         for b in (self.minimize_button, self.maximize_button, self.close_button):
             controls.addWidget(b)
-        layout.addWidget(self.window_controls, 0, QtCore.Qt.AlignVCenter)
+        layout.addWidget(self.window_controls, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         self._drag_pos = None
 
     def paintEvent(self, event):
@@ -176,7 +176,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         button.setIconSize(QtCore.QSize(16, 16))
         button.setToolTip(tooltip)
         button.setObjectName(object_name)
-        button.setCursor(QtCore.Qt.PointingHandCursor)
+        button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         button.setAutoRaise(True)
         button.setFixedSize(WINDOW_CONTROL_SIZE)
         button.setStyleSheet(
@@ -196,16 +196,16 @@ class WorkbenchTopBar(QtWidgets.QFrame):
             self.maximize_button.setIcon(codicons.codicon_icon("chrome-restore", 16, "#CCCCCC"))
 
     def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
-            child = self.childAt(event.pos())
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            child = self.childAt(event.position().toPoint())
             if child is None or child not in self.findChildren(QtWidgets.QToolButton):
-                self._drag_pos = event.globalPos() - self.window.frameGeometry().topLeft()
+                self._drag_pos = event.globalPosition().toPoint() - self.window.frameGeometry().topLeft()
                 event.accept()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self._drag_pos is not None and event.buttons() & QtCore.Qt.LeftButton and not self.window.isMaximized():
-            self.window.move(event.globalPos() - self._drag_pos)
+        if self._drag_pos is not None and event.buttons() & QtCore.Qt.MouseButton.LeftButton and not self.window.isMaximized():
+            self.window.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
         super().mouseMoveEvent(event)
 
@@ -214,7 +214,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self._toggle_maximize()
             event.accept()
         super().mouseDoubleClickEvent(event)
@@ -224,8 +224,8 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         button = QtWidgets.QToolButton()
         button.setObjectName("workbenchMenuButton")
         button.setText(label)
-        button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        button.setCursor(QtCore.Qt.PointingHandCursor)
+        button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         return button
 
     def _definitions(self):
@@ -322,6 +322,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
                 )),
                 ("Редактор", (
                     ("Разделить редактор", None, w.split_editor),
+                    ("Объединить группы редактора", None, w.unsplit_editor),
                     ("Предпросмотр Markdown", "Ctrl+Shift+V", w.action_preview_markdown),
                 )),
                 ("Масштаб интерфейса", (
@@ -356,7 +357,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
                     ("Горячие клавиши", None, w.show_keyboard_shortcuts),
                     ("Палитра команд", "Ctrl+Shift+P", w.show_command_palette),
                 )),
-                ("О PyScribe", (
+                ("О CodeLane", (
                     ("О программе", None, w.action_about),
                     ("Проверить обновления…", None, w.action_check_updates),
                     ("Сообщить о проблеме на GitHub", None, w.action_github_issues),
@@ -373,7 +374,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
                 menu.addSeparator()
             label = QtWidgets.QLabel(heading.upper())
             label.setObjectName("workbenchMenuSection")
-            label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+            label.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             section = QtWidgets.QWidgetAction(menu)
             section.setDefaultWidget(label)
             menu.addAction(section)
@@ -385,7 +386,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
                     continue
                 # The suffix is presentation only; bindings live in the
                 # workbench and its focused widgets.
-                action = QtWidgets.QAction(f"{text}\t{shortcut}" if shortcut else text, menu)
+                action = QtGui.QAction(f"{text}\t{shortcut}" if shortcut else text, menu)
                 action.triggered.connect(handler)
                 menu.addAction(action)
         return menu
@@ -408,11 +409,11 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         spare = self.width() - left - right - self.search_pill.maximumWidth() - 2 * layout.spacing()
         balance = max(0, min(left - right, spare))
         if balance != self.search_balance.sizeHint().width():
-            self.search_balance.changeSize(balance, 0, QtWidgets.QSizePolicy.Fixed)
+            self.search_balance.changeSize(balance, 0, QtWidgets.QSizePolicy.Policy.Fixed)
             layout.invalidate()
 
     def event(self, event):
-        if event.type() == QtCore.QEvent.LayoutRequest and hasattr(self, "window_controls"):
+        if event.type() == QtCore.QEvent.Type.LayoutRequest and hasattr(self, "window_controls"):
             self._center_search()
         return super().event(event)
 

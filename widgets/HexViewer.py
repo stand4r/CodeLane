@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
 
 from design.icons import set_line_icon
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class HexTableModel(QtCore.QAbstractTableModel):
@@ -58,7 +58,7 @@ class HexTableModel(QtCore.QAbstractTableModel):
         # Col 17: ASCII
         return 1 + self._bpr + 1
 
-    def data(self, index: QtCore.QModelIndex, role: int = QtCore.Qt.DisplayRole) -> Any:
+    def data(self, index: QtCore.QModelIndex, role: int = QtCore.Qt.ItemDataRole.DisplayRole) -> Any:
         if not index.isValid():
             return None
         r = index.row()
@@ -66,11 +66,11 @@ class HexTableModel(QtCore.QAbstractTableModel):
 
         # Col 0: Offset
         if c == 0:
-            if role == QtCore.Qt.DisplayRole:
+            if role == QtCore.Qt.ItemDataRole.DisplayRole:
                 return f"{r * self._bpr:08X}"
-            if role == QtCore.Qt.TextAlignmentRole:
-                return int(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-            if role == QtCore.Qt.ForegroundRole:
+            if role == QtCore.Qt.ItemDataRole.TextAlignmentRole:
+                return int(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            if role == QtCore.Qt.ItemDataRole.ForegroundRole:
                 return QtGui.QBrush(QtGui.QColor("#858585"))
             return None
 
@@ -78,11 +78,11 @@ class HexTableModel(QtCore.QAbstractTableModel):
         if c == 1 + self._bpr:
             start_off = r * self._bpr
             chunk = self._data[start_off:start_off + self._bpr]
-            if role == QtCore.Qt.DisplayRole:
+            if role == QtCore.Qt.ItemDataRole.DisplayRole:
                 return "".join(chr(b) if 32 <= b <= 126 else "·" for b in chunk)
-            if role == QtCore.Qt.TextAlignmentRole:
-                return int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-            if role == QtCore.Qt.ForegroundRole:
+            if role == QtCore.Qt.ItemDataRole.TextAlignmentRole:
+                return int(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            if role == QtCore.Qt.ItemDataRole.ForegroundRole:
                 return QtGui.QBrush(QtGui.QColor("#4EC9B0"))
             return None
 
@@ -93,23 +93,23 @@ class HexTableModel(QtCore.QAbstractTableModel):
             return None
 
         val = self._data[off]
-        if role == QtCore.Qt.DisplayRole:
+        if role == QtCore.Qt.ItemDataRole.DisplayRole:
             return f"{val:02X}"
-        if role == QtCore.Qt.TextAlignmentRole:
-            return int(QtCore.Qt.AlignCenter)
-        if role == QtCore.Qt.ForegroundRole:
+        if role == QtCore.Qt.ItemDataRole.TextAlignmentRole:
+            return int(QtCore.Qt.AlignmentFlag.AlignCenter)
+        if role == QtCore.Qt.ItemDataRole.ForegroundRole:
             if val == 0:
                 return QtGui.QBrush(QtGui.QColor("#555555"))
             if 32 <= val <= 126:
                 return QtGui.QBrush(QtGui.QColor("#9CDCFE"))
             return QtGui.QBrush(QtGui.QColor("#DCDCAA"))
-        if role == QtCore.Qt.BackgroundRole:
+        if role == QtCore.Qt.ItemDataRole.BackgroundRole:
             if off in self._search_matches:
                 return QtGui.QBrush(QtGui.QColor(255, 214, 0, 90))
         return None
 
-    def headerData(self, section: int, orientation: QtCore.Qt.Orientation, role: int = QtCore.Qt.DisplayRole) -> Any:
-        if orientation == QtCore.Qt.Horizontal and role == QtCore.Qt.DisplayRole:
+    def headerData(self, section: int, orientation: QtCore.Qt.Orientation, role: int = QtCore.Qt.ItemDataRole.DisplayRole) -> Any:
+        if orientation == QtCore.Qt.Orientation.Horizontal and role == QtCore.Qt.ItemDataRole.DisplayRole:
             if section == 0:
                 return "Смещение"
             if section == 1 + self._bpr:
@@ -171,8 +171,8 @@ class DataInspectorWidget(QtWidgets.QWidget):
 
         # Form layout of values
         self.grid = QtWidgets.QFormLayout()
-        self.grid.setLabelAlignment(QtCore.Qt.AlignLeft)
-        self.grid.setFormAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        self.grid.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.grid.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self.grid.setVerticalSpacing(4)
         self.grid.setHorizontalSpacing(10)
 
@@ -209,7 +209,7 @@ class DataInspectorWidget(QtWidgets.QWidget):
 
     def _make_val_label(self) -> QtWidgets.QLabel:
         lbl = QtWidgets.QLabel("-")
-        lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        lbl.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         lbl.setStyleSheet("color: #d4d4d4; font-family: 'Cascadia Code', monospace; font-size: 9pt;")
         return lbl
 
@@ -414,7 +414,7 @@ class HexViewer(QtWidgets.QWidget):
         self.copy_btn = QtWidgets.QToolButton()
         self.copy_btn.setText("Копировать")
         set_line_icon(self.copy_btn, "copy")
-        self.copy_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.copy_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         copy_menu = QtWidgets.QMenu(self.copy_btn)
         act_hex = copy_menu.addAction("Копировать HEX (4D 5A…)")
         act_hex.triggered.connect(lambda: self.copy_selected("hex"))
@@ -454,7 +454,7 @@ class HexViewer(QtWidgets.QWidget):
         root.addWidget(toolbar)
 
         # 2. Main Body Splitter
-        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
 
         # Table View
@@ -463,11 +463,11 @@ class HexViewer(QtWidgets.QWidget):
         self.table_view.setObjectName("hexTableView")
         self.table_view.setModel(self.model)
         self.table_view.setShowGrid(False)
-        self.table_view.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.table_view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectItems)
+        self.table_view.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table_view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectItems)
         self.table_view.verticalHeader().setVisible(False)
         self.table_view.verticalHeader().setDefaultSectionSize(22)
-        self.table_view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table_view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.table_view.customContextMenuRequested.connect(self._show_context_menu)
 
         selection_model = self.table_view.selectionModel()
@@ -500,16 +500,16 @@ class HexViewer(QtWidgets.QWidget):
         self._configure_column_widths()
 
         # Keyboard shortcuts
-        QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+="), self, activated=self.add_font_size)
-        QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+-"), self, activated=self.pop_font_size)
-        QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+G"), self, activated=self.prompt_goto_offset)
-        QtWidgets.QShortcut(QtGui.QKeySequence.Find, self, activated=self.search_edit.setFocus)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+="), self, activated=self.add_font_size)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+-"), self, activated=self.pop_font_size)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+G"), self, activated=self.prompt_goto_offset)
+        QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Find, self, activated=self.search_edit.setFocus)
 
     @staticmethod
     def _separator() -> QtWidgets.QFrame:
         line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.VLine)
-        line.setFrameShadow(QtWidgets.QFrame.Sunken)
+        line.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+        line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
         line.setStyleSheet("color: #444444;")
         return line
 
@@ -647,7 +647,7 @@ class HexViewer(QtWidgets.QWidget):
         idx = self.model.get_index_for_offset(offset)
         if idx.isValid():
             self.table_view.setCurrentIndex(idx)
-            self.table_view.scrollTo(idx, QtWidgets.QAbstractItemView.PositionAtCenter)
+            self.table_view.scrollTo(idx, QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
             return True
         return False
 
@@ -711,7 +711,7 @@ class HexViewer(QtWidgets.QWidget):
         idx = self.model.get_index_for_offset(next_off)
         if idx.isValid():
             self.table_view.setCurrentIndex(idx)
-            self.table_view.scrollTo(idx, QtWidgets.QAbstractItemView.PositionAtCenter)
+            self.table_view.scrollTo(idx, QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
 
     # ------------------------------------------------------------------
     # Copying
@@ -752,4 +752,4 @@ class HexViewer(QtWidgets.QWidget):
         act_sel_all = menu.addAction("Выделить всё (Ctrl+A)")
         act_sel_all.triggered.connect(self.table_view.selectAll)
 
-        menu.exec_(self.table_view.viewport().mapToGlobal(pos))
+        menu.exec(self.table_view.viewport().mapToGlobal(pos))

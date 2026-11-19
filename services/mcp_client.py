@@ -1,4 +1,4 @@
-"""Minimal Model Context Protocol (MCP) client for the PyScribe AI agent.
+"""Minimal Model Context Protocol (MCP) client for the CodeLane AI agent.
 
 Supports both transports that the ecosystem actually uses:
 
@@ -23,12 +23,14 @@ MCP servers are configured in *Настройки → ИИ-агент → MCP-с
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import shlex
+import re
 import subprocess
 import threading
 import time
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -44,7 +46,7 @@ __all__ = [
 ]
 
 PROTOCOL_VERSION = "2024-11-05"
-CLIENT_INFO = {"name": "PyScribe", "version": "1.0"}
+CLIENT_INFO = {"name": "CodeLane", "version": "1.0"}
 
 
 class MCPError(RuntimeError):
@@ -62,8 +64,16 @@ class MCPTool:
 
     @property
     def full_name(self) -> str:
-        # Namespaced so two servers can expose the same tool name.
-        return f"{self.server}__{self.name}"
+        # Namespaced so two servers can expose the same tool name, constrained
+        # to the identifier grammar and 64-character limit used by model APIs.
+        server = re.sub(r"[^A-Za-z0-9_-]", "_", self.server)[:40] or "mcp"
+        tool = re.sub(r"[^A-Za-z0-9_-]", "_", self.name) or "tool"
+        prefix = f"{server}__"
+        budget = 64 - len(prefix)
+        if tool != self.name or len(tool) > budget:
+            digest = hashlib.sha1(self.name.encode("utf-8", errors="replace")).hexdigest()[:8]
+            tool = f"{tool[:max(1, budget - 9)]}_{digest}"
+        return prefix + tool
 
     def as_openai_tool(self) -> Dict[str, Any]:
         return {
@@ -85,6 +95,7 @@ class MCPServerConfig:
     url: str = ""
     env: Dict[str, str] = field(default_factory=dict)
     enabled: bool = True
+    headers: Dict[str, str] = field(default_factory=dict)
 
     @property
     def label(self) -> str:
@@ -115,19 +126,41 @@ def parse_servers(text: str) -> List[MCPServerConfig]:
     if not isinstance(data, list):
         raise MCPError("Ожидался список MCP-серверов в формате JSON.")
     servers = []
+    names = set()
     for index, item in enumerate(data):
         if not isinstance(item, dict):
-            continue
+            raise MCPError(f"MCP-сервер №{index + 1} должен быть объектом JSON.")
         command = str(item.get("command") or "").strip()
         url = str(item.get("url") or "").strip()
-        transport = str(item.get("transport") or ("http" if url and not command else "stdio"))
+        transport = str(item.get("transport") or ("http" if url and not command else "stdio")).strip().lower()
+        name = str(item.get("name") or item.get("id") or f"mcp{index + 1}").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", name):
+            raise MCPError(f"Имя MCP-сервера «{name}» должно содержать 1–40 символов: латиницу, цифры, _ или -.")
+        if name in names:
+            raise MCPError(f"Имя MCP-сервера «{name}» указано несколько раз.")
+        names.add(name)
+        if transport not in ("stdio", "http"):
+            raise MCPError(f"MCP «{name}»: транспорт «{transport}» не поддерживается (доступны stdio и http).")
+        if transport == "stdio" and not command:
+            raise MCPError(f"MCP «{name}»: для транспорта stdio укажи command.")
+        if transport == "http" and not url:
+            raise MCPError(f"MCP «{name}»: для транспорта http укажи url.")
+        if transport == "http" and urlsplit(url).scheme not in ("http", "https"):
+            raise MCPError(f"MCP «{name}»: HTTP URL должен начинаться с http:// или https://.")
+        if not isinstance(item.get("args") or [], list):
+            raise MCPError(f"MCP «{name}»: args должен быть списком строк.")
+        if not isinstance(item.get("env") or {}, dict):
+            raise MCPError(f"MCP «{name}»: env должен быть объектом ключ/значение.")
+        if not isinstance(item.get("headers") or {}, dict):
+            raise MCPError(f"MCP «{name}»: headers должен быть объектом ключ/значение.")
         servers.append(MCPServerConfig(
-            name=str(item.get("name") or item.get("id") or f"mcp{index + 1}"),
+            name=name,
             transport=transport,
             command=command,
             args=[str(a) for a in (item.get("args") or [])],
             url=url,
             env={str(k): str(v) for k, v in (item.get("env") or {}).items()},
+            headers={str(k): str(v) for k, v in (item.get("headers") or {}).items()},
             enabled=item.get("enabled", True) is not False,
         ))
     return servers
@@ -141,14 +174,18 @@ class MCPClient:
         self.timeout = timeout
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
+        self._stdio_request_lock = threading.Lock()
         self._next_id = 1
         self._pending: Dict[int, Any] = {}
+        self._pending_ids = set()
         self._reader: Optional[threading.Thread] = None
         self._buffer: List[str] = []
         self._stderr: List[str] = []
         self.tools: List[MCPTool] = []
         self.server_info: Dict[str, Any] = {}
         self.initialized = False
+        self._session_id: Optional[str] = None
+        self._protocol_version = PROTOCOL_VERSION
 
     # ------------------------------------------------------------------
     # Transport: stdio
@@ -203,15 +240,27 @@ class MCPClient:
 
     def _dispatch(self, message: Dict[str, Any]):
         if "id" in message and ("result" in message or "error" in message):
-            self._pending[message["id"]] = message
-        # Server-initiated requests (sampling/roots) are answered minimally so
-        # servers that probe the client do not hang.
+            with self._lock:
+                if message["id"] in self._pending_ids:
+                    self._pending[message["id"]] = message
+        # We do not advertise sampling or elicitation capabilities. Explicitly
+        # reject unsupported server requests instead of returning a fake result.
         elif "method" in message and "id" in message:
-            self._reply(message["id"], {})
+            if message["method"] == "ping":
+                self._reply(message["id"], {})
+            else:
+                self._reply_error(message["id"], -32601, "Method not supported")
 
     def _reply(self, message_id, result):
         try:
             self._write({"jsonrpc": "2.0", "id": message_id, "result": result})
+        except Exception:
+            pass
+
+    def _reply_error(self, message_id, code, message):
+        try:
+            self._write({"jsonrpc": "2.0", "id": message_id,
+                         "error": {"code": code, "message": message}})
         except Exception:
             pass
 
@@ -229,19 +278,31 @@ class MCPClient:
         import urllib.request
 
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            **(self.config.headers or {}),
+        }
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+        if payload.get("method") != "initialize":
+            headers["MCP-Protocol-Version"] = self._protocol_version
         req = urllib.request.Request(
             self.config.url,
             data=data,
             method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-            },
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 ctype = resp.headers.get("Content-Type", "")
+                session_id = resp.headers.get("Mcp-Session-Id")
+                negotiated_version = resp.headers.get("MCP-Protocol-Version")
+                if session_id:
+                    self._session_id = session_id
+                if negotiated_version:
+                    self._protocol_version = negotiated_version
         except urllib.error.HTTPError as exc:
             raise MCPError(f"MCP «{self.config.label}»: HTTP {exc.code}") from None
         except Exception as exc:  # noqa: BLE001
@@ -256,9 +317,15 @@ class MCPClient:
                         continue
                     if isinstance(message, dict) and message.get("id") == payload.get("id"):
                         return message
-            return {}
+            if payload.get("id") is None:
+                return {}
+            raise MCPError(f"MCP «{self.config.label}»: в SSE-ответе нет ответа для запроса.")
+        if not raw.strip():
+            if payload.get("id") is None:
+                return {}
+            raise MCPError(f"MCP «{self.config.label}»: сервер вернул пустой ответ на запрос.")
         try:
-            return json.loads(raw) if raw.strip() else {}
+            return json.loads(raw)
         except json.JSONDecodeError:
             raise MCPError(f"MCP «{self.config.label}»: ответ не является JSON.") from None
 
@@ -277,23 +344,32 @@ class MCPClient:
         if self.config.transport == "http":
             reply = self._post_http(payload)
         else:
-            self._start_stdio()
-            self._write(payload)
-            deadline = time.time() + limit
-            while time.time() < deadline:
-                reply = self._pending.pop(message_id, None)
-                if reply is not None:
-                    break
-                if self._proc is not None and self._proc.poll() is not None:
-                    detail = " | ".join(self._stderr[-3:])
-                    raise MCPError(
-                        f"MCP «{self.config.label}» завершился: {detail or 'без описания'}"
-                    )
-                time.sleep(0.01)
-            else:
-                raise MCPError(
-                    f"MCP «{self.config.label}» не ответил за {limit:.0f} с."
-                )
+            with self._stdio_request_lock:
+                self._start_stdio()
+                with self._lock:
+                    self._pending_ids.add(message_id)
+                try:
+                    self._write(payload)
+                    deadline = time.monotonic() + limit
+                    while time.monotonic() < deadline:
+                        with self._lock:
+                            reply = self._pending.pop(message_id, None)
+                        if reply is not None:
+                            break
+                        if self._proc is not None and self._proc.poll() is not None:
+                            detail = " | ".join(self._stderr[-3:])
+                            raise MCPError(
+                                f"MCP «{self.config.label}» завершился: {detail or 'без описания'}"
+                            )
+                        time.sleep(0.01)
+                    else:
+                        raise MCPError(
+                            f"MCP «{self.config.label}» не ответил за {limit:.0f} с."
+                        )
+                finally:
+                    with self._lock:
+                        self._pending_ids.discard(message_id)
+                        self._pending.pop(message_id, None)
         if "error" in reply:
             error = reply["error"] or {}
             raise MCPError(f"MCP «{self.config.label}»: {error.get('message', error)}")
@@ -304,37 +380,47 @@ class MCPClient:
     # ------------------------------------------------------------------
     def connect(self) -> List[MCPTool]:
         """Handshake with the server and return its tools."""
-        source = self.config.command if self.config.transport == "stdio" else self.config.url
-        self.stderr_hint = ""
         result = self.request("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {"roots": {"listChanged": False}, "tools": {}},
+            "capabilities": {},
             "clientInfo": CLIENT_INFO,
         })
         self.server_info = result.get("serverInfo") or {}
         self.initialized = True
         # The spec requires a notification after initialize (no id, no reply).
+        self._protocol_version = str(result.get("protocolVersion") or PROTOCOL_VERSION)
         if self.config.transport != "http":
             try:
                 self._write({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
             except Exception:
                 pass
+        else:
+            self._post_http({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
         self.tools = self.list_tools()
-        del source
         return self.tools
 
     def list_tools(self) -> List[MCPTool]:
         result = self.request("tools/list", {})
         tools = []
-        for item in result.get("tools") or []:
-            if not isinstance(item, dict) or not item.get("name"):
-                continue
-            tools.append(MCPTool(
-                server=self.config.name,
-                name=str(item["name"]),
-                description=str(item.get("description") or ""),
-                schema=item.get("inputSchema") or {},
-            ))
+        seen = set()
+        while True:
+            for item in result.get("tools") or []:
+                if not isinstance(item, dict) or not item.get("name"):
+                    continue
+                name = str(item["name"])
+                if name in seen:
+                    continue
+                seen.add(name)
+                tools.append(MCPTool(
+                    server=self.config.name,
+                    name=name,
+                    description=str(item.get("description") or ""),
+                    schema=item.get("inputSchema") or {},
+                ))
+            cursor = result.get("nextCursor")
+            if not cursor or len(seen) >= 5000:
+                break
+            result = self.request("tools/list", {"cursor": cursor})
         return tools
 
     def call_tool(self, name: str, arguments: Dict[str, Any]) -> str:
@@ -353,7 +439,17 @@ class MCPClient:
                 chunks.append(str(item))
         if result.get("isError"):
             return "Ошибка инструмента: " + ("\n".join(chunks) or "без описания")
-        return "\n".join(c for c in chunks if c).strip() or "Готово."
+        structured = result.get("structuredContent")
+        if structured is not None:
+            try:
+                chunks.append("Структурированный результат:\n" +
+                              json.dumps(structured, ensure_ascii=False, indent=2))
+            except (TypeError, ValueError):
+                chunks.append("Структурированный результат: " + str(structured))
+        combined = "\n".join(c for c in chunks if c).strip() or "Готово."
+        if len(combined) > 1_000_000:
+            combined = combined[:1_000_000] + "\n… (результат MCP обрезан)"
+        return combined
 
     def close(self):
         proc = self._proc
@@ -362,12 +458,39 @@ class MCPClient:
             return
         try:
             proc.terminate()
-            proc.wait(timeout=3)
         except Exception:
             try:
                 proc.kill()
             except Exception:
                 pass
+
+        def reap():
+            if os.name == "nt":
+                try:
+                    from core.subprocess_utils import run_hidden
+                    run_hidden(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=2)
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=1)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        # Closing the agent must not wait several seconds on the UI thread for
+        # a misbehaving MCP child to exit.
+        threading.Thread(target=reap, name=f"mcp-reap-{self.config.name}",
+                         daemon=True).start()
 
 
 # ----------------------------------------------------------------------
@@ -376,6 +499,10 @@ class MCPClient:
 def run_tool(servers: Dict[str, MCPClient], tool_name: str,
              arguments: Dict[str, Any]) -> str:
     """Execute ``server__tool`` through the matching live client."""
+    for client in servers.values():
+        for tool in client.tools:
+            if tool.full_name == tool_name:
+                return client.call_tool(tool.name, arguments)
     if "__" not in tool_name:
         return f"Неизвестный инструмент: {tool_name}"
     server_key, name = tool_name.split("__", 1)

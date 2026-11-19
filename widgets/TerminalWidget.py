@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from core.activity_log import record_action
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from utils.settings_manager import get_settings_manager
 
@@ -45,6 +45,32 @@ ANSI_COLORS = {
 }
 
 _ANSI_RE = re.compile(r"\x1b\[([0-9;]*)([A-Za-z])")
+
+_LEGACY_SESSION_LINE = re.compile(
+    r"(?:"
+    r"Восстановлена сессия терминала\. Запущен новый процесс оболочки\.|"
+    r"─+ Новая сессия · \d{2}\.\d{2}\.\d{4} \d{2}:\d{2} ─+|"
+    r"Предыдущий запуск прерван: [^\n]*|"
+    r"(?:[^\n]*\$ )?\[Console\]::InputEncoding=\[System\.Text\.Encoding\]::UTF8;"
+    r"\[Console\]::OutputEncoding=\[System\.Text\.Encoding\]::UTF8;"
+    r"\$OutputEncoding=\[System\.Text\.Encoding\]::UTF8;"
+    r"\$global:LASTEXITCODE=0;function global:prompt \{ '' \}"
+    r")"
+)
+
+
+def _clean_saved_terminal_output(output: str) -> str:
+    lines = []
+    skip_blank = False
+    for line in output.splitlines(keepends=True):
+        if _LEGACY_SESSION_LINE.fullmatch(line.rstrip()):
+            while lines and not lines[-1].strip():
+                lines.pop()
+            skip_blank = True
+        elif not skip_blank or line.strip():
+            lines.append(line)
+            skip_blank = False
+    return "".join(lines)
 
 
 def strip_ansi(text: str) -> str:
@@ -65,13 +91,13 @@ class CompletionPopup(QtWidgets.QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("terminalCompletion")
-        self.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.setAttribute(QtCore.Qt.WA_ShowWithoutActivating, True)
-        self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setUniformItemSizes(True)
         self.setMouseTracking(True)
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         # Hidden by default: QListWidget children are shown together with their
         # parent, which would paint a stray popup box over the terminal.
         self.hide()
@@ -113,7 +139,7 @@ class CompletionPopup(QtWidgets.QListWidget):
         for label, kind in items:
             icon_text = {"dir": "📁", "file": "📄", "cmd": "⚡"}.get(kind, "•")
             item = QtWidgets.QListWidgetItem(f"{icon_text}  {label}")
-            item.setData(QtCore.Qt.UserRole, kind)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, kind)
             self.addItem(item)
         rows = max(1, min(len(items), 8))
         row_h = max(22, self.fontMetrics().height() + 12)
@@ -151,11 +177,11 @@ class CompletionPopup(QtWidgets.QListWidget):
         self.hide()
 
     def keyPressEvent(self, event):
-        if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter, QtCore.Qt.Key_Tab):
+        if event.key() in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter, QtCore.Qt.Key.Key_Tab):
             if self.currentItem() is not None:
                 self.accepted.emit(self.currentRow())
             return
-        if event.key() == QtCore.Qt.Key_Escape:
+        if event.key() == QtCore.Qt.Key.Key_Escape:
             self.hide_popup()
             self.dismissed.emit()
             return
@@ -181,12 +207,12 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
         self._history_restore_cursor = False
         self.setUndoRedoEnabled(False)
         self.setAcceptRichText(True)
-        self.setLineWrapMode(QtWidgets.QTextEdit.WidgetWidth)
+        self.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.WidgetWidth)
         self.setObjectName("terminalScreen")
-        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.setWordWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
-        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setWordWrapMode(QtGui.QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._context_menu)
 
         self._popup = CompletionPopup(self)
@@ -208,7 +234,7 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
     # ------------------------------------------------------------------
     def _apply_font(self):
         term_font = QtGui.QFont(self.terminal_font_family, self.terminal_font_size)
-        term_font.setStyleHint(QtGui.QFont.Monospace)
+        term_font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
         term_font.setFixedPitch(True)
         term_font.setPixelSize(self._terminal_px())
         self.setFont(term_font)
@@ -238,14 +264,14 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
     def _fmt_font(self) -> QtGui.QFont:
         font = QtGui.QFont(self.terminal_font_family)
         font.setPixelSize(self._terminal_px())
-        font.setStyleHint(QtGui.QFont.Monospace)
+        font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
         font.setFixedPitch(True)
         return font
 
     def get_input_format(self) -> QtGui.QTextCharFormat:
         fmt = QtGui.QTextCharFormat()
         fmt.setFont(self._fmt_font())
-        fmt.setFontWeight(QtGui.QFont.Normal)
+        fmt.setFontWeight(QtGui.QFont.Weight.Normal)
         fmt.setForeground(QtGui.QColor("#CCCCCC"))
         return fmt
 
@@ -253,12 +279,12 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
         """Scale all existing text in the terminal buffer to the new font size."""
         cursor = self.textCursor()
         cursor.beginEditBlock()
-        cursor.select(QtGui.QTextCursor.Document)
+        cursor.select(QtGui.QTextCursor.SelectionType.Document)
         fmt = QtGui.QTextCharFormat()
         fmt.setFont(self._fmt_font())
         cursor.mergeCharFormat(fmt)
         cursor.clearSelection()
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         cursor.endEditBlock()
         self.setTextCursor(cursor)
         self.setCurrentCharFormat(self.get_input_format())
@@ -281,7 +307,7 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
     # Zoom
     # ------------------------------------------------------------------
     def wheelEvent(self, event):
-        if event.modifiers() == QtCore.Qt.ControlModifier:
+        if event.modifiers() == QtCore.Qt.KeyboardModifier.ControlModifier:
             delta = event.angleDelta().y()
             if delta > 0:
                 self.zoom_in()
@@ -329,7 +355,7 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
             self._zoom_to(int(v))
 
         anim.valueChanged.connect(_apply)
-        anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+        anim.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 
     # ------------------------------------------------------------------
     # Input
@@ -351,7 +377,7 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
         text = text.replace("\n", " ")
         cursor = self.textCursor()
         if cursor.position() < self.prompt_pos:
-            cursor.movePosition(QtGui.QTextCursor.End)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
             self.setTextCursor(cursor)
         cursor.insertText(text, self.get_input_format())
         self.ensureCursorVisible()
@@ -367,35 +393,35 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
                 return
 
         if self._popup.isVisible():
-            if key in (QtCore.Qt.Key_Down, QtCore.Qt.Key_Up):
-                if key == QtCore.Qt.Key_Down:
+            if key in (QtCore.Qt.Key.Key_Down, QtCore.Qt.Key.Key_Up):
+                if key == QtCore.Qt.Key.Key_Down:
                     self._popup.setCurrentRow(min(self._popup.currentRow() + 1, self._popup.count() - 1))
                 else:
                     self._popup.setCurrentRow(max(self._popup.currentRow() - 1, 0))
                 return
-            if key in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter, QtCore.Qt.Key_Tab):
+            if key in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter, QtCore.Qt.Key.Key_Tab):
                 self._accept_completion()
                 return
-            if key == QtCore.Qt.Key_Escape:
+            if key == QtCore.Qt.Key.Key_Escape:
                 self._popup.hide_popup()
                 return
 
-        ctrl = bool(modifiers & QtCore.Qt.ControlModifier)
-        shift = bool(modifiers & QtCore.Qt.ShiftModifier)
+        ctrl = bool(modifiers & QtCore.Qt.KeyboardModifier.ControlModifier)
+        shift = bool(modifiers & QtCore.Qt.KeyboardModifier.ShiftModifier)
 
         # Zoom shortcuts
-        if ctrl and key in (QtCore.Qt.Key_Equal, QtCore.Qt.Key_Plus):
+        if ctrl and key in (QtCore.Qt.Key.Key_Equal, QtCore.Qt.Key.Key_Plus):
             self.zoom_in()
             return
-        if ctrl and key == QtCore.Qt.Key_Minus:
+        if ctrl and key == QtCore.Qt.Key.Key_Minus:
             self.zoom_out()
             return
-        if ctrl and key == QtCore.Qt.Key_0:
+        if ctrl and key == QtCore.Qt.Key.Key_0:
             self.reset_zoom()
             return
 
         # Ctrl+C: copy if selected, otherwise cancel line / interrupt
-        if ctrl and key == QtCore.Qt.Key_C:
+        if ctrl and key == QtCore.Qt.Key.Key_C:
             if self.textCursor().hasSelection():
                 self.copy()
                 return
@@ -403,48 +429,48 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
             return
 
         # Ctrl+L: clear screen
-        if ctrl and key == QtCore.Qt.Key_L:
+        if ctrl and key == QtCore.Qt.Key.Key_L:
             self.tab.clear()
             self.tab.print_prompt()
             return
 
         # Ctrl+U: clear current input line
-        if ctrl and key == QtCore.Qt.Key_U:
+        if ctrl and key == QtCore.Qt.Key.Key_U:
             self._set_input_text("")
             return
 
         # Ctrl+A / Home -> start of command, Ctrl+E / End -> end
-        if (ctrl and key == QtCore.Qt.Key_A) or (key == QtCore.Qt.Key_Home and not ctrl):
+        if (ctrl and key == QtCore.Qt.Key.Key_A) or (key == QtCore.Qt.Key.Key_Home and not ctrl):
             cursor = self.textCursor()
             cursor.setPosition(self.prompt_pos)
             self.setTextCursor(cursor)
             return
-        if (ctrl and key == QtCore.Qt.Key_E) or (key == QtCore.Qt.Key_End and not ctrl):
+        if (ctrl and key == QtCore.Qt.Key.Key_E) or (key == QtCore.Qt.Key.Key_End and not ctrl):
             cursor = self.textCursor()
-            cursor.movePosition(QtGui.QTextCursor.End)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
             self.setTextCursor(cursor)
             return
 
         # Ctrl+W: delete previous word (fallback for word-wise delete)
-        if ctrl and key == QtCore.Qt.Key_W:
+        if ctrl and key == QtCore.Qt.Key.Key_W:
             self._delete_previous_word()
             return
 
         # Up / Down: history navigation
-        if key == QtCore.Qt.Key_Up and not shift:
+        if key == QtCore.Qt.Key.Key_Up and not shift:
             self.history_up()
             return
-        if key == QtCore.Qt.Key_Down and not shift:
+        if key == QtCore.Qt.Key.Key_Down and not shift:
             self.history_down()
             return
 
         # Tab: completion
-        if key == QtCore.Qt.Key_Tab and not ctrl:
+        if key == QtCore.Qt.Key.Key_Tab and not ctrl:
             self.autocomplete()
             return
 
         # Return / Enter: execute command
-        if key in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+        if key in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
             # If an IDE-launched program is waiting for stdin, feed the line to
             # it instead of sending a new shell command.
             if getattr(self.tab, "is_run_process_active", lambda: False)():
@@ -458,22 +484,22 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
             return
 
         # Backspace: never delete the prompt itself
-        if key == QtCore.Qt.Key_Backspace:
+        if key == QtCore.Qt.Key.Key_Backspace:
             cursor = self.textCursor()
             if cursor.hasSelection():
                 if cursor.selectionStart() < self.prompt_pos:
                     cursor.setPosition(self.prompt_pos)
-                    cursor.movePosition(QtGui.QTextCursor.End, QtGui.QTextCursor.KeepAnchor)
+                    cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
                     self.setTextCursor(cursor)
             elif cursor.position() <= self.prompt_pos:
                 return
 
         # Never move the caret into the prompt area
         cursor = self.textCursor()
-        if key in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Home) and cursor.position() <= self.prompt_pos:
+        if key in (QtCore.Qt.Key.Key_Left, QtCore.Qt.Key.Key_Home) and cursor.position() <= self.prompt_pos:
             return
         if cursor.position() < self.prompt_pos and not cursor.hasSelection():
-            cursor.movePosition(QtGui.QTextCursor.End)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
             self.setTextCursor(cursor)
 
         if event.text():
@@ -483,7 +509,7 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
         # The buffer must keep the caret after the prompt.
         if self.textCursor().position() < self.prompt_pos:
             c = self.textCursor()
-            c.movePosition(QtGui.QTextCursor.End)
+            c.movePosition(QtGui.QTextCursor.MoveOperation.End)
             self.setTextCursor(c)
 
     def write_signal_interrupt(self):
@@ -498,7 +524,7 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
 
     def _insert_at_end(self, text: str):
         cursor = self.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         self.setTextCursor(cursor)
         cursor.insertText(text, self.get_input_format())
         self.prompt_pos = self.textCursor().position()
@@ -522,7 +548,7 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
     def _submit_line(self):
         command = self.get_current_command().strip()
         cursor = self.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         self.setTextCursor(cursor)
         cursor.insertText("\n", self.get_input_format())
         self.prompt_pos = self.textCursor().position()
@@ -550,7 +576,7 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
         cursor = self.textCursor()
         cursor.beginEditBlock()
         cursor.setPosition(self.prompt_pos)
-        cursor.movePosition(QtGui.QTextCursor.End, QtGui.QTextCursor.KeepAnchor)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
         fmt = self.get_input_format()
         cursor.insertText(text, fmt)
         cursor.endEditBlock()
@@ -683,7 +709,7 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
         menu.addSeparator()
         act_clear = menu.addAction("Очистить терминал")
         act_clear.triggered.connect(lambda: (self.tab.clear(), self.tab.print_prompt()))
-        menu.exec_(self.mapToGlobal(pos))
+        menu.exec(self.mapToGlobal(pos))
 
 
 _ANSI_STRIP_RE = re.compile(
@@ -798,7 +824,7 @@ class TerminalTab(QtWidgets.QWidget):
             if key == "color":
                 fmt.setForeground(QtGui.QColor(value))
             elif key == "bold":
-                fmt.setFontWeight(QtGui.QFont.DemiBold if value else QtGui.QFont.Normal)
+                fmt.setFontWeight(QtGui.QFont.Weight.DemiBold if value else QtGui.QFont.Weight.Normal)
         return fmt
 
     def _insert_prompt_segments(self, cursor, user, host, path):
@@ -843,7 +869,7 @@ class TerminalTab(QtWidgets.QWidget):
         prompt_plain = f"{user}@{host}:{path}$ "
 
         cursor = self.screen.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         full_text = self.screen.toPlainText()
 
         # Buffer already ends with exactly the prompt we want to show.
@@ -859,14 +885,14 @@ class TerminalTab(QtWidgets.QWidget):
         if not initial_text and self._replace_stale_prompt(full_text, prompt_plain):
             full_text = self.screen.toPlainText()
             cursor = self.screen.textCursor()
-            cursor.movePosition(QtGui.QTextCursor.End)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
 
         # Make sure output and the prompt live on separate lines.
         if full_text and not full_text.endswith('\n'):
-            cursor.movePosition(QtGui.QTextCursor.End)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
             cursor.insertText("\n", self._fmt(color="#D4D4D4"))
 
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         self._insert_prompt_segments(cursor, user, host, path)
         prompt_position = cursor.position()
         if initial_text:
@@ -891,7 +917,7 @@ class TerminalTab(QtWidgets.QWidget):
             return False
         cursor = self.screen.textCursor()
         cursor.setPosition(last_line_start)
-        cursor.movePosition(QtGui.QTextCursor.End, QtGui.QTextCursor.KeepAnchor)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
         cursor.removeSelectedText()
         self.screen.setTextCursor(cursor)
         self.screen.prompt_pos = cursor.position()
@@ -932,12 +958,6 @@ class TerminalTab(QtWidgets.QWidget):
         # at all, and it prints its own ``>>>`` prompt.
         if self._stdin_is_interpret():
             return ""
-        if "bash" in prog or prog.endswith("sh.exe") or "zsh" in prog:
-            # Git Bash on Windows understands only POSIX init. It used to get
-            # `chcp 65001`, a cmd builtin, and kept printing its own loud
-            # prompt with ANSI escapes.
-            return ("export PS1='' PS2='' PROMPT_COMMAND=''; "
-                    "export PYTHONIOENCODING=utf-8")
         if IS_WINDOWS and self._stdin_is_powershell():
             return (
                 "[Console]::InputEncoding=[System.Text.Encoding]::UTF8;"
@@ -946,6 +966,9 @@ class TerminalTab(QtWidgets.QWidget):
                 "$global:LASTEXITCODE=0;"
                 "function global:prompt { '' }"
             )
+        if "bash" in prog or prog.endswith("sh.exe") or "zsh" in prog:
+            return ("export PS1='' PS2='' PROMPT_COMMAND=''; "
+                    "export PYTHONIOENCODING=utf-8")
         if IS_WINDOWS:
             return "chcp 65001>nul"
         # POSIX: PS1 is rendered by PyScribe itself, silence the shell prompt.
@@ -988,7 +1011,7 @@ class TerminalTab(QtWidgets.QWidget):
             except Exception:
                 pass
 
-        if self.process and self.process.state() != QtCore.QProcess.NotRunning:
+        if self.process and self.process.state() != QtCore.QProcess.ProcessState.NotRunning:
             # Detach the old process first: its `finished` signal would
             # otherwise schedule a restart that kills the shell we are about to
             # start, producing an endless «процесс завершён → перезапуск» loop
@@ -1008,7 +1031,7 @@ class TerminalTab(QtWidgets.QWidget):
         self.process.setWorkingDirectory(
             str(self.working_dir) if os.path.isdir(self.working_dir) else os.getcwd()
         )
-        self.process.setProcessChannelMode(QtCore.QProcess.SeparateChannels)
+        self.process.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.SeparateChannels)
         self.process.readyReadStandardOutput.connect(self._read_stdout)
         self.process.readyReadStandardError.connect(self._read_stderr)
         self.process.finished.connect(self._on_process_finished)
@@ -1041,7 +1064,7 @@ class TerminalTab(QtWidgets.QWidget):
         self._schedule_prompt(400)
 
     def _shell_running(self) -> bool:
-        return bool(self.process and self.process.state() == QtCore.QProcess.Running)
+        return bool(self.process and self.process.state() == QtCore.QProcess.ProcessState.Running)
 
     def _schedule_prompt(self, delay: int = 260):
         """Re-render the prompt once the shell has had time to start."""
@@ -1088,6 +1111,7 @@ class TerminalTab(QtWidgets.QWidget):
         if not script.strip():
             return
         self._init_echo_pending = 1
+        self._init_echo_fragment = ""
         self._init_echo_text = script.strip()
         self._init_echo_deadline = time.monotonic() + 6.0
         timer = getattr(self, "_init_echo_timer", None)
@@ -1104,6 +1128,7 @@ class TerminalTab(QtWidgets.QWidget):
 
     def _clear_init_echo(self):
         self._init_echo_pending = 0
+        self._init_echo_fragment = ""
         self._init_echo_timer = None
 
     def note_buffer_growth(self, text: str):
@@ -1125,7 +1150,6 @@ class TerminalTab(QtWidgets.QWidget):
         if self.sender() is not None and self.sender() is not self.process:
             return
         self._set_busy(False)
-        self.append_system_line(f"Процесс завершён (код {exit_code}). Перезапуск оболочки…")
         self.finished.emit()
         if getattr(self, "_restart_pending", False):
             return
@@ -1169,6 +1193,9 @@ class TerminalTab(QtWidgets.QWidget):
         if pending <= 0 and internal <= 0:
             return text
 
+        if pending > 0:
+            text = getattr(self, "_init_echo_fragment", "") + text
+            self._init_echo_fragment = ""
         lines = text.split("\n")
         tail = lines.pop() if lines else ""  # incomplete last line
         out_lines = []
@@ -1188,8 +1215,14 @@ class TerminalTab(QtWidgets.QWidget):
                 continue
             out_lines.append(line + "\n")
 
-        # An unterminated tail cannot be echo (echo always ends with a newline),
-        # so it is always real output and rendered immediately.
+        if pending > 0 and tail:
+            candidate = self._strip_shell_prompt(tail).strip()
+            if candidate and self._init_echo_text.startswith(candidate):
+                if candidate == self._init_echo_text:
+                    self._clear_init_echo()
+                else:
+                    self._init_echo_fragment = tail
+                tail = ""
         return "".join(out_lines) + tail
 
     def _read_stderr(self):
@@ -1236,7 +1269,7 @@ class TerminalTab(QtWidgets.QWidget):
         return bool(self._RESULT_MARKERS.search(strip_ansi(text)))
 
     def write(self, text):
-        if self.process and self.process.state() == QtCore.QProcess.Running:
+        if self.process and self.process.state() == QtCore.QProcess.ProcessState.Running:
             try:
                 self.process.write(text.encode(self._get_encoding()))
                 return True
@@ -1275,7 +1308,7 @@ class TerminalTab(QtWidgets.QWidget):
             return
         text = text.replace("\r\n", "\n").replace("\r", "")
         cursor = self.screen.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         cursor.beginEditBlock()
 
         palette = {
@@ -1349,7 +1382,7 @@ class TerminalTab(QtWidgets.QWidget):
             cursor = self.screen.textCursor()
         except RuntimeError:
             return  # widget already destroyed during shutdown
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         had_prompt = False
         user_draft = ""
         if self.screen.prompt_pos > 0:
@@ -1359,7 +1392,7 @@ class TerminalTab(QtWidgets.QWidget):
                 had_prompt = True
                 user_draft = full_text[self.screen.prompt_pos:]
                 cursor.setPosition(line_start)
-                cursor.movePosition(QtGui.QTextCursor.End, QtGui.QTextCursor.KeepAnchor)
+                cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
                 cursor.removeSelectedText()
                 self.screen.setTextCursor(cursor)
                 self.screen.prompt_pos = cursor.position()
@@ -1434,7 +1467,7 @@ class TerminalTab(QtWidgets.QWidget):
                 return
             self.working_dir = new_dir
             self.working_dir_changed.emit(new_dir)
-            if self.process and self.process.state() == QtCore.QProcess.Running:
+            if self.process and self.process.state() == QtCore.QProcess.ProcessState.Running:
                 # Keep the shell in sync for relative paths in later commands.
                 # The shell's echo of this internal sync line is suppressed.
                 self._sync_cd(new_dir)
@@ -1443,7 +1476,7 @@ class TerminalTab(QtWidgets.QWidget):
 
         # pwd / history are handled by the real shell; this exit-code echo keeps
         # the busy indicator honest for every command.
-        if not (self.process and self.process.state() == QtCore.QProcess.Running):
+        if not (self.process and self.process.state() == QtCore.QProcess.ProcessState.Running):
             self.append_system_line("Оболочка не запущена. Перезапуск…")
             self.start_shell()
             QtCore.QTimer.singleShot(400, lambda: self.write(cmd_stripped + self._eol()))
@@ -1542,7 +1575,7 @@ class TerminalTab(QtWidgets.QWidget):
         screen = self.screen
         screen._set_input_text(command)
         cursor = screen.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         screen.setTextCursor(cursor)
         screen._submit_line()
 
@@ -1572,13 +1605,13 @@ class TerminalTab(QtWidgets.QWidget):
         self._run_process = proc
         with self.output_controls.append(command + "\n"):
             cursor = QtGui.QTextCursor(self.screen.document())
-            cursor.movePosition(QtGui.QTextCursor.End)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
             user, host = self.get_linux_user_host()
             path = self.format_linux_path(self.working_dir)
             last_line = cursor.block().text()
             if (cursor.position() == self.screen.prompt_pos
                     and last_line.startswith(f"{user}@{host}:") and last_line.endswith("$ ")):
-                cursor.movePosition(QtGui.QTextCursor.StartOfBlock, QtGui.QTextCursor.KeepAnchor)
+                cursor.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock, QtGui.QTextCursor.MoveMode.KeepAnchor)
                 cursor.removeSelectedText()
             elif last_line:
                 cursor.insertBlock()
@@ -1590,7 +1623,7 @@ class TerminalTab(QtWidgets.QWidget):
         proc.setWorkingDirectory(
             str(self.working_dir) if os.path.isdir(str(self.working_dir)) else os.getcwd()
         )
-        proc.setProcessChannelMode(QtCore.QProcess.SeparateChannels)
+        proc.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.SeparateChannels)
         try:
             env = QtCore.QProcessEnvironment.systemEnvironment()
             env.insert("PYTHONIOENCODING", "utf-8")
@@ -1613,7 +1646,7 @@ class TerminalTab(QtWidgets.QWidget):
         # Keep stdin open so interactive programs (input()/readline) do not hit
         # EOF immediately. Inconclusive input is fed from the terminal's own
         # input line below.
-        proc.setInputChannelMode(QtCore.QProcess.ManagedInputChannel)
+        proc.setInputChannelMode(QtCore.QProcess.InputChannelMode.ManagedInputChannel)
 
         program, args = self._split_command(command)
         self._run_started_at = time.monotonic()
@@ -1735,7 +1768,7 @@ class TerminalTab(QtWidgets.QWidget):
     def _on_run_error(self, proc, err):
         if proc is not self._run_process:
             return
-        if err == QtCore.QProcess.FailedToStart:
+        if err == QtCore.QProcess.ProcessError.FailedToStart:
             self.append_system_line("Ошибка запуска: программа не найдена или недоступна.")
             self._stop_run_process(kill=False)
             self.mark_command_finished(1)
@@ -1752,17 +1785,17 @@ class TerminalTab(QtWidgets.QWidget):
         if compiling:
             output = "".join(proc._assembly_stdout)
             proc._assembly_stdout.clear()
-            if exit_status == QtCore.QProcess.NormalExit and exit_code == 0:
+            if exit_status == QtCore.QProcess.ExitStatus.NormalExit and exit_code == 0:
                 output = re.sub(r"(?mi)^flat assembler[ \t]+version[ \t]+[^\r\n]*\r?\n", "", output)
                 output = re.sub(r"(?mi)^\d+ pass(?:es)?, \d+ bytes\.\s*$", "", output)
             if output.strip():
                 self._append_colored(output.replace("source.asm", proc._assembly_source), "output")
-        if (exit_status == QtCore.QProcess.NormalExit and exit_code == 0
+        if (exit_status == QtCore.QProcess.ExitStatus.NormalExit and exit_code == 0
                 and getattr(proc, "_assembly_steps", None)):
             self._start_assembly_step(proc)
             return
         elapsed = max(0.0, time.monotonic() - getattr(self, "_run_started_at", time.monotonic()))
-        crashed = exit_status != QtCore.QProcess.NormalExit
+        crashed = exit_status != QtCore.QProcess.ExitStatus.NormalExit
         code = -1 if crashed else int(exit_code)
         if compiling:
             label = f"Ошибка сборки · код {code}"
@@ -1795,7 +1828,7 @@ class TerminalTab(QtWidgets.QWidget):
                     signal.disconnect()
                 except Exception:
                     pass
-            if kill and proc.state() != QtCore.QProcess.NotRunning:
+            if kill and proc.state() != QtCore.QProcess.ProcessState.NotRunning:
                 proc.kill()
                 proc.waitForFinished(500)
             proc.deleteLater()
@@ -1804,12 +1837,12 @@ class TerminalTab(QtWidgets.QWidget):
 
     def is_run_process_active(self) -> bool:
         proc = getattr(self, "_run_process", None)
-        return bool(proc is not None and proc.state() != QtCore.QProcess.NotRunning)
+        return bool(proc is not None and proc.state() != QtCore.QProcess.ProcessState.NotRunning)
 
     def send_run_input(self, text: str) -> bool:
         """Feed a line of user input to the running IDE process (stdin)."""
         proc = getattr(self, "_run_process", None)
-        if proc is None or proc.state() == QtCore.QProcess.NotRunning:
+        if proc is None or proc.state() == QtCore.QProcess.ProcessState.NotRunning:
             return False
         try:
             proc.write((text + ("\r\n" if IS_WINDOWS else "\n")).encode("utf-8"))
@@ -1864,7 +1897,7 @@ class TerminalTab(QtWidgets.QWidget):
                 signal.disconnect()
             except Exception:
                 pass
-        if process.state() != QtCore.QProcess.NotRunning:
+        if process.state() != QtCore.QProcess.ProcessState.NotRunning:
             try:
                 process.kill()
                 process.waitForFinished(1000)
@@ -1906,10 +1939,14 @@ class TerminalWidget(QtWidgets.QWidget):
         self._session_timer.start()
 
     def _session_path(self):
+        from core.project_state import project_state_file
         from utils.programs import _project_session_file, _state_file
-        path = (_project_session_file(self._session_key) if self._session_key
-                else _state_file("session_standalone.json"))
-        return path.with_name(path.stem + "_terminals.json")
+        if self._session_key:
+            path = _project_session_file(self._session_key)
+            return project_state_file(self._session_key, "terminal.json",
+                                      legacy=path.with_name(path.stem + "_terminals.json"),
+                                      default={"tabs": [], "active": 0, "history": []})
+        return _state_file("session_standalone_terminals.json")
 
     def save_session(self):
         import json
@@ -1921,28 +1958,36 @@ class TerminalWidget(QtWidgets.QWidget):
             boundary = max(0, min(tab.screen.prompt_pos, end))
             cursor = QtGui.QTextCursor(document)
             cursor.setPosition(max(0, boundary - 500000))
-            cursor.setPosition(boundary, QtGui.QTextCursor.KeepAnchor)
+            cursor.setPosition(boundary, QtGui.QTextCursor.MoveMode.KeepAnchor)
             output = cursor.selection().toPlainText()
-            draft = ""
+            draft = getattr(tab, "_restored_draft", "")
             if not tab._busy and boundary < end:
                 cursor.setPosition(boundary)
-                cursor.movePosition(QtGui.QTextCursor.End, QtGui.QTextCursor.KeepAnchor)
+                cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
                 draft = cursor.selection().toPlainText()
+            if not tab._busy and tab._prompt_regex().fullmatch(output.rsplit("\n", 1)[-1]):
+                output = output[:output.rfind("\n") + 1]
+            scroll = tab.screen.verticalScrollBar()
+            saved_scroll = getattr(tab, "_restored_scroll", None)
+            if saved_scroll is None and scroll.value() < scroll.maximum():
+                saved_scroll = scroll.value()
+            directory = Path(tab.working_dir)
+            if self._session_key and directory.is_relative_to(self._session_key):
+                directory = directory.relative_to(self._session_key)
             records.append({
                 "title": self.tab_widget.tabText(index),
-                "directory": tab.working_dir,
+                "directory": str(directory),
                 "output": output,
                 "draft": draft,
                 "last_command": tab._last_command,
-                "running": tab._busy,
-                "scroll": tab.screen.verticalScrollBar().value(),
+                "scroll": saved_scroll,
                 "shell": tab.shell_program,
                 "shell_args": tab.shell_args,
             })
         payload = {"tabs": records, "active": self.tab_widget.currentIndex(),
                    "history": self._history[-500:]}
         target = QtCore.QSaveFile(str(self._session_path()))
-        if target.open(QtCore.QIODevice.WriteOnly):
+        if target.open(QtCore.QIODevice.OpenModeFlag.WriteOnly):
             target.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             target.commit()
 
@@ -1960,24 +2005,28 @@ class TerminalWidget(QtWidgets.QWidget):
             if not isinstance(record, dict):
                 continue
             directory = record.get("directory")
+            if self._session_key and isinstance(directory, str):
+                directory = str(Path(self._session_key) / directory)
             self.create_new_tab(directory if isinstance(directory, str) and os.path.isdir(directory)
                                 else self._session_key or os.getcwd())
             tab = self._current()
-            tab.screen.setPlainText(str(record.get("output", ""))[-500000:])
+            saved_output = str(record.get("output", ""))[-500000:]
+            output = _clean_saved_terminal_output(saved_output)
+            last_line = output.rstrip("\n").rsplit("\n", 1)[-1]
+            if tab._prompt_regex().fullmatch(last_line):
+                output = output.rstrip("\n")[:output.rstrip("\n").rfind("\n") + 1]
+            tab.screen.setPlainText(output)
             tab.screen.prompt_pos = tab.screen.document().characterCount() - 1
             tab.screen.history = self._history
             tab._restored_draft = str(record.get("draft", ""))
-            scroll = record.get("scroll", 0)
-            tab._restored_scroll = scroll if isinstance(scroll, int) else 0
+            scroll = record.get("scroll")
+            if isinstance(scroll, int) and output == saved_output:
+                tab._restored_scroll = scroll
             program, args = record.get("shell"), record.get("shell_args")
             if isinstance(program, str) and isinstance(args, list) and all(isinstance(x, str) for x in args):
                 tab.shell_program, tab.shell_args = program, args
             tab._last_command = str(record.get("last_command", ""))
             self.tab_widget.setTabText(self.tab_widget.currentIndex(), str(record.get("title", tab.title)))
-            if record.get("running"):
-                tab.append_system_line("Предыдущий запуск прерван: " + tab._last_command)
-            tab.append_system_line("\n\n──────── Новая сессия · "
-                                   + time.strftime("%d.%m.%Y %H:%M") + " ────────\n")
         if not self.tabs:
             self.create_new_tab(self._session_key)
         active = payload.get("active", 0)
@@ -2015,7 +2064,7 @@ class TerminalWidget(QtWidgets.QWidget):
 
         self.shell_button = QtWidgets.QToolButton()
         self.shell_button.setObjectName("terminalShellButton")
-        self.shell_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.shell_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.shell_button.setToolTip("Выбор оболочки (PowerShell / CMD / Git Bash)")
         menu = QtWidgets.QMenu(self.shell_button)
         menu.setObjectName("terminalShellMenu")
@@ -2058,7 +2107,7 @@ class TerminalWidget(QtWidgets.QWidget):
         left_l.setContentsMargins(8, 0, 8, 0)
         left_l.setSpacing(4)
         left_l.addWidget(self.shell_button)
-        self.tab_widget.setCornerWidget(left_corner, QtCore.Qt.TopLeftCorner)
+        self.tab_widget.setCornerWidget(left_corner, QtCore.Qt.Corner.TopLeftCorner)
 
         root.addWidget(self.tab_widget, 1)
         self.setObjectName("terminalWidget")
@@ -2067,8 +2116,13 @@ class TerminalWidget(QtWidgets.QWidget):
         # shows one when the panel is split into several terminals).
         self.tab_widget.setTabBarAutoHide(True)
 
-        QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+`"), self, activated=self.create_new_tab)
-        QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+L"), self, activated=self.clear_current)
+        self._terminal_shortcuts = []
+        for sequence, handler in (("Ctrl+Shift+`", self.create_new_tab),
+                                  ("Ctrl+L", self.clear_current)):
+            shortcut = QtGui.QShortcut(QtGui.QKeySequence(sequence), self)
+            shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(handler)
+            self._terminal_shortcuts.append(shortcut)
 
     # ------------------------------------------------------------------
     def change_shell(self, shell_name, shell_prog, shell_args):
@@ -2265,7 +2319,7 @@ class TerminalWidget(QtWidgets.QWidget):
         if tab and os.path.normpath(tab.working_dir) != os.path.normpath(path):
             tab.working_dir = path
             tab.working_dir_changed.emit(path)
-            if tab.process and tab.process.state() != QtCore.QProcess.NotRunning:
+            if tab.process and tab.process.state() != QtCore.QProcess.ProcessState.NotRunning:
                 # Same internal-cd path as the typed ``cd`` command so the
                 # echoed sync line is filtered out of the buffer.
                 tab._sync_cd(path)

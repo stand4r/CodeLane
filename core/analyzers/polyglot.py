@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.code_analysis.treesitter_pack import pack_language, parse_pack_root
 from core.project_intelligence import Issue, StructureEdge, StructureNode, SymbolInfo
 
 
@@ -223,10 +224,10 @@ class PolyglotSourceAnalyzer:
     def _tree_sitter(self, path: Path, text: str, language: str) -> GenericResult:
         parser = self._parsers.get(language)
         if parser is None:
-            parser = self._pack(language)
+            parser = self._pack(pack_language(language))
             self._parsers[language] = parser
-        tree = parser.parse(text.encode("utf-8", errors="replace"))
-        root = tree.root_node
+        source = text.encode("utf-8", errors="replace")
+        root = parse_pack_root(parser, source.decode("utf-8"))
         symbols: List[SymbolInfo] = []
         imports: List[str] = []
         issues: List[Issue] = []
@@ -234,7 +235,6 @@ class PolyglotSourceAnalyzer:
         edges: List[StructureEdge] = []
         stack: List[str] = []
         complexity = 1
-        source = text.encode("utf-8", errors="replace")
 
         symbol_kinds = {
             "class_declaration": "class", "class_definition": "class", "class_specifier": "class",

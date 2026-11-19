@@ -7,7 +7,7 @@ Metrics intentionally mirror VS Code:
 * the active item is drawn with a 2px accent stripe on the left edge,
 * inactive icons are muted (#868686) and become white on hover.
 """
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from design import icons as codicons
 
@@ -23,7 +23,7 @@ class _ActivityIndicator(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._accent = QtGui.QColor("#0078D4")
         self._progress = 0.0
         self._anim = None
@@ -64,12 +64,12 @@ class _ActivityIndicator(QtWidgets.QWidget):
             anim.setDuration(DURATION["fast"])
             anim.setStartValue(a)
             anim.setEndValue(b)
-            anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+            anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
         fade = QtCore.QPropertyAnimation(self, b"progress", group)
         fade.setDuration(DURATION["fast"])
         fade.setStartValue(min(1.0, 0.55 + self._progress * 0.45))
         fade.setEndValue(1.0)
-        group.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+        group.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def hide_indicator(self):
         self.hide()
@@ -78,7 +78,7 @@ class _ActivityIndicator(QtWidgets.QWidget):
         if self._progress <= 0:
             return
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, False)
         color = QtGui.QColor(self._accent)
         color.setAlphaF(max(0.0, min(1.0, self._progress)))
         painter.fillRect(self.rect(), color)
@@ -121,22 +121,22 @@ class ActivityBar(QtWidgets.QFrame):
         for key, icon_name, tooltip in self.ITEMS:
             button = self._button(icon_name, tooltip)
             button.clicked.connect(lambda checked=False, k=key: self._activate_or_toggle(k))
-            layout.addWidget(button, 0, QtCore.Qt.AlignHCenter)
+            layout.addWidget(button, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
             self.buttons[key] = button
-
-        self.browser_button = self._button("browser-globe", "Браузер")
-        self.browser_button.clicked.connect(self.browser_requested)
-        layout.addWidget(self.browser_button, 0, QtCore.Qt.AlignHCenter)
 
         layout.addStretch(1)
 
+        self.browser_button = self._button("browser-globe", "Браузер")
+        self.browser_button.clicked.connect(self.browser_requested)
+        layout.addWidget(self.browser_button, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
+
         self.terminal_button = self._button("terminal", "Терминал (Ctrl+`)")
         self.terminal_button.clicked.connect(self.terminal_requested)
-        layout.addWidget(self.terminal_button, 0, QtCore.Qt.AlignHCenter)
+        layout.addWidget(self.terminal_button, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
 
         self.settings_button = self._button("settings-gear", "Управление настройками")
         self.settings_button.clicked.connect(lambda: self._activate_special("settings"))
-        layout.addWidget(self.settings_button, 0, QtCore.Qt.AlignHCenter)
+        layout.addWidget(self.settings_button, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
 
         self._indicator = _ActivityIndicator(self)
         self._indicator.hide()
@@ -148,12 +148,12 @@ class ActivityBar(QtWidgets.QFrame):
         button.setIconSize(QtCore.QSize(ICON_SIZE, ICON_SIZE))
         button.setToolTip(tooltip)
         button.setFixedSize(ITEM_SIZE, ITEM_SIZE)
-        button.setCursor(QtCore.Qt.PointingHandCursor)
+        button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         button.setObjectName("activityAction")
         button.setProperty("iconName", icon_name)
         button.setCheckable(True)
         button.setAutoRaise(True)
-        button.setFocusPolicy(QtCore.Qt.TabFocus)
+        button.setFocusPolicy(QtCore.Qt.FocusPolicy.TabFocus)
         # Per-widget rule so the application QSS cannot tint the pixmap icon.
         button.setStyleSheet(
             "QToolButton#activityAction { background: transparent; border: 0; padding: 0; }"
@@ -165,9 +165,9 @@ class ActivityBar(QtWidgets.QFrame):
 
     def eventFilter(self, watched, event):
         if isinstance(watched, QtWidgets.QToolButton) and watched.property("iconName"):
-            if event.type() == QtCore.QEvent.Enter:
+            if event.type() == QtCore.QEvent.Type.Enter:
                 self._set_hover(watched, True)
-            elif event.type() == QtCore.QEvent.Leave:
+            elif event.type() == QtCore.QEvent.Type.Leave:
                 self._set_hover(watched, False)
         return super().eventFilter(watched, event)
 
@@ -181,9 +181,9 @@ class ActivityBar(QtWidgets.QFrame):
         if name == "browser-globe":
             pixmap = QtGui.QPixmap(size * 2, size * 2)
             pixmap.setDevicePixelRatio(2)
-            pixmap.fill(QtCore.Qt.transparent)
+            pixmap.fill(QtCore.Qt.GlobalColor.transparent)
             painter = QtGui.QPainter(pixmap)
-            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
             painter.setPen(QtGui.QPen(QtGui.QColor(color), 1.35))
             inset = size * 0.16
             circle = QtCore.QRectF(inset, inset, size - 2 * inset, size - 2 * inset)
@@ -271,8 +271,8 @@ class ActivityBar(QtWidgets.QFrame):
 
         if not badge:
             badge = QtWidgets.QLabel(button)
-            badge.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
-            badge.setAlignment(QtCore.Qt.AlignCenter)
+            badge.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             button._badge_label = badge
 
         text = str(count) if count <= 99 else "99+"

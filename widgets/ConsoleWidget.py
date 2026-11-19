@@ -1,7 +1,7 @@
 """Bottom Workbench panel: integrated terminal, file-scoped Problems and Output."""
 from pathlib import Path
 from design.icons import line_icon, set_line_icon
-from PyQt5 import QtWidgets, QtCore, QtGui
+from PyQt6 import QtWidgets, QtCore, QtGui
 from .TerminalWidget import TerminalWidget
 from design.icons import codicon_icon
 
@@ -67,22 +67,22 @@ class ConsoleWidget(QtWidgets.QWidget):
             button.setIcon(codicon_icon(icon_name, 16, "#CCCCCC"))
             button.setIconSize(QtCore.QSize(16, 16))
             button.setToolTip(tip)
-            button.setCursor(QtCore.Qt.PointingHandCursor)
+            button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
             button.setAutoRaise(True)
-            button.setFocusPolicy(QtCore.Qt.NoFocus)
+            button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
             # A fixed 28px hit area, vertically centred inside the 36px strip.
             button.setFixedSize(28, 28)
-            button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda checked=False, s=slot: s())
-            corner_layout.addWidget(button, 0, QtCore.Qt.AlignVCenter)
+            corner_layout.addWidget(button, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
             self._toolbar_buttons[key] = button
 
         self._problem_badge = QtWidgets.QLabel("")
         self._problem_badge.setObjectName("consoleBadge")
         self._problem_badge.setVisible(False)
-        corner_layout.addWidget(self._problem_badge, 0, QtCore.Qt.AlignVCenter)
+        corner_layout.addWidget(self._problem_badge, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
 
-        self.tab_widget.setCornerWidget(corner, QtCore.Qt.TopRightCorner)
+        self.tab_widget.setCornerWidget(corner, QtCore.Qt.Corner.TopRightCorner)
 
         # Problem count badge + busy indicator live in the panel strip.
         self.terminal_widget.busy_changed.connect(self._set_terminal_busy)
@@ -209,7 +209,7 @@ class ConsoleWidget(QtWidgets.QWidget):
         self.problems_list = QtWidgets.QListWidget(); self.problems_list.setObjectName("problemsList")
         self.problems_list.setAlternatingRowColors(True)
         self.problems_list.itemDoubleClicked.connect(self._open_problem)
-        self.problems_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.problems_list.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.problems_list.customContextMenuRequested.connect(self._problems_context_menu)
         layout.addWidget(self.problems_list)
         return widget
@@ -233,12 +233,12 @@ class ConsoleWidget(QtWidgets.QWidget):
         menu.addSeparator()
         act_clear = menu.addAction(line_icon("trash"), "Очистить список")
         act_clear.triggered.connect(self.clear_problems)
-        menu.exec_(self.problems_list.mapToGlobal(pos))
+        menu.exec(self.problems_list.mapToGlobal(pos))
 
     def _copy_single_problem(self, item):
         if not item: return
-        path = item.data(QtCore.Qt.UserRole) or ""
-        line = item.data(QtCore.Qt.UserRole + 1) or 1
+        path = item.data(QtCore.Qt.ItemDataRole.UserRole) or ""
+        line = item.data(QtCore.Qt.ItemDataRole.UserRole + 1) or 1
         text = f"{item.text()} ({path}:{line})"
         QtWidgets.QApplication.clipboard().setText(text)
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Проблема скопирована в буфер")
@@ -251,8 +251,8 @@ class ConsoleWidget(QtWidgets.QWidget):
         lines = []
         for i in range(self.problems_list.count()):
             it = self.problems_list.item(i)
-            path = it.data(QtCore.Qt.UserRole) or ""
-            line = it.data(QtCore.Qt.UserRole + 1) or 1
+            path = it.data(QtCore.Qt.ItemDataRole.UserRole) or ""
+            line = it.data(QtCore.Qt.ItemDataRole.UserRole + 1) or 1
             lines.append(f"{it.text()} | {path}:{line}")
         report = "\n".join(lines)
         QtWidgets.QApplication.clipboard().setText(report)
@@ -279,8 +279,8 @@ class ConsoleWidget(QtWidgets.QWidget):
                 it = self.problems_list.item(i)
                 items_data.append({
                     "text": it.text(),
-                    "file": str(it.data(QtCore.Qt.UserRole) or ""),
-                    "line": int(it.data(QtCore.Qt.UserRole + 1) or 1)
+                    "file": str(it.data(QtCore.Qt.ItemDataRole.UserRole) or ""),
+                    "line": int(it.data(QtCore.Qt.ItemDataRole.UserRole + 1) or 1)
                 })
 
             p = Path(file_path)
@@ -292,7 +292,7 @@ class ConsoleWidget(QtWidgets.QWidget):
                 md_lines = [
                     f"# Отчёт о проблемах в коде проекта",
                     f"",
-                    f"> Сформировано в PyScribe IDE. Всего замечаний: **{len(items_data)}**.",
+                    f"> Сформировано в CodeLane IDE. Всего замечаний: **{len(items_data)}**.",
                     f"",
                     f"| # | Тип и описание | Файл | Строка |",
                     f"| :--- | :--- | :--- | :--- |",
@@ -317,22 +317,22 @@ class ConsoleWidget(QtWidgets.QWidget):
         toolbar, self.output_context = self._toolbar("Вывод", self.clear_output)
         layout.addWidget(toolbar)
         self.output_text = QtWidgets.QTextEdit(); self.output_text.setObjectName("outputText"); self.output_text.setReadOnly(True)
-        self.output_text.setLineWrapMode(QtWidgets.QTextEdit.NoWrap)
+        self.output_text.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.NoWrap)
         layout.addWidget(self.output_text)
         return widget
 
     def _open_problem(self, item):
-        path = item.data(QtCore.Qt.UserRole)
-        line = item.data(QtCore.Qt.UserRole + 1) or 1
+        path = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        line = item.data(QtCore.Qt.ItemDataRole.UserRole + 1) or 1
         if path and self.parent() and hasattr(self.parent(), "open_analysis_location"):
             self.parent().open_analysis_location(path, int(line))
 
     def add_problem(self, problem_type, file_path, line, description, is_lsp=False):
         type_str = {"error": "ОШИБКА", "warning": "ПРЕДУПРЕЖДЕНИЕ", "info": "ИНФОРМАЦИЯ"}.get(problem_type, str(problem_type).upper())
         item = QtWidgets.QListWidgetItem(f"{type_str}  {description}  ·  строка {line}")
-        item.setData(QtCore.Qt.UserRole, str(file_path)); item.setData(QtCore.Qt.UserRole + 1, int(line or 1))
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, str(file_path)); item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, int(line or 1))
         if is_lsp:
-            item.setData(QtCore.Qt.UserRole + 2, "lsp")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole + 2, "lsp")
         color = {"error":"#F14C4C", "warning":"#CCA700", "info":"#A8A8A8"}.get(problem_type, "#D4D4D4")
         item.setForeground(QtGui.QColor(color)); self.problems_list.addItem(item)
         self._update_problem_badge()
@@ -357,7 +357,7 @@ class ConsoleWidget(QtWidgets.QWidget):
         # Remove existing LSP items for this file
         for i in reversed(range(self.problems_list.count())):
             it = self.problems_list.item(i)
-            if it.data(QtCore.Qt.UserRole + 2) == "lsp":
+            if it.data(QtCore.Qt.ItemDataRole.UserRole + 2) == "lsp":
                 self.problems_list.takeItem(i)
 
         diags = getattr(self, "_lsp_diagnostics", {}).get(norm_path, [])
@@ -373,7 +373,7 @@ class ConsoleWidget(QtWidgets.QWidget):
 
     def append_output(self, text, is_error=False):
         if not text: return
-        cursor = self.output_text.textCursor(); cursor.movePosition(QtGui.QTextCursor.End)
+        cursor = self.output_text.textCursor(); cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         cursor.setCharFormat(QtGui.QTextCharFormat())
         fmt = QtGui.QTextCharFormat(); fmt.setForeground(QtGui.QColor("#F14C4C" if is_error else "#D4D4D4")); cursor.setCharFormat(fmt)
         cursor.insertText(str(text)); self.output_text.setTextCursor(cursor); self.output_text.ensureCursorVisible()

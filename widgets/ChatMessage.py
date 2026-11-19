@@ -16,7 +16,7 @@ import html
 import re
 from typing import List, Optional, Tuple
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 __all__ = ["AssistantMessage", "CodeSnippet", "InlineCodeText",
            "split_markdown_blocks", "markdown_to_html"]
@@ -24,7 +24,7 @@ __all__ = ["AssistantMessage", "CodeSnippet", "InlineCodeText",
 # Rich text cannot carry a radius, so inline code is marked with a colour that
 # is re-interpreted as a custom property after parsing.
 SENTINEL_BG = "#010203"
-INLINE_PROP = int(QtGui.QTextFormat.UserProperty) + 1
+INLINE_PROP = int(QtGui.QTextFormat.Property.UserProperty) + 1
 
 CHIP_BG = "#2A2A2C"
 CHIP_RADIUS = 5.0
@@ -266,9 +266,9 @@ def markdown_to_html(text: str) -> str:
             items = []
             while index < len(lines) and re.match(r"^\s*([-*+])\s+", lines[index]):
                 content = re.sub(r"^\s*[-*+]\s+", "", lines[index])
-                items.append(_list_row("•", _inline(content), body, 22))
+                items.append("<li>" + _inline(content) + "</li>")
                 index += 1
-            blocks.extend(items)
+            blocks.append('<ul style="margin:8px 0 12px 0;">' + "".join(items) + "</ul>")
             continue
 
         ordered = re.match(r"^\s*(\d+)[.)]\s+", line)
@@ -282,11 +282,10 @@ def markdown_to_html(text: str) -> str:
                     break
                 content = re.sub(r"^\s*\d+[.)]\s+", "", lines[index])
                 number = f"{counter}."
-                items.append(_list_row(number, _inline(content), body,
-                                       14 + 9 * len(number)))
+                items.append("<li>" + _inline(content) + "</li>")
                 counter += 1
                 index += 1
-            blocks.extend(items)
+            blocks.append(f'<ol start="{ordered.group(1)}" style="margin:8px 0 12px 0;">' + "".join(items) + "</ol>")
             continue
 
         if stripped.startswith(">"):
@@ -330,11 +329,11 @@ class InlineCodeText(QtWidgets.QTextBrowser):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
-        self.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
-                           QtWidgets.QSizePolicy.Fixed)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
+                           QtWidgets.QSizePolicy.Policy.Fixed)
         self.setStyleSheet(
             "QTextBrowser { background: transparent; border: none; "
             f"color: {TEXT}; selection-background-color: #2C5A7A; "
@@ -343,17 +342,17 @@ class InlineCodeText(QtWidgets.QTextBrowser):
         # Long URLs / paths without spaces used to overflow the line and get
         # clipped at the bubble edge; break anywhere as a last resort.
         option = self.document().defaultTextOption()
-        option.setWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+        option.setWrapMode(QtGui.QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.document().setDefaultTextOption(option)
         self.setTextInteractionFlags(
-            QtCore.Qt.TextSelectableByMouse | QtCore.Qt.LinksAccessibleByMouse)
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse | QtCore.Qt.TextInteractionFlag.LinksAccessibleByMouse)
         self.setOpenExternalLinks(True)
         self._chips: List[Tuple[int, int, int]] = []
         self.viewport().installEventFilter(self)
 
     # -- scrolling -----------------------------------------------------
     def eventFilter(self, obj, event):
-        if obj is self.viewport() and event.type() == QtCore.QEvent.Wheel:
+        if obj is self.viewport() and event.type() == QtCore.QEvent.Type.Wheel:
             if _forward_wheel_to_chat(self, event):
                 return True
         return super().eventFilter(obj, event)
@@ -388,7 +387,7 @@ class InlineCodeText(QtWidgets.QTextBrowser):
                 is_list_row = bool(re.fullmatch(r"(•|\d{1,3}\.)", marker))
                 if not is_list_row:
                     fmt = frame.format()
-                    fmt.setWidth(QtGui.QTextLength(QtGui.QTextLength.PercentageLength, 100))
+                    fmt.setWidth(QtGui.QTextLength(QtGui.QTextLength.Type.PercentageLength, 100))
                     fmt.setCellPadding(0)
                     fmt.setCellSpacing(0)
                     frame.setFormat(fmt)
@@ -409,12 +408,12 @@ class InlineCodeText(QtWidgets.QTextBrowser):
                 fragment = iterator.fragment()
                 if fragment.isValid():
                     fmt = fragment.charFormat()
-                    if fmt.background().style() != QtCore.Qt.NoBrush and \
+                    if fmt.background().style() != QtCore.Qt.BrushStyle.NoBrush and \
                             fmt.background().color().name().lower() == SENTINEL_BG:
                         cursor = QtGui.QTextCursor(document)
                         cursor.setPosition(fragment.position())
                         cursor.setPosition(fragment.position() + fragment.length(),
-                                           QtGui.QTextCursor.KeepAnchor)
+                                           QtGui.QTextCursor.MoveMode.KeepAnchor)
                         new_fmt = QtGui.QTextCharFormat(fmt)
                         new_fmt.clearBackground()
                         new_fmt.setProperty(INLINE_PROP, True)
@@ -444,8 +443,8 @@ class InlineCodeText(QtWidgets.QTextBrowser):
         if layout is None:
             return
         painter = QtGui.QPainter(self.viewport())
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        painter.setPen(QtCore.Qt.NoPen)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(QtGui.QColor(CHIP_BG))
         try:
             block = document.begin()
@@ -518,7 +517,7 @@ class _CodeView(QtWidgets.QPlainTextEdit):
                 or self.horizontalScrollBar().maximum() > 0)
 
     def eventFilter(self, obj, event):
-        if obj is self.viewport() and event.type() == QtCore.QEvent.Wheel:
+        if obj is self.viewport() and event.type() == QtCore.QEvent.Type.Wheel:
             if not self._can_scroll() and _forward_wheel_to_chat(self, event):
                 return True
         return super().eventFilter(obj, event)
@@ -550,8 +549,8 @@ class CodeSnippet(QtWidgets.QWidget):
         self.copy_btn = QtWidgets.QToolButton()
         self.copy_btn.setObjectName("chatCodeCopy")
         self.copy_btn.setText("Копировать")
-        self.copy_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.copy_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.copy_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.copy_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.copy_btn.clicked.connect(self.copy_code)
         header_layout.addWidget(self.copy_btn)
         root.addWidget(header)
@@ -559,13 +558,13 @@ class CodeSnippet(QtWidgets.QWidget):
         self.view = _CodeView()
         self.view.setObjectName("chatCodeView")
         self.view.setReadOnly(True)
-        self.view.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.view.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.view.setPlainText(self._code)
-        self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         # Wrapping keeps narrow chat columns readable; a horizontal scrollbar
         # inside a 300px bubble was hiding half of every long code line.
-        self.view.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        self.view.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.view.document().setDocumentMargin(10)
         self._apply_font()
         self._install_highlighter()
@@ -587,7 +586,7 @@ class CodeSnippet(QtWidgets.QWidget):
         if _ui_scale_factor() > 1.05:
             points = max(points, int(round(points * min(1.35, _ui_scale_factor()))))
         font = QtGui.QFont(family, points)
-        font.setStyleHint(QtGui.QFont.Monospace)
+        font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
         self.view.setFont(font)
 
     def _install_highlighter(self):
@@ -629,10 +628,10 @@ class CodeSnippet(QtWidgets.QWidget):
             wrapped_lines += max(1, -(-advance // available))
         content = wrapped_lines * metrics.lineSpacing() + 18
         if content > self.MAX_HEIGHT:
-            self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+            self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             self.view.setFixedHeight(self.MAX_HEIGHT)
         else:
-            self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self.view.setFixedHeight(max(28, int(content)))
 
     def resizeEvent(self, event):

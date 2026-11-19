@@ -1,4 +1,4 @@
-"""PyScribe main workbench window."""
+"""CodeLane main workbench window."""
 from __future__ import annotations
 
 import json
@@ -9,17 +9,17 @@ from pathlib import Path
 from functools import partial
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 
-from PyQt5 import QtWidgets, QtCore, QtGui
-from PyQt5.QtCore import QSize, QTimer, Qt
-from PyQt5.QtGui import QIcon, QPalette, QColor, QFont
-from PyQt5.QtWidgets import (
+from PyQt6 import QtWidgets, QtCore, QtGui
+from PyQt6.QtCore import QSize, QTimer, Qt
+from PyQt6.QtGui import QIcon, QPalette, QColor, QFont
+from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QMessageBox,
     QDialog, QVBoxLayout, QLabel, QPushButton
 )
 
 from utils.FabricRunCode import *
 from utils.programs import (
-    load_settings, loadRecent, saveRecent, loadSession,
+    load_settings, saveRecent, load_session_state,
     saveSession, clearCache, clear_backup, backup, restore_backup
 )
 from utils.settings_manager import init_settings_manager, get_settings_manager
@@ -109,8 +109,8 @@ class ModernMainWindow(QMainWindow):
             app_manager (ApplicationManager): Параметр app manager.
         """
         super().__init__()
-        self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.Window)
-        self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        self.setWindowFlags(QtCore.Qt.WindowType.FramelessWindowHint | QtCore.Qt.WindowType.Window)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.apply_screen_metrics(self.screen())
         self.app_manager = app_manager
         self.unsaved_files_count = 0
@@ -177,18 +177,18 @@ class ModernMainWindow(QMainWindow):
                 icon = candidate
                 break
         if icon.isNull():
-            icon = self.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon)
+            icon = self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon)
         tray = QtWidgets.QSystemTrayIcon(icon, self)
         menu = QtWidgets.QMenu(self)
-        show_action = menu.addAction("Показать PyScribe")
+        show_action = menu.addAction("Показать CodeLane")
         show_action.triggered.connect(lambda: (self.show(), self.raise_(), self.activateWindow()))
         menu.addAction("Открыть проект…", self.action_open_project)
         menu.addAction("Настройки", self.action_open_settings)
         menu.addSeparator()
         menu.addAction("Выход", self.action_exit)
         tray.setContextMenu(menu)
-        tray.activated.connect(lambda reason: (self.show(), self.raise_(), self.activateWindow()) if reason == QtWidgets.QSystemTrayIcon.Trigger else None)
-        tray.setToolTip("PyScribe")
+        tray.activated.connect(lambda reason: (self.show(), self.raise_(), self.activateWindow()) if reason == QtWidgets.QSystemTrayIcon.ActivationReason.Trigger else None)
+        tray.setToolTip("CodeLane")
         self.tray_icon = tray
         QtCore.QTimer.singleShot(0, tray.show)
 
@@ -274,7 +274,7 @@ class ModernMainWindow(QMainWindow):
 
             anim = QtCore.QVariantAnimation(self)
             anim.setDuration(110)
-            anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+            anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
             anim.setStartValue(start_height)
             anim.setEndValue(0)
 
@@ -290,7 +290,7 @@ class ModernMainWindow(QMainWindow):
             anim.valueChanged.connect(_step)
             anim.finished.connect(self._on_terminal_hide_finished)
             self._terminal_anim = anim
-            anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+            anim.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
         else:
             self.console_widget.show()
             self.console_widget.raise_()
@@ -298,7 +298,7 @@ class ModernMainWindow(QMainWindow):
 
             anim = QtCore.QVariantAnimation(self)
             anim.setDuration(110)
-            anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+            anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
             anim.setStartValue(0)
             anim.setEndValue(target_height)
 
@@ -314,7 +314,7 @@ class ModernMainWindow(QMainWindow):
             anim.valueChanged.connect(_step)
             anim.finished.connect(self._on_terminal_show_finished)
             self._terminal_anim = anim
-            anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+            anim.start(QtCore.QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def _terminal_min_height(self) -> int:
         """Smallest panel height that keeps the terminal tab bar + prompt visible."""
@@ -383,17 +383,17 @@ class ModernMainWindow(QMainWindow):
             preset = THEMES.get(str(s.get("theme", "midnight")), THEMES.get("dark", {}))
             colors = {k: s.get(k, v) for k, v in preset.items()}
             palette = QPalette()
-            palette.setColor(QPalette.Window, QColor(colors.get("app_background", "#181818")))
-            palette.setColor(QPalette.WindowText, QColor(colors.get("text_primary", "#D4D4D4")))
-            palette.setColor(QPalette.Base, QColor(colors.get("editor_background", "#1E1E1E")))
-            palette.setColor(QPalette.AlternateBase, QColor(colors.get("panel_background", "#181818")))
-            palette.setColor(QPalette.ToolTipBase, QColor(colors.get("input_background", "#242424")))
-            palette.setColor(QPalette.ToolTipText, QColor(colors.get("text_primary", "#D4D4D4")))
-            palette.setColor(QPalette.Text, QColor(colors.get("text_primary", "#D4D4D4")))
-            palette.setColor(QPalette.Button, QColor(colors.get("input_background", "#242424")))
-            palette.setColor(QPalette.ButtonText, QColor(colors.get("text_primary", "#D4D4D4")))
-            palette.setColor(QPalette.Highlight, QColor(colors.get("selection_background", "#264F78")))
-            palette.setColor(QPalette.HighlightedText, QColor(colors.get("text_primary", "#D4D4D4")))
+            palette.setColor(QPalette.ColorRole.Window, QColor(colors.get("app_background", "#181818")))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(colors.get("text_primary", "#D4D4D4")))
+            palette.setColor(QPalette.ColorRole.Base, QColor(colors.get("editor_background", "#1E1E1E")))
+            palette.setColor(QPalette.ColorRole.AlternateBase, QColor(colors.get("panel_background", "#181818")))
+            palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(colors.get("input_background", "#242424")))
+            palette.setColor(QPalette.ColorRole.ToolTipText, QColor(colors.get("text_primary", "#D4D4D4")))
+            palette.setColor(QPalette.ColorRole.Text, QColor(colors.get("text_primary", "#D4D4D4")))
+            palette.setColor(QPalette.ColorRole.Button, QColor(colors.get("input_background", "#242424")))
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(colors.get("text_primary", "#D4D4D4")))
+            palette.setColor(QPalette.ColorRole.Highlight, QColor(colors.get("selection_background", "#264F78")))
+            palette.setColor(QPalette.ColorRole.HighlightedText, QColor(colors.get("text_primary", "#D4D4D4")))
             app.setPalette(palette)
             self.app_manager.settings = s
 
@@ -683,7 +683,7 @@ class ModernMainWindow(QMainWindow):
         f.setPointSize(font_size)
         ed.setFont(f)
         if hasattr(ed, 'setLineWrapMode'):
-            wrap_mode = QtWidgets.QPlainTextEdit.WidgetWidth if word_wrap else QtWidgets.QPlainTextEdit.NoWrap
+            wrap_mode = QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth if word_wrap else QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap
             ed.setLineWrapMode(wrap_mode)
         if hasattr(ed, 'set_line_numbers_visible'):
             ed.set_line_numbers_visible(show_ln)
@@ -720,9 +720,9 @@ class ModernMainWindow(QMainWindow):
         msg = f"Компиляция успешно завершена!\nВыходной файл: {output_path}\n\nЗапустить программу?"
         reply = QMessageBox.question(
             self, "Компиляция успешна", msg,
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes
         )
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             self.run_csharp_program(output_path)
 
     def compile_csharp_file(self, file_path: str):
@@ -873,6 +873,7 @@ class ModernMainWindow(QMainWindow):
         """Выполняет операцию  setup connections.
         """
         self._connect_tab_group(self.tab_widget)
+        QApplication.instance().focusChanged.connect(self._on_editor_focus_changed)
         self.tab_widget.currentChanged.connect(lambda _: self._set_active_group(self.tab_widget))
 
         self.file_explorer.doubleClicked.connect(self.open_file_from_explorer)
@@ -939,8 +940,8 @@ class ModernMainWindow(QMainWindow):
         ]
         self._global_shortcuts = []
         for key_seq, handler in shortcuts:
-            sc = QtWidgets.QShortcut(QtGui.QKeySequence(key_seq), self)
-            sc.setContext(QtCore.Qt.ApplicationShortcut)
+            sc = QtGui.QShortcut(QtGui.QKeySequence(key_seq), self)
+            sc.setContext(QtCore.Qt.ShortcutContext.WindowShortcut)
             sc.activated.connect(handler)
             self._global_shortcuts.append(sc)
 
@@ -951,8 +952,47 @@ class ModernMainWindow(QMainWindow):
             group: Параметр group.
         """
         group.tabCloseRequested.connect(lambda index, g=group: self.close_tab_from_group(g, index))
-        group.currentChanged.connect(lambda index, g=group: (self._set_active_group(g), self.update_analysis_panels(), self._sync_special_activity()))
+        group.currentChanged.connect(lambda index, g=group: self._on_editor_tab_changed(g))
         group.groupActivated.connect(self._set_active_group)
+        group.tabMovedOut.connect(self._collapse_empty_editor_group)
+        from design.icons import set_line_icon
+        controls = QtWidgets.QWidget(group)
+        layout = QtWidgets.QHBoxLayout(controls)
+        layout.setContentsMargins(3, 0, 3, 0)
+        layout.setSpacing(2)
+        for icon, title, action in (
+            ("split-right", "Разделить вправо", partial(self.split_editor, orientation=Qt.Orientation.Horizontal)),
+            ("split-down", "Разделить вниз", partial(self.split_editor, orientation=Qt.Orientation.Vertical)),
+            ("unsplit", "Закрыть разделение", self.unsplit_editor),
+        ):
+            button = QtWidgets.QToolButton(controls)
+            button.setAutoRaise(True)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFixedSize(26, 26)
+            button.setToolTip(title)
+            button.setAccessibleName(title)
+            set_line_icon(button, icon)
+            button.clicked.connect(lambda checked=False, fn=action: fn())
+            layout.addWidget(button)
+            if icon == "unsplit":
+                group.merge_split_button = button
+                button.setVisible(self.split_tab_widget is not None)
+        group.setCornerWidget(controls, Qt.Corner.TopRightCorner)
+        controls.show()
+
+    def _on_editor_tab_changed(self, group):
+        if group is self.active_tab_widget:
+            self.update_analysis_panels()
+            self._sync_special_activity()
+            if getattr(self, "run_panel", None):
+                self.run_panel.refresh()
+
+    def _on_editor_focus_changed(self, previous, current):
+        if current is not None:
+            for group in self.editor_groups():
+                if current is group or group.isAncestorOf(current):
+                    self._set_active_group(group)
+                    break
 
     def _set_active_group(self, group):
         """Устанавливает новое значение для active group.
@@ -960,7 +1000,9 @@ class ModernMainWindow(QMainWindow):
         Args:
             group: Параметр group.
         """
-        self.active_tab_widget = group
+        if group in self.editor_groups() and group is not self.active_tab_widget:
+            self.active_tab_widget = group
+            self._on_editor_tab_changed(group)
 
     def editor_groups(self):
         """Выполняет операцию editor groups.
@@ -986,7 +1028,9 @@ class ModernMainWindow(QMainWindow):
             old = self.active_tab_widget
             self.active_tab_widget = group
             self.close_tab(index)
-            self.active_tab_widget = old
+            if old in self.editor_groups() and old.count():
+                self._set_active_group(old)
+                self.save_current_session()
 
     def show_ai_agent(self):
         """Open the AI agent sidebar view (and focus its input)."""
@@ -1008,7 +1052,7 @@ class ModernMainWindow(QMainWindow):
             return
         editor = self.get_current_editor()
         if editor is None:
-            CustomDialog("Нет активного редактора").exec_()
+            CustomDialog("Нет активного редактора").exec()
             return
         self.show_ai_agent()
         panel = getattr(self, "ai_panel", None)
@@ -1148,7 +1192,7 @@ class ModernMainWindow(QMainWindow):
         ]
         dialog = CommandPalette(commands, self)
         dialog.command_triggered.connect(self.execute_command_palette)
-        dialog.exec_()
+        dialog.exec()
 
     def execute_command_palette(self, command):
         """Исполняет команду или алгоритм command palette.
@@ -1164,7 +1208,7 @@ class ModernMainWindow(QMainWindow):
             "terminal": self.toggle_terminal, "split": self.split_editor,
             "explorer": lambda: self.activity_bar.set_activity("explorer"),
             "search": lambda: self.activity_bar.set_activity("search"),
-            "graph": lambda: self.open_graph_editor(self.intelligence_panel.engine, 'modules') if getattr(self.intelligence_panel, 'engine', None) else CustomDialog("Сначала откройте проект для просмотра графа").exec_(),
+            "graph": lambda: self.open_graph_editor(self.intelligence_panel.engine, 'modules') if getattr(self.intelligence_panel, 'engine', None) else CustomDialog("Сначала откройте проект для просмотра графа").exec(),
             "preview_markdown": self.action_preview_markdown,
             "run": self.action_run_file, "project": self.action_open_project,
             "settings": self.action_open_settings, "close": self.action_close_file,
@@ -1193,11 +1237,8 @@ class ModernMainWindow(QMainWindow):
         if index < 0:
             return
         widget = current_group.widget(index)
-        title = current_group.tabText(index)
         if widget and not isinstance(widget, Ui_Welcome):
-            current_group.removeTab(index)
-            new_index = self.split_tab_widget.addTab(widget, title)
-            self.split_tab_widget.setCurrentIndex(new_index)
+            current_group.transfer_tab_to(index, self.split_tab_widget, notify=False)
 
     def split_editor(self, *, orientation=None):
         """Выполняет операцию split editor.
@@ -1209,11 +1250,13 @@ class ModernMainWindow(QMainWindow):
                 self.editor_area_splitter.setOrientation(orientation)
                 self.editor_area_splitter.setSizes([1, 1])
             return
-        self.editor_area_splitter.setOrientation(orientation or QtCore.Qt.Horizontal)
+        self.editor_area_splitter.setOrientation(orientation or QtCore.Qt.Orientation.Horizontal)
         self.split_tab_widget = TabWidget(self.editor_area_splitter, self.app_manager.settings)
         self.split_tab_widget.setObjectName("editorGroupSecondary")
         self.editor_area_splitter.addWidget(self.split_tab_widget)
         self._connect_tab_group(self.split_tab_widget)
+        self.tab_widget.merge_split_button.show()
+        self.split_tab_widget.show()
         self._move_active_tab_to_split()
         self._set_active_group(self.split_tab_widget)
         # Always start a split as a true 50/50 editor layout.
@@ -1225,6 +1268,9 @@ class ModernMainWindow(QMainWindow):
         if secondary is None:
             return
         primary = self.tab_widget
+        active = (self.active_tab_widget.currentWidget()
+                  or secondary.currentWidget() or primary.currentWidget())
+        self.split_tab_widget = None
         widgets = []
         while secondary.count():
             widget = secondary.widget(0)
@@ -1236,11 +1282,20 @@ class ModernMainWindow(QMainWindow):
         for widget, title, icon, tip in widgets:
             idx = primary.addTab(widget, icon, title)
             primary.setTabToolTip(idx, tip)
-            primary.setCurrentIndex(idx)
+        if active is not None and primary.indexOf(active) >= 0:
+            primary.setCurrentWidget(active)
+        secondary.hide()
+        secondary.setParent(None)
         secondary.deleteLater()
-        self.split_tab_widget = None
-        self.editor_area_splitter.setSizes([1, 0])
+        primary.merge_split_button.hide()
+        self.editor_area_splitter.setSizes([1])
         self._set_active_group(primary)
+        if not primary.count() and not getattr(self, "_suspend_session_save", False):
+            self.show_welcome_screen()
+
+    def _collapse_empty_editor_group(self):
+        if self.split_tab_widget is not None and any(not group.count() for group in self.editor_groups()):
+            self.unsplit_editor()
 
     def new_terminal(self):
         """Выполняет операцию new terminal.
@@ -1261,16 +1316,18 @@ class ModernMainWindow(QMainWindow):
         Returns:
             bool: Результат выполнения операции или результирующий объект.
         """
-        if not settings.get("project_restore_last", False):
-            return False
-        recent_projects = loadRecent()
-        if not recent_projects:
-            return False
-        last_project = recent_projects[0]
-        if not Path(last_project).exists():
-            return False
         try:
-            self.project_handler.open_project(last_project)
+            from widgets.ProjectManager import project_manager
+            root = settings.get("last_workspace")
+            if root is None:
+                recent = project_manager.get_recent_projects()
+                root = next((p.root_path for p in recent if p.last_opened and Path(p.root_path).is_dir()), "")
+            if not root or not Path(root).is_dir():
+                return False
+            project = project_manager.open_project(root)
+            if project is None:
+                return False
+            self.project_handler.on_project_opened(project, choose_analyzers=False)
             return True
         except Exception:
             logger.exception("Failed to restore last project")
@@ -1287,23 +1344,13 @@ class ModernMainWindow(QMainWindow):
         """
         if not settings.get("restore_session", False):
             return False
-        session_files = [p for p in self.app_manager.session_files if Path(p).exists()]
-        if not session_files:
-            return False
-        restored = False
-        for f in session_files:
-            try:
-                self.file_manager.open_file(f)
-                restored = True
-            except Exception:
-                logger.exception("Failed to restore session file")
-        return restored
+        return self._restore_standalone_editors()
 
     def _initialize_application(self):
         """Выполняет операцию  initialize application.
         """
         restore_backup()
-        self.setWindowTitle("PyScribe")
+        self.setWindowTitle("CodeLane")
         if hasattr(self, "top_bar"):
             self.top_bar.set_project("")
         sm = get_settings_manager()
@@ -1318,12 +1365,8 @@ class ModernMainWindow(QMainWindow):
             if self.active_tab_widget.count() == 0:
                 self.show_welcome_screen()
 
-        if not restored_project and self.extension_enabled('intelligence'):
-            try:
-                init_root = str(Path.cwd().resolve())
-                self.intelligence_panel.set_project(init_root)
-            except Exception:
-                pass
+        if not restored_project:
+            self.intelligence_panel.set_project(None)
 
     def _set_explorer_location_title(self, path):
         """Report the current project/root folder as the Explorer header tooltip.
@@ -1346,20 +1389,6 @@ class ModernMainWindow(QMainWindow):
                 folder = str(path)
         label.setToolTip(f"Проводник: {folder}" if folder else "Проводник")
 
-    def _on_sidebar_hide_finished(self):
-        """Обработчик события для sidebar hide finished.
-        """
-        self.sidebar_visible = False
-        self.side_panel.hide()
-        self.activity_bar.set_active_visual(None)
-        self._sidebar_anim = None
-
-    def _on_sidebar_show_finished(self):
-        """Обработчик события для sidebar show finished.
-        """
-        self.sidebar_visible = True
-        self._sidebar_anim = None
-
     def _activate_first_visible_panel(self):
         """Выполняет операцию  activate first visible panel.
         """
@@ -1367,9 +1396,9 @@ class ModernMainWindow(QMainWindow):
             ("explorer", self.explorer_panel),
             ("search", self.search_panel),
             ("run", self.run_panel),
-            ("extensions", self.extensions_panel),
             ("git", self.git_panel),
             ("intelligence", self.intelligence_panel),
+            ("ai", getattr(self, "ai_panel", None)),
         ]
         if hasattr(self, "todo_panel") and self.todo_panel:
             panels.append(("todo", self.todo_panel))
@@ -1381,67 +1410,18 @@ class ModernMainWindow(QMainWindow):
         self.activity_bar.set_active_visual("explorer")
 
     def toggle_sidebar(self):
-        """Выполняет операцию toggle sidebar.
-        """
-        if not hasattr(self, 'workspace_splitter') or not self.workspace_splitter:
+        """Collapse or reopen the sidebar independently of the editor split."""
+        if not getattr(self, "workspace_splitter", None):
+            return
+        self.sidebar_visible = not self.sidebar_visible
+        self.side_panel.setVisible(self.sidebar_visible)
+        if not self.sidebar_visible:
+            self.activity_bar.set_active_visual(None)
             return
 
-        if hasattr(self, '_sidebar_anim') and self._sidebar_anim is not None:
-            try:
-                self._sidebar_anim.stop()
-            except Exception:
-                pass
-
-        sm = get_settings_manager()
-        target_width = int(sm.get('sidebar_width', 280))
-        total_width = max(target_width + 400, self.workspace_splitter.width())
-
-        if self.sidebar_visible:
-            current_sizes = self.workspace_splitter.sizes()
-            start_width = current_sizes[0] if current_sizes and current_sizes[0] > 0 else target_width
-
-            anim = QtCore.QVariantAnimation(self)
-            anim.setDuration(110)
-            anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
-            anim.setStartValue(start_width)
-            anim.setEndValue(0)
-
-            def _step_hide(val):
-                """Выполняет операцию  step hide.
-
-                Args:
-                    val: Параметр val.
-                """
-                w = int(val)
-                self.workspace_splitter.setSizes([w, max(1, total_width - w)])
-
-            anim.valueChanged.connect(_step_hide)
-            anim.finished.connect(self._on_sidebar_hide_finished)
-            self._sidebar_anim = anim
-            anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
-        else:
-            self.side_panel.show()
-            self._activate_first_visible_panel()
-
-            anim = QtCore.QVariantAnimation(self)
-            anim.setDuration(110)
-            anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
-            anim.setStartValue(0)
-            anim.setEndValue(target_width)
-
-            def _step_show(val):
-                """Выполняет операцию  step show.
-
-                Args:
-                    val: Параметр val.
-                """
-                w = int(val)
-                self.workspace_splitter.setSizes([w, max(1, total_width - w)])
-
-            anim.valueChanged.connect(_step_show)
-            anim.finished.connect(self._on_sidebar_show_finished)
-            self._sidebar_anim = anim
-            anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+        self._activate_first_visible_panel()
+        width = int(get_settings_manager().get_setting("sidebar_width", 280))
+        self.workspace_splitter.setSizes([width, max(1, self.workspace_splitter.width() - width)])
 
     def _adjust_terminal_size(self):
         """Keep the integrated bottom panel at a sensible height after resize."""
@@ -1466,54 +1446,54 @@ class ModernMainWindow(QMainWindow):
         Args:
             event: Параметр event.
         """
-        ctrl = bool(event.modifiers() & QtCore.Qt.ControlModifier)
-        shift = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+        ctrl = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier)
+        shift = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier)
         key = event.key()
 
-        if ctrl and not shift and key == QtCore.Qt.Key_S:
+        if ctrl and not shift and key == QtCore.Qt.Key.Key_S:
             self.action_save_file()
             return
-        if ctrl and shift and key == QtCore.Qt.Key_S:
+        if ctrl and shift and key == QtCore.Qt.Key.Key_S:
             self.action_save_as_file()
             return
-        if ctrl and not shift and key == QtCore.Qt.Key_O:
+        if ctrl and not shift and key == QtCore.Qt.Key.Key_O:
             self.action_open_file()
             return
-        if ctrl and shift and key == QtCore.Qt.Key_O:
+        if ctrl and shift and key == QtCore.Qt.Key.Key_O:
             self.action_open_project()
             return
-        if ctrl and not shift and key == QtCore.Qt.Key_N:
+        if ctrl and not shift and key == QtCore.Qt.Key.Key_N:
             self.action_new_file()
             return
-        if ctrl and not shift and key == QtCore.Qt.Key_W:
+        if ctrl and not shift and key == QtCore.Qt.Key.Key_W:
             self.action_close_file()
             return
-        if ctrl and not shift and key == QtCore.Qt.Key_P:
+        if ctrl and not shift and key == QtCore.Qt.Key.Key_P:
             self.action_quick_open()
             return
-        if (ctrl and shift and key == QtCore.Qt.Key_P) or key == QtCore.Qt.Key_F1:
+        if (ctrl and shift and key == QtCore.Qt.Key.Key_P) or key == QtCore.Qt.Key.Key_F1:
             self.show_command_palette()
             return
-        if key == QtCore.Qt.Key_F5:
+        if key == QtCore.Qt.Key.Key_F5:
             if ctrl: self.action_run_project()
             else: self.action_run_file()
             return
-        if ctrl and key == QtCore.Qt.Key_G:
+        if ctrl and key == QtCore.Qt.Key.Key_G:
             self.action_goto_line()
             return
-        if ctrl and (key in (QtCore.Qt.Key_QuoteLeft, QtCore.Qt.Key_AsciiTilde) or event.text() == '`'):
+        if ctrl and (key in (QtCore.Qt.Key.Key_QuoteLeft, QtCore.Qt.Key.Key_AsciiTilde) or event.text() == '`'):
             self.toggle_terminal()
             return
-        if ctrl and (key == QtCore.Qt.Key_Backslash or event.text() == '\\'):
+        if ctrl and (key == QtCore.Qt.Key.Key_Backslash or event.text() == '\\'):
             self.toggle_sidebar()
             return
-        if ctrl and shift and key == QtCore.Qt.Key_F:
+        if ctrl and shift and key == QtCore.Qt.Key.Key_F:
             self._focus_search()
             return
-        if ctrl and not shift and key == QtCore.Qt.Key_F:
+        if ctrl and not shift and key == QtCore.Qt.Key.Key_F:
             self._trigger_find()
             return
-        if ctrl and not shift and key == QtCore.Qt.Key_H:
+        if ctrl and not shift and key == QtCore.Qt.Key.Key_H:
             self._trigger_replace()
             return
         super().keyPressEvent(event)
@@ -1522,16 +1502,49 @@ class ModernMainWindow(QMainWindow):
         """Restore standalone session files only if no project is active."""
         if self.current_project:
             return
-        existing = loadSession(project_path=None)
-        if not existing:
+        if not self._restore_standalone_editors():
             if self.active_tab_widget.count() == 0:
                 self.show_welcome_screen()
-            return
-        for f in existing:
-            try:
-                self.file_manager.open_file(f)
-            except Exception:
-                pass
+
+    def _restore_standalone_editors(self):
+        state = load_session_state()
+        files = state.get("files", [])
+        for path in files:
+            self.restore_session_file(path, state.get("cursors"))
+        self.activate_session_file(state.get("active"))
+        return bool(files)
+
+    def activate_session_file(self, path):
+        if isinstance(path, str):
+            self.file_manager._find_and_focus_open_tab(path)
+
+    def restore_session_file(self, path, cursors):
+        previous = getattr(self, "_restoring_session_file", False)
+        self._restoring_session_file = True
+        try:
+            if not Path(path).is_file():
+                return
+            self.file_manager.open_file(path)
+            if not self.file_manager._find_and_focus_open_tab(path):
+                return
+            tab = self.get_current_editor()
+            editor = getattr(tab, "editor", None)
+            state = cursors.get(path) if isinstance(cursors, dict) else None
+            if editor is None or not isinstance(state, dict) or type(state.get("position")) is not int:
+                return
+            cursor = editor.textCursor()
+            end = editor.document().characterCount() - 1
+            cursor.setPosition(min(end, max(0, state["position"])))
+            editor.setTextCursor(cursor)
+            editor.centerCursor()
+            for key, bar in (("vertical", editor.verticalScrollBar()),
+                             ("horizontal", editor.horizontalScrollBar())):
+                if type(state.get(key)) is int:
+                    bar.setValue(state[key])
+        except Exception:
+            logger.exception("Failed to restore session file")
+        finally:
+            self._restoring_session_file = previous
 
     def action_new_file(self):
         """Выполняет операцию action new file.
@@ -1634,7 +1647,7 @@ class ModernMainWindow(QMainWindow):
 
         try:
             if isinstance(current_editor, HexViewer):
-                CustomDialog("Двоичные файлы доступны только для чтения.").exec_()
+                CustomDialog("Двоичные файлы доступны только для чтения.").exec()
                 return
 
             if not current_editor.save_file_as(file_path):
@@ -1657,11 +1670,16 @@ class ModernMainWindow(QMainWindow):
             self.remove_unsaved_marker(index)
             self.recalculate_unsaved_count()
         except Exception as e:
-            CustomDialog(f"Ошибка сохранения файла: {str(e)}").exec_()
+            CustomDialog(f"Ошибка сохранения файла: {str(e)}").exec()
 
     def action_close_file(self):
         """Выполняет операцию action close file.
         """
+        focused = QtWidgets.QApplication.focusWidget()
+        terminal = getattr(self, "terminal_widget", None)
+        if terminal is not None and focused is not None and terminal.isAncestorOf(focused):
+            terminal.close_current_tab()
+            return
         current_index = self.active_tab_widget.currentIndex()
         if current_index >= 0:
             self.close_tab(current_index)
@@ -1706,18 +1724,34 @@ class ModernMainWindow(QMainWindow):
             widget = group.widget(i)
             if widget.property("pyscribeSpecial") not in {"welcome", "settings", "extensions"}:
                 self.close_tab(i)
+                if group.indexOf(widget) >= 0:
+                    return False
+        return True
 
     def close_all_editor_tabs(self):
-        """Закрывает все вкладки редактора"""
-        for group in self.editor_groups():
-            old = self.active_tab_widget
-            self.active_tab_widget = group
-            self._close_group_editor_tabs(group)
-            self.active_tab_widget = old
+        """Keep the workspace snapshot while removing its editor widgets."""
+        if self.current_project is not None or self.get_open_file_paths():
+            self.save_current_session()
+        old = self.active_tab_widget
+        self._suspend_session_save = True
+        try:
+            for group in self.editor_groups():
+                self.active_tab_widget = group
+                if not self._close_group_editor_tabs(group):
+                    return False
+            self.unsplit_editor()
+            return True
+        finally:
+            self.active_tab_widget = old if old in self.editor_groups() else self.tab_widget
+            self._suspend_session_save = False
 
     def action_undo(self):
         """Выполняет операцию action undo.
         """
+        focused = QtWidgets.QApplication.focusWidget()
+        if focused is not None and callable(getattr(focused, "undo", None)):
+            focused.undo()
+            return
         current_editor = self.get_current_editor()
         if current_editor:
             target = getattr(current_editor, 'editor', current_editor)
@@ -1727,6 +1761,10 @@ class ModernMainWindow(QMainWindow):
     def action_redo(self):
         """Выполняет операцию action redo.
         """
+        focused = QtWidgets.QApplication.focusWidget()
+        if focused is not None and callable(getattr(focused, "redo", None)):
+            focused.redo()
+            return
         current_editor = self.get_current_editor()
         if current_editor:
             target = getattr(current_editor, 'editor', current_editor)
@@ -1736,6 +1774,10 @@ class ModernMainWindow(QMainWindow):
     def action_cut(self):
         """Выполняет операцию action cut.
         """
+        focused = QtWidgets.QApplication.focusWidget()
+        if focused is not None and callable(getattr(focused, "cut", None)):
+            focused.cut()
+            return
         current_editor = self.get_current_editor()
         if current_editor:
             target = getattr(current_editor, 'editor', current_editor)
@@ -1745,6 +1787,16 @@ class ModernMainWindow(QMainWindow):
     def action_copy(self):
         """Выполняет операцию action copy.
         """
+        focused = QtWidgets.QApplication.focusWidget()
+        if focused is not None and hasattr(focused, "write_signal_interrupt"):
+            if focused.textCursor().hasSelection():
+                focused.copy()
+            else:
+                focused.write_signal_interrupt()
+            return
+        if focused is not None and callable(getattr(focused, "copy", None)):
+            focused.copy()
+            return
         current_editor = self.get_current_editor()
         if current_editor:
             target = getattr(current_editor, 'editor', current_editor)
@@ -1754,6 +1806,10 @@ class ModernMainWindow(QMainWindow):
     def action_paste(self):
         """Выполняет операцию action paste.
         """
+        focused = QtWidgets.QApplication.focusWidget()
+        if focused is not None and callable(getattr(focused, "paste", None)):
+            focused.paste()
+            return
         current_editor = self.get_current_editor()
         if current_editor:
             target = getattr(current_editor, 'editor', current_editor)
@@ -1763,6 +1819,10 @@ class ModernMainWindow(QMainWindow):
     def action_select_all(self):
         """Выполняет операцию action select all.
         """
+        focused = QtWidgets.QApplication.focusWidget()
+        if focused is not None and callable(getattr(focused, "selectAll", None)):
+            focused.selectAll()
+            return
         current_editor = self.get_current_editor()
         if not current_editor:
             return
@@ -1878,14 +1938,14 @@ class ModernMainWindow(QMainWindow):
             return
         browser_error = getattr(QtWidgets.QApplication.instance(), "_pyscribe_browser_error", "")
         if browser_error:
-            CustomDialog(browser_error).exec_()
+            CustomDialog(browser_error).exec()
             return
         try:
             from widgets.WebBrowserWidget import WebBrowserWidget
             browser = WebBrowserWidget(self)
         except Exception:
             logger.exception("Не удалось открыть встроенный браузер")
-            CustomDialog("Не удалось запустить встроенный браузер. Подробности записаны в журнал PyScribe.").exec_()
+            CustomDialog("Не удалось запустить встроенный браузер. Подробности записаны в журнал CodeLane.").exec()
             return
         group = self.active_tab_widget
         index = group.addTab(browser, "Браузер")
@@ -1914,7 +1974,7 @@ class ModernMainWindow(QMainWindow):
         root = self.workspace_index.root or (self.current_project.root_path if self.current_project else None)
         dialog = QuickOpenDialog(root, self.app_manager.recent_files, self)
         dialog.file_selected.connect(self.file_manager.open_file)
-        dialog.exec_()
+        dialog.exec()
 
     def action_goto_line(self):
         """Выполняет операцию action goto line.
@@ -1925,8 +1985,8 @@ class ModernMainWindow(QMainWindow):
         line, ok = QtWidgets.QInputDialog.getInt(self, "Перейти к строке", "Номер строки:", 1, 1, 1000000)
         if ok:
             cursor = editor.editor.textCursor()
-            cursor.movePosition(QtGui.QTextCursor.Start)
-            cursor.movePosition(QtGui.QTextCursor.Down, QtGui.QTextCursor.MoveAnchor, line - 1)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.Start)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.Down, QtGui.QTextCursor.MoveMode.MoveAnchor, line - 1)
             editor.editor.setTextCursor(cursor)
             editor.editor.centerCursor()
             editor.editor.setFocus()
@@ -1940,7 +2000,7 @@ class ModernMainWindow(QMainWindow):
         text_editor = editor.editor
         cursor = text_editor.textCursor()
         if not cursor.hasSelection():
-            cursor.select(QtGui.QTextCursor.WordUnderCursor)
+            cursor.select(QtGui.QTextCursor.SelectionType.WordUnderCursor)
         old = cursor.selectedText()
         if not old or not old.replace("_", "a").isalnum():
             return
@@ -1977,7 +2037,7 @@ class ModernMainWindow(QMainWindow):
         self._sync_special_activity()
 
     def action_open_documentation(self):
-        """Open the complete PyScribe user guide in an interactive Markdown tab."""
+        """Open the complete CodeLane user guide in an interactive Markdown tab."""
         found = self._find_special_tab("documentation")
         if found:
             group, idx = found
@@ -1998,16 +2058,16 @@ class ModernMainWindow(QMainWindow):
         viewer.setProperty("pyscribeSpecial", "documentation")
         index = self.active_tab_widget.addTab(viewer, "📖 Руководство пользователя.md")
         self.active_tab_widget.setCurrentIndex(index)
-        self.status_bar.showMessage("Руководство пользователя PyScribe открыто")
+        self.status_bar.showMessage("Руководство пользователя CodeLane открыто")
 
     def show_keyboard_shortcuts(self):
         """Выполняет операцию show keyboard shortcuts.
         """
-        KeyboardShortcutsDialog(self).exec_()
+        KeyboardShortcutsDialog(self).exec()
 
     def action_about(self):
         """Показать диалог 'О программе'"""
-        AboutDialog(self).exec_()
+        AboutDialog(self).exec()
 
     # ------------------------------------------------------------------
     # Updates and Windows Explorer integration
@@ -2017,8 +2077,8 @@ class ModernMainWindow(QMainWindow):
         self._open_update_dialog(auto=False)
 
     def action_shell_integration(self):
-        """Register/unregister «Открыть в PyScribe» and «Открыть с помощью»."""
-        ShellIntegrationDialog(self).exec_()
+        """Register/unregister «Открыть в CodeLane» and «Открыть с помощью»."""
+        ShellIntegrationDialog(self).exec()
 
     def _maybe_check_updates(self):
         """Automatic daily check; skipped entirely when disabled in settings."""
@@ -2065,12 +2125,12 @@ class ModernMainWindow(QMainWindow):
             # newer release exists, so a daily check never flashes a window.
             dialog.hide()
         else:
-            dialog.exec_()
+            dialog.exec()
 
     def action_change_capsule(self):
         """Выполняет операцию action change capsule.
         """
-        ChangeCapsuleDialog(self, self).exec_()
+        ChangeCapsuleDialog(self, self).exec()
 
     def action_open_extensions(self):
         self.action_open_settings()
@@ -2128,6 +2188,10 @@ class ModernMainWindow(QMainWindow):
 
     def action_preview_markdown(self):
         """Открыть rich-предпросмотр Markdown для текущего файла или содержимого редактора."""
+        focused = QtWidgets.QApplication.focusWidget()
+        if focused is not None and hasattr(focused, "write_signal_interrupt"):
+            focused.paste()
+            return
         editor = self.get_current_editor()
         if editor:
             file_path = getattr(editor, 'file_path', None)
@@ -2166,7 +2230,7 @@ class ModernMainWindow(QMainWindow):
         from core.logging_config import log_directory
         from widgets.LogShareDialog import LogShareDialog
 
-        LogShareDialog(log_directory(self.app_manager.base_path), self).exec_()
+        LogShareDialog(log_directory(self.app_manager.base_path), self).exec()
 
     def action_exit(self):
         """Выполняет операцию action exit.
@@ -2185,7 +2249,7 @@ class ModernMainWindow(QMainWindow):
         """
         current_editor = self.get_current_editor()
         if not current_editor:
-            CustomDialog("Нет активного редактора").exec_()
+            CustomDialog("Нет активного редактора").exec()
             return
         file_path = getattr(current_editor, 'file_path', None)
         if file_path:
@@ -2196,7 +2260,7 @@ class ModernMainWindow(QMainWindow):
         """
         editor = self.get_current_editor()
         if not editor:
-            CustomDialog("Нет активного редактора").exec_()
+            CustomDialog("Нет активного редактора").exec()
             return
         ed = getattr(editor, 'editor', editor)
         if hasattr(ed, 'run_selected_code'):
@@ -2209,7 +2273,7 @@ class ModernMainWindow(QMainWindow):
         if current_editor and getattr(current_editor, 'file_path', None):
             self.run_target(str(current_editor.file_path), True)
         else:
-            CustomDialog("Нет активного исходного файла для отладки").exec_()
+            CustomDialog("Нет активного исходного файла для отладки").exec()
 
     def run_target(self, file_path, debug=False):
         """Run/debug one source file in the integrated terminal.
@@ -2219,11 +2283,11 @@ class ModernMainWindow(QMainWindow):
         """
         path = Path(str(file_path)).resolve()
         if not path.exists():
-            CustomDialog(f"Файл не найден: {path}").exec_(); return
+            CustomDialog(f"Файл не найден: {path}").exec(); return
         editor = self.get_current_editor()
         if editor and str(getattr(editor, 'file_path', '')) == str(path) and hasattr(editor, 'save_file'):
             if not editor.save_file():
-                CustomDialog("Не удалось сохранить файл перед выполнением").exec_(); return
+                CustomDialog("Не удалось сохранить файл перед выполнением").exec(); return
         lang = path.suffix.lower().lstrip('.')
         args = self.load_launch_arguments(str(path))
 
@@ -2264,7 +2328,7 @@ class ModernMainWindow(QMainWindow):
             try:
                 executable = python_interpreter(resolve_toolchain("python", None, tools))
             except RuntimeError as exc:
-                CustomDialog(str(exc)).exec_()
+                CustomDialog(str(exc)).exec()
                 return
             command = f'{q(executable)}{" -m pdb" if debug else ""} {q(path)} {args}'.strip()
         elif lang in {'js', 'mjs', 'cjs'}:
@@ -2329,11 +2393,11 @@ class ModernMainWindow(QMainWindow):
     def run_project_target(self, debug=False):
         """Запустить проект: явная команда запуска, точка входа или активный файл."""
         if not self.current_project:
-            CustomDialog("Сначала откройте проект.").exec_()
+            CustomDialog("Сначала откройте проект.").exec()
             return
         root = Path(str(self.current_project.root_path))
         if not root.is_dir():
-            CustomDialog(f"Папка проекта не найдена:\n{root}").exec_()
+            CustomDialog(f"Папка проекта не найдена:\n{root}").exec()
             return
         candidates = []
         for name in self._ENTRY_CANDIDATES:
@@ -2362,10 +2426,10 @@ class ModernMainWindow(QMainWindow):
         if editor and getattr(editor, 'file_path', None) and str(Path(editor.file_path).resolve()).startswith(str(root.resolve()) + os.sep):
             self.run_target(str(editor.file_path), debug)
             return
-        CustomDialog("Точка входа в проект не найдена. Откройте файл, который хотите запустить.").exec_()
+        CustomDialog("Точка входа в проект не найдена. Откройте файл, который хотите запустить.").exec()
 
     def run_and_analyze(self, file_path):
-        """PyScribe-specific workflow: execute a target, then refresh the structural model."""
+        """CodeLane-specific workflow: execute a target, then refresh the structural model."""
         self.run_target(file_path, False)
         if self.current_project and self.extension_enabled("intelligence"):
             self.activity_bar.set_activity("intelligence")
@@ -2384,7 +2448,7 @@ class ModernMainWindow(QMainWindow):
             self.workbench.announce(f"Тесты: npm test · cwd={root}")
             self.run_in_terminal('npm', 'test', root)
         else:
-            CustomDialog("Конфигурация тестов не обнаружена.").exec_()
+            CustomDialog("Конфигурация тестов не обнаружена.").exec()
 
     def action_project_manager(self):
         """Выполняет операцию action project manager.
@@ -2400,13 +2464,15 @@ class ModernMainWindow(QMainWindow):
 
         try:
             dialog = ProjectConfigDialog(self.current_project, self)
-            if dialog.exec_() == QDialog.Accepted:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.current_project = dialog.get_config()
+                from widgets.ProjectManager import project_manager
+                project_manager.update_project_config(self.current_project)
                 self.status_bar.showMessage("Параметры проекта обновлены")
                 self.project_indicator.setText(self.current_project.name)
                 self.update_window_title()
         except Exception as e:
-            CustomDialog(f"Ошибка открытия параметров проекта: {str(e)}").exec_()
+            CustomDialog(f"Ошибка открытия параметров проекта: {str(e)}").exec()
 
     def action_close_project(self):
         """Выполняет операцию action close project.
@@ -2420,14 +2486,15 @@ class ModernMainWindow(QMainWindow):
         reply = QMessageBox.question(
             self, "Закрыть проект",
             f"Закрыть проект '{project_name}'?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
         )
 
-        if reply == QMessageBox.Yes:
-            self.save_current_session()
-            self.close_all_editor_tabs()
+        if reply == QMessageBox.StandardButton.Yes:
+            if not self.close_all_editor_tabs():
+                return
             self.current_project = None
+            self._project_session_restoring = False
             self.console_widget.get_terminal().switch_session(None)
             self.workspace_index.set_root(None)
             self.intelligence_panel.set_project(None)
@@ -2442,7 +2509,7 @@ class ModernMainWindow(QMainWindow):
             self.refresh_extensions_panel()
             self.git_panel.set_root(None)
             self.top_bar.set_project("")
-            self.setWindowTitle("PyScribe")
+            self.setWindowTitle("CodeLane")
             self.project_indicator.setVisible(False)
             self.status_bar.showMessage(f"Проект закрыт: {project_name}")
             self._update_project_menu()
@@ -2471,7 +2538,7 @@ class ModernMainWindow(QMainWindow):
         f.setPointSize(scale_px(int(s.get('editor_font_size', 13))))
         ed.setFont(f)
         if hasattr(ed, 'setLineWrapMode'):
-            wrap = QtWidgets.QPlainTextEdit.WidgetWidth if s.get('word_wrap', False) else QtWidgets.QPlainTextEdit.NoWrap
+            wrap = QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth if s.get('word_wrap', False) else QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap
             ed.setLineWrapMode(wrap)
         if hasattr(ed, 'set_line_numbers_visible'):
             ed.set_line_numbers_visible(bool(s.get('show_line_numbers', True)))
@@ -2536,15 +2603,18 @@ class ModernMainWindow(QMainWindow):
 
         if self.has_unsaved_changes(index):
             reply = self.ask_save_before_close()
-            if reply == QMessageBox.Yes and hasattr(editor, 'save_file'):
+            if reply == QMessageBox.StandardButton.Yes and hasattr(editor, 'save_file'):
                 editor.save_file()
-            elif reply == QMessageBox.Cancel:
+            elif reply == QMessageBox.StandardButton.Cancel:
                 return
 
         if hasattr(editor, 'file_path') and editor.file_path:
             file_path = str(getattr(editor, 'file_path'))
             if file_path in self.app_manager.session_files:
                 self.app_manager.session_files.remove(file_path)
+            if isinstance(editor, ModernCodeEditor):
+                from core.code_analysis.service import UnifiedCodeAnalysisService
+                UnifiedCodeAnalysisService.get_instance().on_document_closed(file_path)
 
         if editor is getattr(self, "_settings_tab", None) or editor.property("pyscribeSpecial") == "settings":
             self._settings_tab = None
@@ -2552,9 +2622,10 @@ class ModernMainWindow(QMainWindow):
             self._welcome_tab = None
 
         self.active_tab_widget.removeTab(index)
-        if isinstance(editor, DocumentViewerWidget) or editor.property("pyscribeSpecial") == "browser":
-            editor.deleteLater()
+        editor.deleteLater()
         self.recalculate_unsaved_count()
+        if not getattr(self, "_suspend_session_save", False):
+            self._collapse_empty_editor_group()
         self.save_current_session()
         self._sync_special_activity()
 
@@ -2591,8 +2662,8 @@ class ModernMainWindow(QMainWindow):
             self,
             "Несохранённые изменения",
             "Сохранить изменения перед закрытием?",
-            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-            QMessageBox.Yes
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes
         )
 
     def update_analysis_panels(self):
@@ -2787,7 +2858,7 @@ class ModernMainWindow(QMainWindow):
             self.active_tab_widget.setCurrentIndex(index)
             self.status_bar.showMessage(f"Открыт архитектурный граф проекта: {title}")
         except Exception as exc:
-            CustomDialog(f"Ошибка открытия графа проекта: {exc}").exec_()
+            CustomDialog(f"Ошибка открытия графа проекта: {exc}").exec()
 
     def _save_and_open_passport(self, guide_md: str, root: str) -> bool:
         """Сохраняет состояние в постоянное хранилище and open passport.
@@ -2836,7 +2907,7 @@ class ModernMainWindow(QMainWindow):
             self.active_tab_widget.setCurrentIndex(curr_idx)
             self.status_bar.showMessage("Архитектурный паспорт проекта успешно сформирован")
         except Exception as exc:
-            CustomDialog(f"Ошибка формирования паспорта проекта: {exc}").exec_()
+            CustomDialog(f"Ошибка формирования паспорта проекта: {exc}").exec()
 
     def _apply_analysis_to_editor(self, editor, analysis):
         """Применяет настройки или изменения analysis to editor.
@@ -2891,9 +2962,9 @@ class ModernMainWindow(QMainWindow):
             line_number (int): Параметр line number.
         """
         cursor = text_editor.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.Start)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.Start)
         for _ in range(max(0, int(line_number) - 1)):
-            if not cursor.movePosition(QtGui.QTextCursor.Down):
+            if not cursor.movePosition(QtGui.QTextCursor.MoveOperation.Down):
                 break
         text_editor.setTextCursor(cursor)
         text_editor.centerCursor()
@@ -2912,7 +2983,7 @@ class ModernMainWindow(QMainWindow):
         if not self.extension_enabled("intelligence"):
             return
         if not self.current_project:
-            CustomDialog("Сначала откройте проект.").exec_()
+            CustomDialog("Сначала откройте проект.").exec()
             return
         self.activity_bar.set_activity("intelligence")
         editor = self.get_current_editor()
@@ -2927,7 +2998,7 @@ class ModernMainWindow(QMainWindow):
         editor = self.get_current_editor()
         path = getattr(editor, "file_path", None) if editor else None
         if not path:
-            CustomDialog("Сначала откройте файл Python, который нужно испытать.").exec_()
+            CustomDialog("Сначала откройте файл Python, который нужно испытать.").exec()
             return
         self.activity_bar.set_activity("intelligence")
         self.intelligence_panel.set_adversary_file(path)
@@ -3239,12 +3310,29 @@ class ModernMainWindow(QMainWindow):
 
     def save_current_session(self):
         """Persist open files scoped to current project, or standalone if no project is active."""
+        if (getattr(self, "_restoring_session_file", False)
+                or getattr(self, "_suspend_session_save", False)
+                or getattr(self, "_project_session_restoring", False)):
+            return
         current_files = self.get_open_file_paths()
         self.app_manager.session_files = current_files
-        if self.current_project and getattr(self.current_project, "root_path", None):
-            saveSession(current_files, project_path=self.current_project.root_path)
-        else:
-            saveSession(current_files, project_path=None)
+        group = self.active_tab_widget
+        current = getattr(group.currentWidget(), "file_path", None) if group is not None else None
+        cursors = {}
+        for group in self.editor_groups():
+            for index in range(group.count()):
+                tab = group.widget(index)
+                path = getattr(tab, "file_path", None)
+                editor = getattr(tab, "editor", None)
+                if path and hasattr(editor, "textCursor"):
+                    cursors[str(Path(path).resolve())] = {
+                        "position": editor.textCursor().position(),
+                        "vertical": editor.verticalScrollBar().value(),
+                        "horizontal": editor.horizontalScrollBar().value(),
+                    }
+        root = getattr(self.current_project, "root_path", None)
+        saveSession(current_files, project_path=root,
+                    active=str(Path(current).resolve()) if current else None, cursors=cursors)
 
     def update_tab_title(self, index: int, title: str):
         """Обновляет параметры tab title.
@@ -3271,7 +3359,7 @@ class ModernMainWindow(QMainWindow):
     def update_window_title(self):
         """Обновляет параметры window title.
         """
-        base_title = "PyScribe"
+        base_title = "CodeLane"
         if hasattr(self, 'current_project') and self.current_project:
             base_title += f" - {self.current_project.name}"
         if self.unsaved_files_count > 0:
@@ -3315,7 +3403,7 @@ class ModernMainWindow(QMainWindow):
                 args_config = json.load(f)
             return args_config.get(file_path, "")
         except Exception:
-            logger.exception("PyScribe operation failed")
+            logger.exception("CodeLane operation failed")
             return ""
 
     def _tab_is_dirty(self, group, index: int, editor) -> bool:
@@ -3436,7 +3524,7 @@ class ModernMainWindow(QMainWindow):
         layout.addWidget(file_button)
         layout.addWidget(cancel_button)
 
-        dialog.exec_()
+        dialog.exec()
 
     def run_project_from_dialog(self, dialog):
         """Выполняет запуск рабочего процесса project from dialog.
@@ -3467,12 +3555,12 @@ class ModernMainWindow(QMainWindow):
         """
         if hasattr(editor, 'save_file'):
             if not editor.save_file():
-                CustomDialog("Не удалось сохранить файл перед выполнением").exec_()
+                CustomDialog("Не удалось сохранить файл перед выполнением").exec()
                 return
 
         file_path = getattr(editor, 'file_path', None)
         if not file_path:
-            CustomDialog("Нет связанного файла для текущей вкладки").exec_()
+            CustomDialog("Нет связанного файла для текущей вкладки").exec()
             return
 
         args = self.load_launch_arguments(str(file_path))
@@ -3504,15 +3592,15 @@ class ModernMainWindow(QMainWindow):
                 self,
                 "Несохранённые изменения",
                 "Сохранить все изменения перед выходом?",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                QMessageBox.Yes
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes
             )
 
-            if reply == QMessageBox.Yes:
+            if reply == QMessageBox.StandardButton.Yes:
                 self.action_save_all_files()
                 self.finalize_application()
                 event.accept()
-            elif reply == QMessageBox.No:
+            elif reply == QMessageBox.StandardButton.No:
                 self.finalize_application()
                 event.accept()
             else:
@@ -3546,10 +3634,14 @@ class ModernMainWindow(QMainWindow):
             if timer is not None:
                 timer.stop()
             self.save_current_session()
+            settings = get_settings_manager()
+            root = getattr(self.current_project, "root_path", "") or ""
+            if settings.get_setting("last_workspace") != root:
+                settings.set_setting("last_workspace", root)
             saveRecent(self.app_manager.recent_files)
             clear_backup()
         except Exception:
-            logger.exception("PyScribe operation failed")
+            logger.exception("CodeLane operation failed")
 
     def on_project_opened(self, project_config):
         """Обработчик события для project opened.

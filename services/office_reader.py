@@ -5,7 +5,7 @@ import re
 from zipfile import ZipFile
 import xml.etree.ElementTree as ET
 
-from PyQt5 import QtCore, QtGui
+from PyQt6 import QtCore, QtGui
 
 
 def _text(value):
@@ -36,7 +36,7 @@ class OfficeReader:
     def _embedded_image(self, data, width=None, height=None, floating=None):
         buffer = QtCore.QBuffer()
         buffer.setData(data)
-        buffer.open(QtCore.QIODevice.ReadOnly)
+        buffer.open(QtCore.QIODevice.OpenModeFlag.ReadOnly)
         reader = QtGui.QImageReader(buffer)
         size = reader.size()
         if not size.isValid() or size.width() * size.height() > 64_000_000:
@@ -48,7 +48,7 @@ class OfficeReader:
         factor = min(1.0, content_width / width, content_height / height)
         width, height = max(1, round(width * factor)), max(1, round(height * factor))
         if size.width() > width * 2 or size.height() > height * 2:
-            size.scale(width * 2, height * 2, QtCore.Qt.KeepAspectRatio)
+            size.scale(width * 2, height * 2, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
             reader.setScaledSize(size)
         image = reader.read()
         if image.isNull():

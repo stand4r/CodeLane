@@ -1,6 +1,6 @@
 """PyScribe widgets/QuickOpenDialog.py: application module and reusable component."""
 from pathlib import Path
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class QuickOpenDialog(QtWidgets.QDialog):
@@ -44,7 +44,7 @@ class QuickOpenDialog(QtWidgets.QDialog):
         self._anim.setDuration(160)
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
-        self._anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+        self._anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
         self._anim.start()
 
     def _build_paths(self, recent):
@@ -80,7 +80,7 @@ class QuickOpenDialog(QtWidgets.QDialog):
             if not query or query in hay:
                 item = QtWidgets.QListWidgetItem(path.name)
                 item.setToolTip(str(path))
-                item.setData(QtCore.Qt.UserRole, str(path))
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, str(path))
                 if group:
                     item.setStatusTip(group)
                 self.list.addItem(item)
@@ -93,5 +93,5 @@ class QuickOpenDialog(QtWidgets.QDialog):
         item = self.list.currentItem()
         if not item:
             return
-        self.file_selected.emit(item.data(QtCore.Qt.UserRole))
+        self.file_selected.emit(item.data(QtCore.Qt.ItemDataRole.UserRole))
         self.accept()

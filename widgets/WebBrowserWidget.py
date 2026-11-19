@@ -2,8 +2,9 @@
 from pathlib import Path
 
 from design.icons import line_icon
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineProfile, QWebEngineSettings, QWebEngineView
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from core.logging_config import get_logger
 from services.browser_settings import BUILTIN_PROFILE_IDS, default_profile, profiles, search_url, user_agent
@@ -33,9 +34,9 @@ def _web_url(url):
 def _search_icon():
     pixmap = QtGui.QPixmap(36, 36)
     pixmap.setDevicePixelRatio(2)
-    pixmap.fill(QtCore.Qt.transparent)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
     painter = QtGui.QPainter(pixmap)
-    painter.setRenderHint(QtGui.QPainter.Antialiasing)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
     painter.setPen(QtGui.QPen(QtGui.QColor("#50616a"), 1.5))
     painter.drawEllipse(QtCore.QRectF(2, 2, 10, 10))
     painter.drawLine(QtCore.QPointF(10.5, 10.5), QtCore.QPointF(16, 16))
@@ -54,7 +55,7 @@ class _StartPage(QtWidgets.QWidget):
         self._columns = 0
         self.tiles = []
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
+        layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetNoConstraint)
         layout.setContentsMargins(20, 12, 20, 18)
         layout.setSpacing(18)
         layout.addStretch(1)
@@ -64,7 +65,7 @@ class _StartPage(QtWidgets.QWidget):
         self.search.setAccessibleName("Поиск в Интернете")
         self.search.setMaximumWidth(780)
         self.search.setClearButtonEnabled(True)
-        self.search.addAction(_search_icon(), QtWidgets.QLineEdit.LeadingPosition)
+        self.search.addAction(_search_icon(), QtWidgets.QLineEdit.ActionPosition.LeadingPosition)
         self.search.returnPressed.connect(self._search)
         search_row = QtWidgets.QHBoxLayout()
         search_row.addStretch(1)
@@ -90,7 +91,7 @@ class _StartPage(QtWidgets.QWidget):
             tile = self._tile(title, title[:2].upper(), address)
             tile.clicked.connect(lambda checked=False, url=address:
                                  self.browser.navigate(QtCore.QUrl(url), self.tab))
-            tile.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            tile.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
             tile.customContextMenuRequested.connect(
                 lambda pos, button=tile, i=index: self._shortcut_menu(button, i, pos))
         add = self._tile("Добавить", "+", "Добавить ярлык")
@@ -101,18 +102,18 @@ class _StartPage(QtWidgets.QWidget):
     def _tile(self, title, badge, hint):
         tile = QtWidgets.QToolButton(self)
         tile.setObjectName("browserShortcutTile")
-        tile.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
+        tile.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         tile.setFixedSize(88, 76)
-        tile.setText(tile.fontMetrics().elidedText(title, QtCore.Qt.ElideRight, 78))
+        tile.setText(tile.fontMetrics().elidedText(title, QtCore.Qt.TextElideMode.ElideRight, 78))
         tile.setToolTip(title + "\n" + hint if title != hint else title)
         tile.setAccessibleName(title)
-        tile.setCursor(QtCore.Qt.PointingHandCursor)
+        tile.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         pixmap = QtGui.QPixmap(88, 88)
         pixmap.setDevicePixelRatio(2)
-        pixmap.fill(QtCore.Qt.transparent)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
         painter = QtGui.QPainter(pixmap)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        painter.setPen(QtCore.Qt.NoPen)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(QtGui.QColor("#385461" if badge != "+" else "#4b626d"))
         painter.drawRoundedRect(QtCore.QRectF(0, 0, 44, 44), 13, 13)
         painter.setPen(QtGui.QColor("#edf4f7"))
@@ -121,11 +122,11 @@ class _StartPage(QtWidgets.QWidget):
         painter.setFont(font)
         if badge == "+":
             painter.setPen(QtGui.QPen(QtGui.QColor("#edf4f7"), 1.8,
-                                      QtCore.Qt.SolidLine, QtCore.Qt.RoundCap))
+                                      QtCore.Qt.PenStyle.SolidLine, QtCore.Qt.PenCapStyle.RoundCap))
             painter.drawLine(QtCore.QLineF(15, 22, 29, 22))
             painter.drawLine(QtCore.QLineF(22, 15, 22, 29))
         else:
-            painter.drawText(QtCore.QRectF(0, 0, 44, 44), QtCore.Qt.AlignCenter, badge)
+            painter.drawText(QtCore.QRectF(0, 0, 44, 44), QtCore.Qt.AlignmentFlag.AlignCenter, badge)
         painter.end()
         tile.setIcon(QtGui.QIcon(pixmap))
         tile.setIconSize(QtCore.QSize(44, 44))
@@ -136,7 +137,7 @@ class _StartPage(QtWidgets.QWidget):
         menu = QtWidgets.QMenu(button)
         edit = menu.addAction("Изменить ярлык")
         remove = menu.addAction("Удалить ярлык")
-        chosen = menu.exec_(button.mapToGlobal(pos))
+        chosen = menu.exec(button.mapToGlobal(pos))
         menu.deleteLater()
         if chosen is edit:
             self.browser.edit_shortcut(index=index)
@@ -151,9 +152,9 @@ class _StartPage(QtWidgets.QWidget):
         for tile in self.tiles:
             self.grid.removeWidget(tile)
         for index, tile in enumerate(self.tiles):
-            self.grid.addWidget(tile, index // columns, index % columns, QtCore.Qt.AlignHCenter)
+            self.grid.addWidget(tile, index // columns, index % columns, QtCore.Qt.AlignmentFlag.AlignHCenter)
             tile.show()
-        self.grid.setAlignment(QtCore.Qt.AlignHCenter)
+        self.grid.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
         self.updateGeometry()
 
     def minimumSizeHint(self):
@@ -165,10 +166,10 @@ class _StartPage(QtWidgets.QWidget):
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QtGui.QColor("#42616b"))
         painter.scale(self.width() / 1000, self.height() / 650)
-        painter.setPen(QtCore.Qt.NoPen)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
 
         def layer(color, points):
             painter.setBrush(QtGui.QColor(color))
@@ -199,9 +200,9 @@ class _BrowserTab(QtWidgets.QStackedWidget):
         self.home = _StartPage(browser, self)
         self.home_scroll = QtWidgets.QScrollArea()
         self.home_scroll.setObjectName("browserHomeScroll")
-        self.home_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.home_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.home_scroll.setWidgetResizable(True)
-        self.home_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.home_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.home_scroll.setWidget(self.home)
         self.addWidget(self.home_scroll)
 
@@ -242,13 +243,13 @@ class WebBrowserWidget(QtWidgets.QWidget):
         self.profile_button = QtWidgets.QToolButton()
         self.profile_button.setObjectName("browserProfile")
         self.profile_button.setAccessibleName("Профиль браузера")
-        self.profile_button.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.profile_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.profile_button.setIconSize(QtCore.QSize(20, 20))
-        self.profile_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.profile_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.profile_button.setMaximumWidth(154)
         self._profile_icon_mode = None
         row.addWidget(self.profile_button)
-        self.profile_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.profile_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.profile_menu = QtWidgets.QMenu(self.profile_button)
         self.profile_menu.setObjectName("browserProfileMenu")
         self.profile_menu.aboutToShow.connect(self._refresh_profile_menu)
@@ -272,10 +273,10 @@ class WebBrowserWidget(QtWidgets.QWidget):
         footer.setSpacing(6)
         self.tabs = QtWidgets.QTabBar()
         self.tabs.setObjectName("browserTabs")
-        self.tabs.setShape(QtWidgets.QTabBar.RoundedSouth)
+        self.tabs.setShape(QtWidgets.QTabBar.Shape.RoundedSouth)
         self.tabs.setTabsClosable(True)
         self.tabs.setUsesScrollButtons(True)
-        self.tabs.setElideMode(QtCore.Qt.ElideRight)
+        self.tabs.setElideMode(QtCore.Qt.TextElideMode.ElideRight)
         self.tabs.setExpanding(False)
         self.tabs.setMovable(True)
         self.tabs.currentChanged.connect(self._select_tab)
@@ -285,8 +286,8 @@ class WebBrowserWidget(QtWidgets.QWidget):
         layout.addLayout(footer)
 
         for sequence, action in (("Ctrl+L", self.focus_address), ("Ctrl+T", self.new_tab)):
-            shortcut = QtWidgets.QShortcut(QtGui.QKeySequence(sequence), self)
-            shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+            shortcut = QtGui.QShortcut(QtGui.QKeySequence(sequence), self)
+            shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
             shortcut.activated.connect(action)
         self.new_tab()
 
@@ -347,11 +348,11 @@ class WebBrowserWidget(QtWidgets.QWidget):
         if entry is None:
             if settings["persistent"]:
                 profile = QWebEngineProfile(settings["id"], self)
-                base = QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.GenericDataLocation)
+                base = QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.StandardLocation.GenericDataLocation)
                 path = Path(base) / "PyScribe" / "browser" / settings["id"]
                 profile.setPersistentStoragePath(str(path / "storage"))
                 profile.setCachePath(str(path / "cache"))
-                profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
+                profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
             else:
                 profile = QWebEngineProfile(self)
             entry = profile, profile.httpUserAgent()
@@ -406,9 +407,9 @@ class WebBrowserWidget(QtWidgets.QWidget):
         error = QtWidgets.QLabel()
         error.setWordWrap(True)
         form.addRow(error)
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
-        buttons.button(QtWidgets.QDialogButtonBox.Save).setText("Сохранить")
-        buttons.button(QtWidgets.QDialogButtonBox.Cancel).setText("Отмена")
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Save | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Save).setText("Сохранить")
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         form.addRow(buttons)
 
         def accept():
@@ -417,7 +418,7 @@ class WebBrowserWidget(QtWidgets.QWidget):
             if not _web_url(url):
                 error.setText("Укажите адрес сайта HTTP или HTTPS.")
                 return
-            pair = (name.text().strip() or url.host(), url.toString(QtCore.QUrl.RemovePassword))
+            pair = (name.text().strip() or url.host(), url.toString(QtCore.QUrl.UrlFormattingOption.RemovePassword))
             if index is None:
                 self.shortcuts.append(pair)
             else:
@@ -428,7 +429,7 @@ class WebBrowserWidget(QtWidgets.QWidget):
         buttons.accepted.connect(accept)
         buttons.rejected.connect(dialog.reject)
         dialog.resize(420, 0)
-        dialog.exec_()
+        dialog.exec()
         dialog.deleteLater()
 
     def remove_shortcut(self, index):
@@ -438,7 +439,7 @@ class WebBrowserWidget(QtWidgets.QWidget):
     def _pin_page(self):
         tab = self.stack.currentWidget()
         if tab and tab.showing_web() and _web_url(tab.view.url()):
-            self.edit_shortcut(title=tab.view.title(), address=tab.view.url().toDisplayString(QtCore.QUrl.RemovePassword))
+            self.edit_shortcut(title=tab.view.title(), address=tab.view.url().toDisplayString(QtCore.QUrl.UrlFormattingOption.RemovePassword))
         else:
             self.edit_shortcut()
 
@@ -479,10 +480,9 @@ class WebBrowserWidget(QtWidgets.QWidget):
         view = QWebEngineView(tab)
         page = _WebPage(profile, view)
         view.setPage(page)
-        page.settings().setAttribute(QWebEngineSettings.JavascriptCanOpenWindows, False)
-        page.settings().setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, False)
-        page.featurePermissionRequested.connect(
-            lambda origin, feature: page.setFeaturePermission(origin, feature, QWebEnginePage.PermissionDeniedByUser))
+        page.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
+        page.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, False)
+        page.permissionRequested.connect(lambda permission: permission.deny())
         tab.view = view
         tab.addWidget(view)
         view.titleChanged.connect(lambda title: self._title_changed(tab, title))
@@ -571,7 +571,7 @@ class WebBrowserWidget(QtWidgets.QWidget):
         if tab is not None:
             name = tab.profile_settings["name"]
             self.profile_button.setText(self.profile_button.fontMetrics().elidedText(
-                name, QtCore.Qt.ElideRight, 102))
+                name, QtCore.Qt.TextElideMode.ElideRight, 102))
             persistent = tab.profile_settings["persistent"]
             icon_mode = "profile" if persistent else "private"
             if icon_mode != self._profile_icon_mode:
@@ -581,7 +581,7 @@ class WebBrowserWidget(QtWidgets.QWidget):
             self.profile_button.setToolTip(f"{name} · {summary}")
         if view is not None:
             if force_address or not self.address.hasFocus():
-                self.address.setText(view.url().toDisplayString(QtCore.QUrl.RemovePassword))
+                self.address.setText(view.url().toDisplayString(QtCore.QUrl.UrlFormattingOption.RemovePassword))
             self.progress.setValue(tab.progress)
             self.progress.setVisible(tab.progress < 100)
         else:
@@ -591,8 +591,8 @@ class WebBrowserWidget(QtWidgets.QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, "profile_button"):
-            style = (QtCore.Qt.ToolButtonIconOnly if event.size().width() < 460
-                     else QtCore.Qt.ToolButtonTextBesideIcon)
+            style = (QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly if event.size().width() < 460
+                     else QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
             self.profile_button.setToolButtonStyle(style)
 
     def _web_action(self, action):

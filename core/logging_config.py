@@ -1,4 +1,4 @@
-"""Centralized logging configuration for PyScribe.
+"""Centralized logging configuration for CodeLane.
 
 The application uses the standard library logging package so diagnostics are
 available both during development and in installed builds without relying on
@@ -55,7 +55,7 @@ def install_diagnostics(base_path: Path):
     logger = configure_logging(base_path)
     from core.app_version import current_version
 
-    logger.info("Запуск PyScribe %s | Python %s | %s",
+    logger.info("Запуск CodeLane %s | Python %s | %s",
                 current_version(), platform.python_version(), platform.platform())
     try:
         _crash_file = (log_directory(base_path) / "crash.log").open("ab")
@@ -81,5 +81,5 @@ def install_diagnostics(base_path: Path):
 
 
 def get_logger(name: Optional[str] = None) -> logging.Logger:
-    """Return a child logger from the PyScribe logging namespace."""
+    """Return a child logger from the CodeLane logging namespace."""
     return logging.getLogger("pyscribe" + (f".{name}" if name else ""))

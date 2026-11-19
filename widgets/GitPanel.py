@@ -4,9 +4,9 @@ import re
 import subprocess
 from pathlib import Path
 from design.icons import line_icon, set_line_icon
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import QUrl
-from PyQt5.QtGui import QDesktopServices
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtCore import QUrl
+from PyQt6.QtGui import QDesktopServices
 
 from services.github_service import GitHubService
 from core.subprocess_utils import run_hidden
@@ -19,7 +19,7 @@ class GitHubLoginDialog(QtWidgets.QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Вход в GitHub — PyScribe")
+        self.setWindowTitle("Вход в GitHub — CodeLane")
         self.setMinimumWidth(520)
         self.resize(600, 540)
         self.github_service = GitHubService.get_instance()
@@ -65,7 +65,7 @@ class GitHubLoginDialog(QtWidgets.QDialog):
 
         open_browser_btn = QtWidgets.QPushButton("Создать токен на GitHub")
         set_line_icon(open_browser_btn, "external")
-        open_browser_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        open_browser_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         open_browser_btn.setStyleSheet("background: #238636; color: #FFFFFF; font-weight: bold; padding: 7px 14px; border-radius: 4px;")
         open_browser_btn.clicked.connect(self._open_token_page)
         gl.addWidget(open_browser_btn)
@@ -74,7 +74,7 @@ class GitHubLoginDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout()
         self.token_edit = QtWidgets.QLineEdit()
         self.token_edit.setPlaceholderText("ghp_... или github_pat_...")
-        self.token_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.token_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         self.token_edit.setStyleSheet("padding: 6px 10px; font-size: 13px;")
         
         token_row = QtWidgets.QHBoxLayout()
@@ -93,21 +93,21 @@ class GitHubLoginDialog(QtWidgets.QDialog):
         layout.addWidget(self.status_label)
 
         buttons = QtWidgets.QDialogButtonBox()
-        self.cancel_btn = buttons.addButton("Отмена", QtWidgets.QDialogButtonBox.RejectRole)
-        self.login_btn = buttons.addButton("Войти в аккаунт", QtWidgets.QDialogButtonBox.AcceptRole)
+        self.cancel_btn = buttons.addButton("Отмена", QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
+        self.login_btn = buttons.addButton("Войти в аккаунт", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
         self.login_btn.setStyleSheet("background: #0078D4; color: white; font-weight: bold; padding: 6px 16px;")
         self.cancel_btn.clicked.connect(self.reject)
         self.login_btn.clicked.connect(self._do_login)
         layout.addWidget(buttons)
 
     def _toggle_echo_mode(self):
-        if self.token_edit.echoMode() == QtWidgets.QLineEdit.Password:
-            self.token_edit.setEchoMode(QtWidgets.QLineEdit.Normal)
+        if self.token_edit.echoMode() == QtWidgets.QLineEdit.EchoMode.Password:
+            self.token_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Normal)
         else:
-            self.token_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+            self.token_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
 
     def _open_token_page(self):
-        url = "https://github.com/settings/tokens/new?scopes=repo,user&description=PyScribe%20IDE"
+        url = "https://github.com/settings/tokens/new?scopes=repo,user&description=CodeLane%20IDE"
         QDesktopServices.openUrl(QUrl(url))
 
     def _do_login(self):
@@ -207,20 +207,20 @@ class GitHubReposDialog(QtWidgets.QDialog):
             if not query or query in r["full_name"].lower() or query in r["description"].lower():
                 priv = " [Private]" if r["private"] else ""
                 item = QtWidgets.QListWidgetItem(f"📦 {r['full_name']}{priv}\n   {r['description']} · Обновлен: {r['updated_at']}")
-                item.setData(QtCore.Qt.UserRole, r)
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, r)
                 self.repo_list.addItem(item)
 
     def _clone_selected(self):
         item = self.repo_list.currentItem()
         if not item:
             return
-        repo_data = item.data(QtCore.Qt.UserRole)
+        repo_data = item.data(QtCore.Qt.ItemDataRole.UserRole)
         if repo_data:
             self.repo_selected.emit(repo_data["clone_url"], repo_data["name"])
             self.accept()
 
     def _on_item_double_clicked(self, item):
-        repo_data = item.data(QtCore.Qt.UserRole)
+        repo_data = item.data(QtCore.Qt.ItemDataRole.UserRole)
         if repo_data:
             self.repo_selected.emit(repo_data["clone_url"], repo_data["name"])
             self.accept()
@@ -265,8 +265,8 @@ class CreateGitHubRepoDialog(QtWidgets.QDialog):
         layout.addWidget(self.status_label)
 
         buttons = QtWidgets.QDialogButtonBox()
-        cancel_btn = buttons.addButton("Отмена", QtWidgets.QDialogButtonBox.RejectRole)
-        self.create_btn = buttons.addButton("Опубликовать на GitHub", QtWidgets.QDialogButtonBox.AcceptRole)
+        cancel_btn = buttons.addButton("Отмена", QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
+        self.create_btn = buttons.addButton("Опубликовать на GitHub", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
         self.create_btn.setStyleSheet("background: #238636; color: white; font-weight: bold; padding: 6px 14px;")
         cancel_btn.clicked.connect(self.reject)
         self.create_btn.clicked.connect(self._create_repo)
@@ -310,7 +310,7 @@ class CloneGitHubDialog(QtWidgets.QDialog):
         self.setWindowTitle("Клонирование репозитория")
         self.setMinimumWidth(560)
         self.cloned_path = None
-        self._default_parent = default_parent_dir or str(Path.home() / "PyScribeProjects")
+        self._default_parent = default_parent_dir or str(Path.home() / "CodeLaneProjects")
         self.github_service = GitHubService.get_instance()
         self._build()
 
@@ -366,8 +366,8 @@ class CloneGitHubDialog(QtWidgets.QDialog):
         layout.addWidget(self.status_label)
 
         buttons = QtWidgets.QDialogButtonBox()
-        cancel = buttons.addButton("Отмена", QtWidgets.QDialogButtonBox.RejectRole)
-        self.clone_btn = buttons.addButton("Клонировать и открыть", QtWidgets.QDialogButtonBox.AcceptRole)
+        cancel = buttons.addButton("Отмена", QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
+        self.clone_btn = buttons.addButton("Клонировать и открыть", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
         self.clone_btn.setStyleSheet("background: #238636; color: white; font-weight: bold; padding: 6px 14px;")
         cancel.clicked.connect(self.reject)
         self.clone_btn.clicked.connect(self._start_clone)
@@ -376,7 +376,7 @@ class CloneGitHubDialog(QtWidgets.QDialog):
     def _open_repo_picker(self):
         dialog = GitHubReposDialog(self)
         dialog.repo_selected.connect(self._on_repo_picked)
-        dialog.exec_()
+        dialog.exec()
 
     def _on_repo_picked(self, clone_url: str, repo_name: str):
         self.url_edit.setText(clone_url)
@@ -483,8 +483,8 @@ class GitPanel(QtWidgets.QFrame):
         scroll = QtWidgets.QScrollArea(self)
         scroll.setObjectName("gitScroll")
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         content = QtWidgets.QWidget()
         content.setObjectName("gitContent")
         layout = QtWidgets.QVBoxLayout(content)
@@ -517,13 +517,13 @@ class GitPanel(QtWidgets.QFrame):
 
         self.branch_btn = QtWidgets.QToolButton()
         self.branch_btn.setText("Нет репозитория")
-        self.branch_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.branch_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.branch_btn.setObjectName("gitBranchButton")
         self.branch_btn.setStyleSheet(
             "QToolButton { border: none; background: transparent; color: #CCCCCC;"
             " padding: 0 4px; font-size: 12px; } QToolButton:hover { background: #2A2D2E; border-radius: 2px; }"
         )
-        self.branch_btn.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
+        self.branch_btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
         header.addWidget(self.branch_btn, 1)
         header.addStretch()
 
@@ -541,7 +541,7 @@ class GitPanel(QtWidgets.QFrame):
         self.more_btn.setText("")
         self.more_btn.setToolTip("Дополнительно")
         self.more_btn.setObjectName("gitAction")
-        self.more_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.more_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.more_btn.setMenu(self._build_actions_menu())
         header.addWidget(self.more_btn)
         return header
@@ -597,7 +597,7 @@ class GitPanel(QtWidgets.QFrame):
         self.github_repo_label = QtWidgets.QLabel("github.com/…")
         self.github_repo_label.setObjectName("gitRemoteLabel")
         self.github_repo_label.setWordWrap(True)
-        self.github_repo_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.github_repo_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         gh.addWidget(self.github_repo_label)
         links = QtWidgets.QHBoxLayout()
         links.setSpacing(4)
@@ -660,9 +660,9 @@ class GitPanel(QtWidgets.QFrame):
         self.files = QtWidgets.QListWidget()
         self.files.setObjectName("gitFiles")
         self.files.setMinimumHeight(140)
-        self.files.setTextElideMode(QtCore.Qt.ElideMiddle)
+        self.files.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
         self.files.itemDoubleClicked.connect(self._open_item)
-        self.files.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.files.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.files.customContextMenuRequested.connect(self._file_context_menu)
         layout.addWidget(self.files, 1)
 
@@ -711,7 +711,7 @@ class GitPanel(QtWidgets.QFrame):
         if not self.github_service.is_authenticated():
             dialog = GitHubLoginDialog(self)
             dialog.authenticated.connect(lambda _: self._on_auth_success())
-            dialog.exec_()
+            dialog.exec()
         else:
             # Menu with options
             menu = QtWidgets.QMenu(self.login_action_btn)
@@ -721,7 +721,7 @@ class GitPanel(QtWidgets.QFrame):
             menu.addAction("Мои репозитории…", self._open_user_repos)
             menu.addSeparator()
             menu.addAction("Выйти из аккаунта", self._logout)
-            menu.exec_(self.login_action_btn.mapToGlobal(QtCore.QPoint(0, self.login_action_btn.height())))
+            menu.exec(self.login_action_btn.mapToGlobal(QtCore.QPoint(0, self.login_action_btn.height())))
 
     def _on_auth_success(self):
         self._update_auth_ui()
@@ -737,13 +737,13 @@ class GitPanel(QtWidgets.QFrame):
     def _open_user_repos(self):
         dialog = GitHubReposDialog(self)
         dialog.repo_selected.connect(self._clone_from_url)
-        dialog.exec_()
+        dialog.exec()
 
     def _clone_from_url(self, clone_url: str, repo_name: str):
         dialog = CloneGitHubDialog(self.root_path, self)
         dialog.url_edit.setText(clone_url)
         dialog.name_edit.setText(repo_name)
-        dialog.exec_()
+        dialog.exec()
 
     def set_root(self, root):
         self.root_path = str(Path(root).resolve()) if root else None
@@ -899,13 +899,13 @@ class GitPanel(QtWidgets.QFrame):
             return
         if not self.github_service.is_authenticated():
             dialog = GitHubLoginDialog(self)
-            if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
                 return
 
         folder_name = Path(self.root_path).name
         dialog = CreateGitHubRepoDialog(folder_name, self)
         dialog.repo_created.connect(self._on_repo_published)
-        dialog.exec_()
+        dialog.exec()
 
     def _on_repo_published(self, clone_url: str):
         auth_url = self.github_service.inject_token_into_url(clone_url)
@@ -950,7 +950,7 @@ class GitPanel(QtWidgets.QFrame):
 
     def show_clone_dialog(self):
         dialog = CloneGitHubDialog(self.root_path, self)
-        if dialog.exec_() == QtWidgets.QDialog.Accepted and dialog.cloned_path:
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted and dialog.cloned_path:
             win = self.window()
             if hasattr(win, "project_handler"):
                 from widgets.ProjectManager import project_manager
@@ -964,12 +964,12 @@ class GitPanel(QtWidgets.QFrame):
                 self,
                 "Аутентификация GitHub",
                 "Для взаимодействия с GitHub (Push/Pull) требуется авторизация.\nХотите войти сейчас?",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.Yes
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.Yes
             )
-            if reply == QtWidgets.QMessageBox.Yes:
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes:
                 dialog = GitHubLoginDialog(self)
-                return dialog.exec_() == QtWidgets.QDialog.Accepted
+                return dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted
             return False
         return True
 
@@ -1099,12 +1099,19 @@ class GitPanel(QtWidgets.QFrame):
         state["branch"] = branch if ok_branch else ""
         if not ok_branch:
             return state
-        ok_status, status = self._run(["status", "--porcelain"])
+        # These read-only queries are independent. Keep the executor local to
+        # this background refresh so it cannot accumulate work across refreshes.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="git-state") as pool:
+            status_job = pool.submit(self._run, ["status", "--porcelain"])
+            remote_job = pool.submit(self._run, ["remote", "get-url", "origin"])
+            branches_job = pool.submit(self._run, ["branch", "--list"])
+            ok_status, status = status_job.result()
+            ok_remote, remote = remote_job.result()
+            ok_branches, branches = branches_job.result()
         state["status_ok"] = ok_status
         state["status"] = status
-        ok_remote, remote = self._run(["remote", "get-url", "origin"])
         state["remote"] = remote if ok_remote else ""
-        ok_branches, branches = self._run(["branch", "--list"])
         state["branches"] = [
             line.strip().lstrip("* ").strip()
             for line in (branches if ok_branches else "").splitlines()
@@ -1205,7 +1212,7 @@ class GitPanel(QtWidgets.QFrame):
                     "?": "Не отслеживается"
                 }.get(code, code or "Изменён")
                 item = QtWidgets.QListWidgetItem(f"{label}    {path}")
-                item.setData(QtCore.Qt.UserRole, path)
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, path)
                 self.files.addItem(item)
         finally:
             self.files.setUpdatesEnabled(True)
@@ -1215,7 +1222,7 @@ class GitPanel(QtWidgets.QFrame):
         item = self.files.itemAt(pos)
         menu = QtWidgets.QMenu(self)
         if item:
-            path = item.data(QtCore.Qt.UserRole)
+            path = item.data(QtCore.Qt.ItemDataRole.UserRole)
             menu.addAction("Открыть файл", lambda: self._open_item(item))
             menu.addAction("Индексировать (git add)", lambda: self._stage_file(path))
             menu.addAction("Снять с индекса (git reset)", lambda: self._unstage_file(path))
@@ -1238,17 +1245,17 @@ class GitPanel(QtWidgets.QFrame):
             menu.addAction(line_icon("external"), "Pull Requests на GitHub", self.open_github_prs)
             menu.addAction(line_icon("external"), "Задачи (Issues) на GitHub", self.open_github_issues)
 
-        menu.exec_(self.files.viewport().mapToGlobal(pos))
+        menu.exec(self.files.viewport().mapToGlobal(pos))
 
     def _discard_file_changes(self, path):
         reply = QtWidgets.QMessageBox.question(
             self,
             "Отмена изменений",
             f"Отменить все локальные изменения в файле «{path}»?\nЭто действие необратимо.",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.No
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No
         )
-        if reply != QtWidgets.QMessageBox.Yes:
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
             return
 
         def work():
@@ -1321,7 +1328,7 @@ class GitPanel(QtWidgets.QFrame):
                              f"Снятие с индекса {path}…")
 
     def _open_item(self, item):
-        path = item.data(QtCore.Qt.UserRole)
+        path = item.data(QtCore.Qt.ItemDataRole.UserRole)
         if not path or not self.root_path:
             return
         full = Path(self.root_path) / path.strip('"')

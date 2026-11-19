@@ -1,7 +1,7 @@
 """PyScribe Change Capsule: a deterministic change-impact passport for a project."""
 from pathlib import Path
 import subprocess
-from PyQt5 import QtWidgets
+from PyQt6 import QtWidgets
 
 from core.subprocess_utils import run_hidden
 

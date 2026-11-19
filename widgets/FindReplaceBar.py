@@ -1,10 +1,10 @@
 """PyScribe widgets/FindReplaceBar.py: in-editor find and replace overlay."""
 import re
 from design.icons import set_line_icon
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import Qt, pyqtSignal, QRegExp
-from PyQt5.QtGui import QTextCursor, QTextCharFormat, QColor, QTextDocument
-from PyQt5.QtWidgets import (
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QTextDocument
+from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QToolButton, QLabel,
     QPushButton, QFrame
 )
@@ -48,7 +48,7 @@ class FindReplaceBar(QFrame):
 
         self.match_count_label = QLabel("0/0")
         self.match_count_label.setMinimumWidth(48)
-        self.match_count_label.setAlignment(Qt.AlignCenter)
+        self.match_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         row_find.addWidget(self.match_count_label)
 
         self.case_btn = QToolButton()
@@ -120,11 +120,11 @@ class FindReplaceBar(QFrame):
         self.replace_widget.hide()
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape:
+        if event.key() == Qt.Key.Key_Escape:
             self.hide_bar()
             return
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            if event.modifiers() & Qt.ShiftModifier:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 self.find_prev()
             else:
                 self.find_next()
@@ -172,11 +172,11 @@ class FindReplaceBar(QFrame):
             return
 
         doc = self.editor.document()
-        flags = QTextDocument.FindFlags()
+        flags = QTextDocument.FindFlag(0)
         if self.case_btn.isChecked():
-            flags |= QTextDocument.FindCaseSensitively
+            flags |= QTextDocument.FindFlag.FindCaseSensitively
         if self.word_btn.isChecked():
-            flags |= QTextDocument.FindWholeWords
+            flags |= QTextDocument.FindFlag.FindWholeWords
 
         cursor = QTextCursor(doc)
         while True:

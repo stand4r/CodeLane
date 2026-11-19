@@ -2,7 +2,7 @@
 
 Keeps a small, explicit list of things to do in the project — created by hand or
 promoted from an analyzer recommendation — and stores it next to the project in
-``.pyscribe/tasks.json`` so it survives restarts and travels with the repository.
+``.codelane/tasks.json`` so it survives restarts.
 
 No Qt imports here on purpose: the store is plain Python and unit-testable.
 """
@@ -16,6 +16,8 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+
+from core.project_state import project_state_file
 
 __all__ = ["Task", "TaskStore", "CodeTaskScanner", "STATUSES", "PRIORITIES"]
 
@@ -83,7 +85,6 @@ class TaskStore:
     """Loads, edits and persists the task list of one project."""
 
     FILE_NAME = "tasks.json"
-    FOLDER = ".pyscribe"
 
     def __init__(self, project_root: Optional[str] = None):
         self.root: Optional[Path] = None
@@ -97,7 +98,7 @@ class TaskStore:
     def path(self) -> Optional[Path]:
         if self.root is None:
             return None
-        return self.root / self.FOLDER / self.FILE_NAME
+        return project_state_file(self.root, self.FILE_NAME)
 
     def set_root(self, project_root: Optional[str]) -> None:
         self.root = Path(project_root).resolve() if project_root else None

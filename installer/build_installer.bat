@@ -2,8 +2,8 @@
 setlocal EnableExtensions
 cd /d "%~dp0.."
 
-if not exist "dist\PyScribe\PyScribe.exe" (
-  echo dist\PyScribe\PyScribe.exe not found.
+if not exist "dist\CodeLane\CodeLane.exe" (
+  echo dist\CodeLane\CodeLane.exe not found.
   echo First run build_exe.bat from the project root.
   pause
   exit /b 1
@@ -26,7 +26,7 @@ if errorlevel 1 (
 )
 
 
-"%ISCC%" "installer\PyScribe.iss"
+"%ISCC%" "installer\CodeLane.iss"
 if errorlevel 1 (
   echo Installer build failed.
   pause
@@ -37,7 +37,7 @@ echo.
 echo ========================================
 echo Installer created:
 set /p PYSCRIBE_VERSION=<VERSION
-echo installer_output\PyScribe-Setup-v%PYSCRIBE_VERSION%.exe
+echo installer_output\CodeLane-Setup-v%PYSCRIBE_VERSION%.exe
 echo ========================================
 echo.
 pause

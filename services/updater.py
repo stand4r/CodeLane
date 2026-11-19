@@ -1,4 +1,4 @@
-"""Update pipeline for PyScribe.
+"""Update pipeline for CodeLane.
 
 Two update modes are supported:
 
@@ -17,8 +17,8 @@ Public API
 ``download_asset()``          stream one asset with progress and checksum
 ``can_update_from_git()``     source checkout is clean and on a tracking branch
 ``git_update()``              run ``git pull --ff-only``
-``pick_installer_asset()``    choose ``PyScribe-Setup-*.exe`` from a release
-``restart_application()``     relaunch this PyScribe instance
+``pick_installer_asset()``    choose ``CodeLane-Setup-*.exe`` from a release
+``restart_application()``     relaunch this CodeLane instance
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ __all__ = [
 GITHUB_REPO = "stand4r/PyScribe"
 API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
-_UA = "PyScribe-Updater/1.0 (+%s)" % RELEASES_PAGE
+_UA = "CodeLane-Updater/1.0 (+%s)" % RELEASES_PAGE
 _DOWNLOAD_CHUNK = 64 * 1024
 
 
@@ -113,7 +113,7 @@ class ReleaseInfo:
         return cls(
             version=normalize_version(tag or data.get("name") or ""),
             tag=tag,
-            name=str(data.get("name") or tag or "PyScribe"),
+            name=str(data.get("name") or tag or "CodeLane"),
             notes=str(data.get("body") or ""),
             page_url=str(data.get("html_url") or RELEASES_PAGE),
             published_at=str(data.get("published_at") or ""),
@@ -135,7 +135,7 @@ def fetch_latest_release(timeout: float = 15.0) -> ReleaseInfo:
             raise UpdateError("GitHub ограничил частоту проверок. Попробуйте позже.",
                               kind="rate_limit") from exc
         if exc.code == 404:
-            raise UpdateError("Релизы PyScribe не найдены на GitHub.", kind="not_found") from exc
+            raise UpdateError("Релизы CodeLane не найдены на GitHub.", kind="not_found") from exc
         raise UpdateError(f"GitHub ответил кодом {exc.code}.", kind="http") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise UpdateError("Не удалось связаться с GitHub. Проверьте интернет.",
@@ -172,7 +172,7 @@ def download_asset(asset: ReleaseAsset, destination: Optional[Path] = None,
                    progress: Optional[Callable[[int, int], None]] = None,
                    timeout: float = 60.0) -> Path:
     """Stream *asset* to disk, verify its SHA-256 and return the path."""
-    folder = Path(destination) if destination else Path(tempfile.gettempdir()) / "PyScribe-updates"
+    folder = Path(destination) if destination else Path(tempfile.gettempdir()) / "CodeLane-updates"
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / asset.name
     request = urllib.request.Request(asset.url, headers={"User-Agent": _UA})
@@ -211,7 +211,7 @@ def download_asset(asset: ReleaseAsset, destination: Optional[Path] = None,
 
 
 def installer_command(path: Path) -> List[str]:
-    """Inno Setup flags: install silently, close and restart PyScribe."""
+    """Inno Setup flags: install silently, close and restart CodeLane."""
     return [str(path), "/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS",
             "/NORESTART", "/NOCANCEL"]
 
@@ -272,8 +272,8 @@ def git_update(timeout: float = 180.0) -> str:
 
 
 def restart_application() -> None:
-    """Relaunch PyScribe (source checkout or frozen build)."""
-    from PyQt5 import QtCore
+    """Relaunch CodeLane (source checkout or frozen build)."""
+    from PyQt6 import QtCore
     if getattr(sys, "frozen", False):
         QtCore.QProcess.startDetached(sys.executable, [])
         return

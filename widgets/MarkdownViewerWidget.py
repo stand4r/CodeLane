@@ -5,14 +5,14 @@ import re
 import unicodedata
 
 from design.icons import set_line_icon
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class _ReadingBrowser(QtWidgets.QTextBrowser):
     def loadResource(self, resource_type, url):
         # Previewing a file should not make network requests for embedded images.
         resolved = self.document().baseUrl().resolved(url)
-        if resource_type == QtGui.QTextDocument.ImageResource and resolved.isLocalFile():
+        if resource_type == QtGui.QTextDocument.ResourceType.ImageResource and resolved.isLocalFile():
             return super().loadResource(resource_type, resolved)
         return None
 
@@ -44,8 +44,8 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
         root.setSpacing(6)
         header = QtWidgets.QHBoxLayout()
         self.title_label = QtWidgets.QLabel()
-        self.title_label.setTextFormat(QtCore.Qt.PlainText)
-        self.title_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self.title_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.title_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         self.title_label.setObjectName("markdownTitle")
         header.addWidget(self.title_label, 1)
         self.progress = QtWidgets.QLabel()
@@ -72,7 +72,7 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
         button("", "add", "Увеличить текст", lambda: self.browser.zoomIn())
         toolbar.addStretch(1)
         menu_btn = button("", "more", "Действия с документом", None)
-        menu_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        menu_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QtWidgets.QMenu(menu_btn)
         menu.addAction("Обновить", self.reload)
         menu.addAction("Копировать исходный Markdown", self._copy_markdown)
@@ -87,8 +87,8 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
         self.search.returnPressed.connect(self._find_next)
         self.search.hide()
         root.addWidget(self.search)
-        self._find_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence.Find, self)
-        self._find_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+        self._find_shortcut = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Find, self)
+        self._find_shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._find_shortcut.activated.connect(self._show_search)
 
         body = QtWidgets.QHBoxLayout()
@@ -96,7 +96,7 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
         self.outline = QtWidgets.QTreeWidget()
         self.outline.setObjectName("markdownOutline")
         self.outline.setHeaderHidden(True)
-        self.outline.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.outline.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.outline.setFixedWidth(205)
         self.outline.setAccessibleName("Оглавление")
         self.outline.currentItemChanged.connect(self._outline_selected)
@@ -175,7 +175,7 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
                         style.setBottomPadding(7)
                         style.setBottomBorder(1)
                         style.setBottomBorderBrush(rule)
-                        style.setBottomBorderStyle(QtGui.QTextFrameFormat.BorderStyle_Solid)
+                        style.setBottomBorderStyle(QtGui.QTextFrameFormat.BorderStyle.BorderStyle_Solid)
                         cell.setFormat(style)
             self._style_tables(child, paper, text)
 
@@ -194,7 +194,7 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
             cursor = QtGui.QTextCursor(block)
             for position, length in segments:
                 cursor.setPosition(position)
-                cursor.setPosition(position + length, QtGui.QTextCursor.KeepAnchor)
+                cursor.setPosition(position + length, QtGui.QTextCursor.MoveMode.KeepAnchor)
                 cursor.mergeCharFormat(style)
 
     def set_markdown(self, markdown_text):
@@ -208,8 +208,8 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
         doc = self.browser.document()
         doc.setBaseUrl(QtCore.QUrl.fromLocalFile(str(Path(self.file_path).resolve())) if self.file_path else QtCore.QUrl())
         doc.setDocumentMargin(22)
-        features = QtGui.QTextDocument.MarkdownFeatures(
-            QtGui.QTextDocument.MarkdownDialectGitHub | QtGui.QTextDocument.MarkdownNoHTML)
+        features = (QtGui.QTextDocument.MarkdownFeature.MarkdownDialectGitHub
+                    | QtGui.QTextDocument.MarkdownFeature.MarkdownNoHTML)
         doc.setMarkdown(markdown_text, features)
         self._headings.clear()
         self._positions.clear()
@@ -229,12 +229,12 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
             level = fmt.headingLevel()
             fmt.setTopMargin(18 if level else 0)
             fmt.setBottomMargin(10 if level else 7)
-            fmt.setLineHeight(124, QtGui.QTextBlockFormat.ProportionalHeight)
-            if fmt.hasProperty(QtGui.QTextFormat.BlockCodeFence):
+            fmt.setLineHeight(124, QtGui.QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
+            if fmt.hasProperty(QtGui.QTextFormat.Property.BlockCodeFence):
                 fmt.setBackground(palette.alternateBase())
                 fmt.setLeftMargin(8)
                 fmt.setBottomMargin(0)
-            if fmt.intProperty(QtGui.QTextFormat.BlockQuoteLevel):
+            if fmt.intProperty(QtGui.QTextFormat.Property.BlockQuoteLevel):
                 fmt.setLeftMargin(18)
                 fmt.setBackground(palette.alternateBase())
             cursor = QtGui.QTextCursor(block)
@@ -252,7 +252,7 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
                     self.outline.addTopLevelItem(item)
                 parents.append((level, item))
                 position = block.position()
-                item.setData(0, QtCore.Qt.UserRole, position)
+                item.setData(0, QtCore.Qt.ItemDataRole.UserRole, position)
                 self._headings.append(item)
                 self._positions.append(position)
                 slug = re.sub(r"[^\w\- ]", "", unicodedata.normalize("NFC", title).lower()).replace(" ", "-")
@@ -301,7 +301,7 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
             return
         if not self.browser.find(phrase):
             previous = self.browser.textCursor()
-            self.browser.moveCursor(QtGui.QTextCursor.Start)
+            self.browser.moveCursor(QtGui.QTextCursor.MoveOperation.Start)
             if not self.browser.find(phrase):
                 self.browser.setTextCursor(previous)
                 QtWidgets.QToolTip.showText(self.search.mapToGlobal(self.search.rect().bottomLeft()), "Совпадений нет")
@@ -315,7 +315,7 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
 
     def _outline_selected(self, item, _previous):
         if item is not None:
-            self._jump(item.data(0, QtCore.Qt.UserRole))
+            self._jump(item.data(0, QtCore.Qt.ItemDataRole.UserRole))
 
     def _update_position(self, *_args):
         if not hasattr(self, "_reading_minutes"):

@@ -1,14 +1,14 @@
-"""PyScribe widgets/AboutDialog.py: modern About dialog."""
+"""CodeLane widgets/AboutDialog.py: modern About dialog."""
 from pathlib import Path
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class AboutDialog(QtWidgets.QDialog):
-    """Modern, sleek About dialog for PyScribe."""
+    """Modern, sleek About dialog for CodeLane."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("О программе PyScribe")
+        self.setWindowTitle("О программе CodeLane")
         self.setFixedSize(520, 480)
         self.setModal(True)
         self.setObjectName("aboutDialog")
@@ -37,7 +37,7 @@ class AboutDialog(QtWidgets.QDialog):
             icon_path = base_src / "icon_app.png"
         if icon_path.exists():
             pixmap = QtGui.QPixmap(str(icon_path)).scaled(
-                56, 56, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+                56, 56, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation
             )
             icon_label.setPixmap(pixmap)
         icon_label.setFixedSize(56, 56)
@@ -47,7 +47,7 @@ class AboutDialog(QtWidgets.QDialog):
         title_col.setSpacing(4)
 
         title_row = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel("PyScribe")
+        title = QtWidgets.QLabel("CodeLane")
         title.setObjectName("aboutTitle")
         title_row.addWidget(title)
 
@@ -71,7 +71,7 @@ class AboutDialog(QtWidgets.QDialog):
     @staticmethod
     def _create_separator() -> QtWidgets.QFrame:
         line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.HLine)
+        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
         line.setStyleSheet("background: #25303C; max-height: 1px;")
         return line
 
@@ -116,21 +116,21 @@ class AboutDialog(QtWidgets.QDialog):
         btn_row.setSpacing(10)
 
         github_btn = QtWidgets.QPushButton("GitHub Репозиторий")
-        github_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        github_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         github_btn.clicked.connect(
             lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl("https://github.com/stand4r/PyScribe"))
         )
         btn_row.addWidget(github_btn)
 
         issues_btn = QtWidgets.QPushButton("Сообщить об ошибке")
-        issues_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        issues_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         issues_btn.clicked.connect(
             lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl("https://github.com/stand4r/PyScribe/issues"))
         )
         btn_row.addWidget(issues_btn)
 
         update_btn = QtWidgets.QPushButton("Проверить обновления")
-        update_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        update_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         update_btn.setToolTip("Сверить версию с GitHub-релизами и установить обновление")
         update_btn.clicked.connect(self._check_updates)
         btn_row.addWidget(update_btn)
@@ -138,7 +138,7 @@ class AboutDialog(QtWidgets.QDialog):
 
         close_btn = QtWidgets.QPushButton("Закрыть")
         close_btn.setObjectName("primary")
-        close_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        close_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         close_btn.clicked.connect(self.accept)
         close_btn.setMinimumWidth(90)
         btn_row.addWidget(close_btn)

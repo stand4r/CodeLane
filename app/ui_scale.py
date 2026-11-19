@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Iterable, List
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 __all__ = [
     "MIN_SCALE",

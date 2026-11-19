@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 from core.project_tasks import CodeTaskScanner, Task, TaskStore
 from widgets.TodoPanel import CheckCircleButton, StarButton, TaskCardWidget, TodoPanel
 

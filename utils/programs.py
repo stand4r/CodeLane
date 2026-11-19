@@ -5,6 +5,7 @@ from os import path, getlogin, name, environ, remove, makedirs, listdir
 from dataclasses import dataclass, asdict
 from typing import Dict, Any
 import json
+from core.project_state import project_state_file, write_json
 from pathlib import Path
 
 try:
@@ -37,51 +38,67 @@ def _project_session_file(project_path: str) -> Path:
     return sessions_dir / f"proj_{h}.json"
 
 
-def saveSession(files_array: list, project_path: str = None):
+def saveSession(files_array: list, project_path: str = None, *, active=None, cursors=None):
     """Save session files. If project_path is provided, files are stored strictly for that project."""
     clean_files = [str(x) for x in files_array if str(x) and not str(x).startswith("<") and Path(str(x)).exists()]
     clean_files = list(dict.fromkeys(clean_files))
 
     if project_path:
-        target = _project_session_file(project_path)
-        payload = {
-            "project_path": str(Path(project_path).resolve()),
-            "files": clean_files
-        }
-        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        previous = _project_session_file(project_path)
+        target = project_state_file(project_path, "session.json", legacy=previous)
+        root = Path(project_path).resolve()
+
+        def portable(value):
+            path = Path(value)
+            return str(path.relative_to(root)) if path.is_relative_to(root) else value
+
+        payload = {"files": [portable(x) for x in clean_files],
+                   "active": portable(active) if active else None,
+                   "cursors": {portable(key): value for key, value in (cursors or {}).items()}}
+        try:
+            write_json(target, payload)
+        except OSError:
+            write_json(previous, payload)
     else:
-        target = _state_file("session_standalone.json")
-        target.write_text(json.dumps(clean_files, ensure_ascii=False, indent=2), encoding="utf-8")
-        _state_file("session.json").write_text(json.dumps(clean_files, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_json(_state_file("session_standalone.json"), {"files": clean_files, "active": active, "cursors": cursors or {}})
+        write_json(_state_file("session.json"), clean_files)
 
 
 def loadSession(project_path: str = None) -> list:
-    """Load session files. If project_path is provided, only files belonging to that project are returned."""
+    """Load the surviving file paths from a session."""
+    return load_session_state(project_path).get("files", [])
+
+
+def load_session_state(project_path: str = None) -> dict:
+    """Load both the legacy file list and the current editor state format."""
     try:
         if project_path:
-            target = _project_session_file(project_path)
+            previous = _project_session_file(project_path)
+            target = project_state_file(project_path, "session.json", legacy=previous)
             if not target.exists():
-                return []
-            data = json.loads(target.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                files = data.get("files", [])
-            elif isinstance(data, list):
-                files = data
-            else:
-                files = []
-            return [str(x) for x in files if Path(str(x)).exists()]
+                target = previous
         else:
             target = _state_file("session_standalone.json")
-            if not target.exists():
-                target = _state_file("session.json")
-            if not target.exists():
-                return []
-            data = json.loads(target.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                return [str(x) for x in data if Path(str(x)).exists()]
-            return []
+        if not project_path and not target.exists():
+            target = _state_file("session.json")
+        data = json.loads(target.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            data = {"files": data}
+        if not isinstance(data, dict) or not isinstance(data.get("files"), list):
+            return {}
+        files = [(Path(project_path) / x if project_path else Path(x))
+                 for x in data["files"] if isinstance(x, str)]
+        data["files"] = [str(file.resolve()) for file in files if file.is_file()]
+        if project_path:
+            root = Path(project_path)
+            if isinstance(data.get("active"), str):
+                data["active"] = str((root / data["active"]).resolve())
+            if isinstance(data.get("cursors"), dict):
+                data["cursors"] = {str((root / key).resolve()): value
+                                   for key, value in data["cursors"].items()}
+        return data
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return []
+        return {}
 
 
 def saveRecent(recent_files: list):

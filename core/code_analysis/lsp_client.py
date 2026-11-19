@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from core.subprocess_utils import popen_hidden
+
 logger = logging.getLogger(__name__)
 
 
@@ -128,19 +130,14 @@ class LspClient:
         """Spawn the language server process and perform initialization."""
         try:
             cmd = [self.server_path, *self.server_args]
-            creationflags = 0
-            if sys.platform == "win32":
-                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-
             cwd = self.root_path if self.root_path and os.path.isdir(self.root_path) else None
 
-            self._process = subprocess.Popen(
+            self._process = popen_hidden(
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=cwd,
-                creationflags=creationflags,
                 bufsize=0,
             )
 
@@ -203,6 +200,10 @@ class LspClient:
             language_id = language_id_or_text
 
         uri = path_to_uri(file_path)
+        if uri in self._open_documents:
+            if version > self._open_documents[uri]:
+                self.did_change(file_path, text, version)
+            return
         self._open_documents[uri] = version
         params = {
             "textDocument": {
@@ -219,7 +220,12 @@ class LspClient:
         if not self.is_alive or not self._is_initialized:
             return
         uri = path_to_uri(file_path)
+        if uri not in self._open_documents:
+            self.did_open(file_path, text, version=version or 1)
+            return
         ver = version or (self._open_documents.get(uri, 0) + 1)
+        if ver <= self._open_documents[uri]:
+            return
         self._open_documents[uri] = ver
         params = {
             "textDocument": {

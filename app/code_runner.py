@@ -20,7 +20,7 @@ class CodeRunner:
 
         if hasattr(current_editor, 'save_file'):
             if not current_editor.save_file():
-                CustomDialog("Не удалось сохранить файл перед выполнением").exec_()
+                CustomDialog("Не удалось сохранить файл перед выполнением").exec()
                 return
 
         file_path = getattr(current_editor, 'file_path', None)

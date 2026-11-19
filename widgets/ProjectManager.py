@@ -1,5 +1,6 @@
 """PyScribe widgets/ProjectManager.py: application module and reusable component."""
 from core.logging_config import get_logger
+from core.project_state import sync_project_config
 import json
 import os
 from pathlib import Path
@@ -216,6 +217,7 @@ class ProjectManager:
     def update_project_config(self, config: ProjectConfig):
         """Обновление конфигурации проекта"""
         config.root_path = str(Path(config.root_path).resolve())
+        sync_project_config(config, config.root_path, save=True)
         self.projects[self._canonical_path(config.root_path)] = config
         self._deduplicate()
         if self.current_project and str(Path(self.current_project.root_path).resolve()) == config.root_path:

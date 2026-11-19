@@ -1,4 +1,4 @@
-' Silent PyScribe launcher for the source project.
+' Silent CodeLane launcher for the source project.
 ' Uses pythonw.exe so no console window is created.
 Option Explicit
 
@@ -10,12 +10,14 @@ root = fso.GetParentFolderName(WScript.ScriptFullName)
 mainPy = fso.BuildPath(root, "main.py")
 
 pythonw = "pythonw.exe"
-If fso.FileExists(fso.BuildPath(root, "pythonw.exe")) Then
+If fso.FileExists(fso.BuildPath(root, ".venv\Scripts\pythonw.exe")) Then
+    pythonw = fso.BuildPath(root, ".venv\Scripts\pythonw.exe")
+ElseIf fso.FileExists(fso.BuildPath(root, "pythonw.exe")) Then
     pythonw = fso.BuildPath(root, "pythonw.exe")
 End If
 
 If Not fso.FileExists(mainPy) Then
-    MsgBox "PyScribe: main.py не найден." & vbCrLf & mainPy, vbCritical, "PyScribe"
+    MsgBox "CodeLane: main.py не найден." & vbCrLf & mainPy, vbCritical, "CodeLane"
     WScript.Quit 1
 End If
 

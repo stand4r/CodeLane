@@ -5,7 +5,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtWidgets, QtGui
 
 _logger = logging.getLogger("pyscribe-user-actions")
 _logger.propagate = False
@@ -19,16 +19,16 @@ def record_action(action: str):
 
 class _InteractionLog(QtCore.QObject):
     _discrete = {
-        QtCore.QEvent.MouseButtonRelease: "mouse_click",
-        QtCore.QEvent.MouseButtonDblClick: "mouse_double_click",
-        QtCore.QEvent.Shortcut: "shortcut",
-        QtCore.QEvent.Drop: "drop",
-        QtCore.QEvent.TouchEnd: "touch_end",
+        QtCore.QEvent.Type.MouseButtonRelease: "mouse_click",
+        QtCore.QEvent.Type.MouseButtonDblClick: "mouse_double_click",
+        QtCore.QEvent.Type.Shortcut: "shortcut",
+        QtCore.QEvent.Type.Drop: "drop",
+        QtCore.QEvent.Type.TouchEnd: "touch_end",
     }
     _batched = {
-        QtCore.QEvent.KeyPress: "keyboard_input",
-        QtCore.QEvent.InputMethod: "input_method",
-        QtCore.QEvent.Wheel: "scroll",
+        QtCore.QEvent.Type.KeyPress: "keyboard_input",
+        QtCore.QEvent.Type.InputMethod: "input_method",
+        QtCore.QEvent.Type.Wheel: "scroll",
     }
 
     def __init__(self, app):
@@ -48,9 +48,9 @@ class _InteractionLog(QtCore.QObject):
     def eventFilter(self, watched, event):
         kind = event.type()
         action = self._discrete.get(kind) or self._batched.get(kind)
-        if action is None or not isinstance(watched, (QtWidgets.QWidget, QtWidgets.QShortcut)):
+        if action is None or not isinstance(watched, (QtWidgets.QWidget, QtGui.QShortcut)):
             return False
-        if not event.spontaneous() and kind != QtCore.QEvent.Shortcut:
+        if not event.spontaneous() and kind != QtCore.QEvent.Type.Shortcut:
             return False
         target = type(watched).__name__
         if kind in self._batched:

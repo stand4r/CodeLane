@@ -1,7 +1,7 @@
 """Manage installed extensions and their context actions."""
-from PyQt5 import QtCore, QtWidgets
-from PyQt5.QtGui import QDesktopServices
-from PyQt5.QtCore import QUrl
+from PyQt6 import QtCore, QtWidgets
+from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtCore import QUrl
 
 
 class ExtensionsWidget(QtWidgets.QWidget):
@@ -25,7 +25,7 @@ class ExtensionsWidget(QtWidgets.QWidget):
 
         self.list = QtWidgets.QListWidget()
         self.list.setObjectName("extensionsManagerList")
-        self.list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.list.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._context_menu)
         self.list.itemDoubleClicked.connect(lambda item: self._show_details(item))
         root.addWidget(self.list, 1)
@@ -35,32 +35,32 @@ class ExtensionsWidget(QtWidgets.QWidget):
         extensions = self.manager.list_extensions()
         if not extensions:
             item = QtWidgets.QListWidgetItem("Нет установленных расширений")
-            item.setFlags(QtCore.Qt.NoItemFlags)
+            item.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
             self.list.addItem(item)
         else:
             for ext in extensions:
                 item = QtWidgets.QListWidgetItem(f"{ext.get('name', ext.get('id', 'Extension'))}  ·  {ext.get('version', '')}")
-                item.setData(QtCore.Qt.UserRole, ext.get("id"))
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, ext.get("id"))
                 item.setToolTip(ext.get("id", ""))
                 self.list.addItem(item)
         for ext_id, error in self.manager.errors.items():
             item = QtWidgets.QListWidgetItem(f"{ext_id}  ·  ошибка загрузки")
-            item.setData(QtCore.Qt.UserRole, ext_id)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, ext_id)
             item.setToolTip(error)
             self.list.addItem(item)
 
     def _context_menu(self, pos):
         item = self.list.itemAt(pos)
         menu = QtWidgets.QMenu(self)
-        if item and item.data(QtCore.Qt.UserRole):
-            ext_id = item.data(QtCore.Qt.UserRole)
+        if item and item.data(QtCore.Qt.ItemDataRole.UserRole):
+            ext_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
             menu.addAction("Сведения", lambda: self._show_details(item))
             menu.addSeparator()
             menu.addAction("Открыть папку расширения", lambda: self._open_extension_folder(ext_id))
             menu.addAction("Перезагрузить расширения", self._reload_extensions)
         else:
             menu.addAction("Обновить", self.refresh)
-        menu.exec_(self.list.viewport().mapToGlobal(pos))
+        menu.exec(self.list.viewport().mapToGlobal(pos))
 
     def _reload_extensions(self):
         root = getattr(self.manager.context, "root_path", None)
@@ -78,7 +78,7 @@ class ExtensionsWidget(QtWidgets.QWidget):
                 return
 
     def _show_details(self, item):
-        ext_id = item.data(QtCore.Qt.UserRole)
+        ext_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
         manifest = self.manager.manifests.get(ext_id, {})
         text = "\n".join(f"{k}: {v}" for k, v in manifest.items()) or "Нет данных"
         QtWidgets.QMessageBox.information(self, "Расширение", text)

@@ -31,7 +31,7 @@ class FileManager:
         try:
             file_path_obj = Path(file_path)
             if not file_path_obj.is_file():
-                CustomDialog(f"Файл не найден: {file_path}").exec_()
+                CustomDialog(f"Файл не найден: {file_path}").exec()
                 return
 
             path_str = str(file_path_obj.resolve())
@@ -68,7 +68,7 @@ class FileManager:
             self._register_file_open(path_str)
 
         except Exception as e:
-            CustomDialog(f"Ошибка открытия файла: {str(e)}").exec_()
+            CustomDialog(f"Ошибка открытия файла: {str(e)}").exec()
 
     def _open_plain_text_fallback(self, content: str, path_str: str):
         """Last-resort viewer when the rich editor could not be constructed."""
@@ -104,7 +104,7 @@ class FileManager:
             idx = self._find_in_group(group, path_str)
             if idx is not None:
                 group.setCurrentIndex(idx)
-                self.main_window.active_tab_widget = group
+                self.main_window._set_active_group(group)
                 return True
         return False
 
@@ -113,7 +113,8 @@ class FileManager:
         if suffix in self.BINARY_EXTENSIONS:
             return True
         try:
-            sample = file_path_obj.read_bytes()[:8192]
+            with file_path_obj.open("rb") as source:
+                sample = source.read(8192)
             return b"\x00" in sample
         except OSError:
             return False
@@ -160,7 +161,7 @@ class FileManager:
             self._register_file_open(path_str)
             self.app_manager.logger.info("Opened table file: %s", file_path)
         except Exception as e:
-            CustomDialog(f"Ошибка открытия таблицы: {str(e)}").exec_()
+            CustomDialog(f"Ошибка открытия таблицы: {str(e)}").exec()
 
     def _find_table_in_group(self, group, path_str: str, cls):
         for i in range(group.count()):
@@ -175,7 +176,7 @@ class FileManager:
             idx = self._find_table_in_group(group, path_str, TableViewerWidget)
             if idx is not None:
                 group.setCurrentIndex(idx)
-                self.main_window.active_tab_widget = group
+                self.main_window._set_active_group(group)
                 return True
         return False
 
@@ -196,7 +197,7 @@ class FileManager:
                     w = group.widget(i)
                     if isinstance(w, HexViewer) and getattr(w, "file_path", None) == Path(path_str):
                         group.setCurrentIndex(i)
-                        self.main_window.active_tab_widget = group
+                        self.main_window._set_active_group(group)
                         return
 
             viewer = HexViewer(self.main_window)
@@ -208,7 +209,7 @@ class FileManager:
             self.main_window.active_tab_widget.setCurrentIndex(tab_index)
             self._register_file_open(path_str)
         except Exception as e:
-            CustomDialog(f"Ошибка открытия HEX: {str(e)}").exec_()
+            CustomDialog(f"Ошибка открытия HEX: {str(e)}").exec()
 
     def open_recent_file(self, file_path: str):
         self.open_file(file_path)
@@ -301,7 +302,7 @@ class FileManager:
             idx = self._find_markdown_in_group(group, path_str, MarkdownViewerWidget)
             if idx is not None:
                 group.setCurrentIndex(idx)
-                self.main_window.active_tab_widget = group
+                self.main_window._set_active_group(group)
                 viewer = group.widget(idx)
                 if source is not None:
                     viewer.bind_source(source)
@@ -337,6 +338,6 @@ class FileManager:
             idx = self._find_text_in_group(group, path_str)
             if idx is not None:
                 group.setCurrentIndex(idx)
-                self.main_window.active_tab_widget = group
+                self.main_window._set_active_group(group)
                 return True
         return False

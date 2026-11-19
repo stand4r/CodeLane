@@ -18,7 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict
 
-from PyQt5 import QtCore, QtGui, QtSvg, QtWidgets
+from PyQt6 import QtCore, QtGui, QtSvg, QtWidgets
 
 __all__ = [
     "CODICONS",
@@ -135,7 +135,7 @@ def codicon_font(pixel_size: int = 16) -> QtGui.QFont:
     family = _ensure_font()
     font = QtGui.QFont(family)
     font.setPixelSize(int(pixel_size))
-    font.setStyleStrategy(QtGui.QFont.PreferAntialias)
+    font.setStyleStrategy(QtGui.QFont.StyleStrategy.PreferAntialias)
     return font
 
 
@@ -152,10 +152,10 @@ def ai_icon(size: int = 16, color: str = "#868686", accent: str = "") -> QtGui.Q
 
     for scale in (1, 2):
         px = size * scale
-        image = QtGui.QImage(px, px, QtGui.QImage.Format_ARGB32)
-        image.fill(QtCore.Qt.transparent)
+        image = QtGui.QImage(px, px, QtGui.QImage.Format.Format_ARGB32)
+        image.fill(QtCore.Qt.GlobalColor.transparent)
         painter = QtGui.QPainter(image)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
 
         def spark(cx, cy, radius, inner, col, alpha=255):
             """A four-pointed star with concave sides (the classic AI spark)."""
@@ -177,7 +177,7 @@ def ai_icon(size: int = 16, color: str = "#868686", accent: str = "") -> QtGui.Q
                 ey = cy + math.sin(math.radians(angle_to)) * r_to
                 path.quadTo(mx, my, ex, ey)
             path.closeSubpath()
-            painter.setPen(QtCore.Qt.NoPen)
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
             c = QtGui.QColor(col)
             c.setAlpha(alpha)
             painter.setBrush(c)
@@ -205,16 +205,16 @@ def codicon_icon(name: str, size: int = 16, color: str = "#CCCCCC") -> QtGui.QIc
     font = codicon_font(size)
     for scale in (1, 2):
         px = size * scale
-        image = QtGui.QImage(px, px, QtGui.QImage.Format_ARGB32)
-        image.fill(QtCore.Qt.transparent)
+        image = QtGui.QImage(px, px, QtGui.QImage.Format.Format_ARGB32)
+        image.fill(QtCore.Qt.GlobalColor.transparent)
         painter = QtGui.QPainter(image)
-        painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
         f = QtGui.QFont(font)
         f.setPixelSize(int(size * scale * 0.94))
         painter.setFont(f)
         painter.setPen(QtGui.QColor(color))
-        painter.drawText(QtCore.QRect(0, 0, px, px), QtCore.Qt.AlignCenter, char)
+        painter.drawText(QtCore.QRect(0, 0, px, px), QtCore.Qt.AlignmentFlag.AlignCenter, char)
         painter.end()
         if scale == 2:
             image.setDevicePixelRatio(2.0)
@@ -231,8 +231,8 @@ def codicon_label(name: str, size: int = 16, color: str = "#CCCCCC", parent=None
     label = QtWidgets.QLabel(codicon_char(name), parent)
     label.setFont(codicon_font(size))
     label.setStyleSheet(f"background: transparent; border: none; color: {color};")
-    label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-    label.setAlignment(QtCore.Qt.AlignCenter)
+    label.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+    label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
     label.setFixedSize(size + 4, size + 4)
     return label
 
@@ -321,16 +321,28 @@ class _LineIconEngine(QtGui.QIconEngine):
     def paint(self, painter, rect, mode, state):
         color = self.color or QtWidgets.QApplication.palette().buttonText().color().name()
         painter.save()
-        if mode == QtGui.QIcon.Disabled:
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
+        if mode == QtGui.QIcon.Mode.Disabled:
             painter.setOpacity(painter.opacity() * 0.42)
         _line_renderer(self.name, color).render(painter, QtCore.QRectF(rect))
         painter.restore()
 
     def pixmap(self, size, mode, state):
         pixmap = QtGui.QPixmap(size)
-        pixmap.fill(QtCore.Qt.transparent)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
         painter = QtGui.QPainter(pixmap)
         self.paint(painter, pixmap.rect(), mode, state)
+        painter.end()
+        return pixmap
+
+    def scaledPixmap(self, size, mode, state, scale):
+        pixmap = QtGui.QPixmap(size)
+        pixmap.setDevicePixelRatio(scale)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(pixmap)
+        rect = QtCore.QRectF(0, 0, size.width() / scale, size.height() / scale)
+        self.paint(painter, rect, mode, state)
         painter.end()
         return pixmap
 
@@ -343,6 +355,6 @@ def line_icon(name, color=None):
 def set_line_icon(control, name, size=16):
     control.setIcon(line_icon(name))
     if isinstance(control, QtWidgets.QToolButton) and control.text():
-        control.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        control.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
     if hasattr(control, "setIconSize"):
         control.setIconSize(QtCore.QSize(size, size))

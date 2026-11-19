@@ -1,5 +1,5 @@
 """PyScribe widgets/DialogSave.py: application module and reusable component."""
-from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QLabel
 
 
 class CustomDialogSave(QDialog):
@@ -8,13 +8,13 @@ class CustomDialogSave(QDialog):
 
         self.setWindowTitle("Сохранение файлов")
 
-        QBtn = QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        QBtn = QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
 
         self.buttonBox = QDialogButtonBox(QBtn)
-        ok_btn = self.buttonBox.button(QDialogButtonBox.Ok)
+        ok_btn = self.buttonBox.button(QDialogButtonBox.StandardButton.Ok)
         if ok_btn:
             ok_btn.setText("Сохранить")
-        cancel_btn = self.buttonBox.button(QDialogButtonBox.Cancel)
+        cancel_btn = self.buttonBox.button(QDialogButtonBox.StandardButton.Cancel)
         if cancel_btn:
             cancel_btn.setText("Отмена")
 

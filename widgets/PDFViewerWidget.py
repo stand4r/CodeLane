@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Tuple
 
 import fitz
 from design.icons import set_line_icon
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 __all__ = ["PDFViewerWidget"]
 
@@ -80,13 +80,13 @@ class _PdfRenderTask(QtCore.QRunnable):
             if hits or self.invert_colors:
                 image = QtGui.QImage(pixmap.samples, pixmap.width, pixmap.height,
                                      pixmap.stride,
-                                     QtGui.QImage.Format_RGB888).copy()
+                                     QtGui.QImage.Format.Format_RGB888).copy()
                 if self.invert_colors:
                     image.invertPixels()
                 if hits:
                     painter = QtGui.QPainter(image)
-                    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-                    painter.setPen(QtCore.Qt.NoPen)
+                    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+                    painter.setPen(QtCore.Qt.PenStyle.NoPen)
                     painter.setBrush(QtGui.QColor(255, 214, 0, 95))
                     for rect_hit in hits:
                         mapped = rect_hit * matrix
@@ -94,7 +94,7 @@ class _PdfRenderTask(QtCore.QRunnable):
                             mapped.x0, mapped.y0, mapped.width, mapped.height))
                     painter.end()
                 buffer = QtCore.QBuffer()
-                buffer.open(QtCore.QIODevice.WriteOnly)
+                buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
                 image.save(buffer, "PNG")
                 payload = bytes(buffer.data())
             else:
@@ -200,7 +200,7 @@ class PDFViewerWidget(QtWidgets.QWidget):
 
         self.setObjectName("pdfViewer")
         self._build()
-        self.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
 
     # ------------------------------------------------------------------
     # UI
@@ -275,7 +275,7 @@ class PDFViewerWidget(QtWidgets.QWidget):
         root.setSpacing(0)
         root.addWidget(self._build_toolbar())
 
-        self.body_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.body_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.body_splitter.setObjectName("pdfSplitter")
 
         # Outline Sidebar (Bookmarks)
@@ -300,15 +300,15 @@ class PDFViewerWidget(QtWidgets.QWidget):
         self.scroll = QtWidgets.QScrollArea()
         self.scroll.setObjectName("pdfScroll")
         self.scroll.setWidgetResizable(True)
-        self.scroll.setAlignment(QtCore.Qt.AlignCenter)
-        self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.scroll.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.scroll.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.scroll.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.scroll.viewport().installEventFilter(self)
 
         self.canvas = QtWidgets.QWidget()
         self.canvas.setObjectName("pdfCanvas")
-        self.canvas.setFocusPolicy(QtCore.Qt.NoFocus)
-        self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.canvas.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.canvas.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._show_context_menu)
 
         self.canvas_layout = QtWidgets.QVBoxLayout(self.canvas)
@@ -319,13 +319,13 @@ class PDFViewerWidget(QtWidgets.QWidget):
 
         self.pdf_label = QtWidgets.QLabel("Открытие PDF…")
         self.pdf_label.setObjectName("pdfPage")
-        self.pdf_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.pdf_label.setFocusPolicy(QtCore.Qt.NoFocus)
-        self.pdf_label.setTextInteractionFlags(QtCore.Qt.NoTextInteraction)
-        self.pdf_label.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.pdf_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.pdf_label.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.pdf_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.NoTextInteraction)
+        self.pdf_label.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.pdf_label.customContextMenuRequested.connect(self._show_context_menu)
 
-        self.canvas_layout.addWidget(self.pdf_label, 0, QtCore.Qt.AlignCenter)
+        self.canvas_layout.addWidget(self.pdf_label, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
         self.canvas_layout.addStretch(1)
 
         shadow = QtWidgets.QGraphicsDropShadowEffect(self.pdf_label)
@@ -376,7 +376,7 @@ class PDFViewerWidget(QtWidgets.QWidget):
         self.page_spin.setObjectName("pdfPageSpin")
         self.page_spin.setRange(1, 1)
         self.page_spin.setFixedWidth(58)
-        self.page_spin.setAlignment(QtCore.Qt.AlignCenter)
+        self.page_spin.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.page_spin.setKeyboardTracking(False)
         self.page_spin.valueChanged.connect(lambda value: self.goto_page(value - 1))
         row.addWidget(self.page_spin)
@@ -465,8 +465,8 @@ class PDFViewerWidget(QtWidgets.QWidget):
         set_line_icon(button, icon)
         button.setAccessibleName(tooltip)
         button.setToolTip(tooltip)
-        button.setCursor(QtCore.Qt.PointingHandCursor)
-        button.setFocusPolicy(QtCore.Qt.NoFocus)
+        button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         button.setAutoRaise(True)
         button.setMinimumWidth(28)
         return button
@@ -475,7 +475,7 @@ class PDFViewerWidget(QtWidgets.QWidget):
     def _separator() -> QtWidgets.QFrame:
         line = QtWidgets.QFrame()
         line.setObjectName("pdfSeparator")
-        line.setFrameShape(QtWidgets.QFrame.VLine)
+        line.setFrameShape(QtWidgets.QFrame.Shape.VLine)
         line.setFixedWidth(9)
         return line
 
@@ -502,7 +502,7 @@ class PDFViewerWidget(QtWidgets.QWidget):
                 pwd, ok = QtWidgets.QInputDialog.getText(
                     self, "PDF защищён паролем",
                     "Введите пароль для открытия документа:",
-                    QtWidgets.QLineEdit.Password
+                    QtWidgets.QLineEdit.EchoMode.Password
                 )
                 if not ok:
                     self.pdf_label.setText("Документ защищён паролем")
@@ -582,7 +582,7 @@ class PDFViewerWidget(QtWidgets.QWidget):
             page = item[2]
             parent = stack.get(level - 1, self.outline_tree.invisibleRootItem())
             tree_item = QtWidgets.QTreeWidgetItem(parent, [title])
-            tree_item.setData(0, QtCore.Qt.UserRole, max(0, page - 1))
+            tree_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, max(0, page - 1))
             tree_item.setToolTip(0, f"{title} (стр. {page})")
             stack[level] = tree_item
 
@@ -592,7 +592,7 @@ class PDFViewerWidget(QtWidgets.QWidget):
         self.outline_panel.setVisible(visible)
 
     def _on_outline_item_clicked(self, item: QtWidgets.QTreeWidgetItem, _column: int):
-        target_page = item.data(0, QtCore.Qt.UserRole)
+        target_page = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if target_page is not None:
             self.goto_page(int(target_page))
 
@@ -966,7 +966,7 @@ class PDFViewerWidget(QtWidgets.QWidget):
         b_layout.addWidget(close_btn)
         d_layout.addLayout(b_layout)
 
-        dialog.exec_()
+        dialog.exec()
 
     def copy_page_text(self):
         if not self.current_file_path or self.total_pages <= 0:
@@ -1013,7 +1013,7 @@ class PDFViewerWidget(QtWidgets.QWidget):
         act_fit_w.triggered.connect(lambda: self.set_fit("width"))
         act_fit_p = menu.addAction("Вся страница (Ctrl+0)")
         act_fit_p.triggered.connect(lambda: self.set_fit("page"))
-        menu.exec_(self.canvas.mapToGlobal(pos))
+        menu.exec(self.canvas.mapToGlobal(pos))
 
     # ------------------------------------------------------------------
     # Interaction
@@ -1021,32 +1021,32 @@ class PDFViewerWidget(QtWidgets.QWidget):
     def eventFilter(self, obj, event):
         if obj in (self.scroll.viewport(), self.canvas, self.pdf_label):
             kind = event.type()
-            if kind == QtCore.QEvent.Wheel and event.modifiers() & QtCore.Qt.ControlModifier:
+            if kind == QtCore.QEvent.Type.Wheel and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
                 self._step_zoom(1 if event.angleDelta().y() > 0 else -1)
                 return True
-            if kind == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
+            if kind == QtCore.QEvent.Type.MouseButtonPress and event.button() == QtCore.Qt.MouseButton.LeftButton:
                 if self._can_pan():
-                    self._drag_origin = event.globalPos()
+                    self._drag_origin = event.globalPosition().toPoint()
                     self._pan_widget = obj
                     self._drag_scroll = (self.scroll.horizontalScrollBar().value(),
                                          self.scroll.verticalScrollBar().value())
-                    obj.setCursor(QtCore.Qt.ClosedHandCursor)
+                    obj.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
                     return True
-            elif kind == QtCore.QEvent.MouseMove and self._drag_origin is not None:
-                delta = event.globalPos() - self._drag_origin
+            elif kind == QtCore.QEvent.Type.MouseMove and self._drag_origin is not None:
+                delta = event.globalPosition().toPoint() - self._drag_origin
                 hbar = self.scroll.horizontalScrollBar()
                 vbar = self.scroll.verticalScrollBar()
                 hbar.setValue(self._drag_scroll[0] - delta.x())
                 vbar.setValue(self._drag_scroll[1] - delta.y())
                 return True
-            elif kind == QtCore.QEvent.MouseButtonRelease and self._drag_origin is not None:
+            elif kind == QtCore.QEvent.Type.MouseButtonRelease and self._drag_origin is not None:
                 self._drag_origin = None
                 self._drag_scroll = None
                 if self._pan_widget is not None:
                     self._pan_widget.unsetCursor()
                     self._pan_widget = None
                 return True
-            elif kind == QtCore.QEvent.MouseButtonDblClick:
+            elif kind == QtCore.QEvent.Type.MouseButtonDblClick:
                 self.set_fit("page" if self._fit_mode == "width" else "width")
                 return True
         return super().eventFilter(obj, event)
@@ -1058,39 +1058,39 @@ class PDFViewerWidget(QtWidgets.QWidget):
     def keyPressEvent(self, event):
         key = event.key()
         modifiers = event.modifiers()
-        if modifiers & QtCore.Qt.ControlModifier:
-            if key in (QtCore.Qt.Key_Plus, QtCore.Qt.Key_Equal):
+        if modifiers & QtCore.Qt.KeyboardModifier.ControlModifier:
+            if key in (QtCore.Qt.Key.Key_Plus, QtCore.Qt.Key.Key_Equal):
                 self.zoom_in()
                 return
-            if key == QtCore.Qt.Key_Minus:
+            if key == QtCore.Qt.Key.Key_Minus:
                 self.zoom_out()
                 return
-            if key == QtCore.Qt.Key_0:
+            if key == QtCore.Qt.Key.Key_0:
                 self.set_fit("page")
                 return
-            if key == QtCore.Qt.Key_1:
+            if key == QtCore.Qt.Key.Key_1:
                 self.set_fit("width")
                 return
-            if key == QtCore.Qt.Key_R:
+            if key == QtCore.Qt.Key.Key_R:
                 self.rotate_page()
                 return
-            if key == QtCore.Qt.Key_F:
+            if key == QtCore.Qt.Key.Key_F:
                 self.search_edit.setFocus()
                 self.search_edit.selectAll()
                 return
-            if key == QtCore.Qt.Key_G:
+            if key == QtCore.Qt.Key.Key_G:
                 self.prompt_goto_page()
                 return
-        if key == QtCore.Qt.Key_PageDown:
+        if key == QtCore.Qt.Key.Key_PageDown:
             self.next_page()
             return
-        if key == QtCore.Qt.Key_PageUp:
+        if key == QtCore.Qt.Key.Key_PageUp:
             self.previous_page()
             return
-        if key == QtCore.Qt.Key_Home:
+        if key == QtCore.Qt.Key.Key_Home:
             self.first_page()
             return
-        if key == QtCore.Qt.Key_End:
+        if key == QtCore.Qt.Key.Key_End:
             self.last_page()
             return
         super().keyPressEvent(event)
@@ -1107,7 +1107,7 @@ class PDFViewerWidget(QtWidgets.QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.setFocus(QtCore.Qt.OtherFocusReason)
+        self.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
         if self.current_file_path and self._fit_mode:
             self._fit_timer.start()
 

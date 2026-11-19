@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import openpyxl
-from PyQt5 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 from widgets.TableViewerWidget import TableViewerWidget, TableViewModel, TableSortFilterProxy, _parse_number
 
 _APP = None
@@ -52,13 +52,13 @@ def test_table_view_model_sorting():
 
     # Sort age column (index 1) ascending
     # With numeric-aware sorting, 9 must come before 25 and 100!
-    proxy.sort(1, QtCore.Qt.AscendingOrder)
+    proxy.sort(1, QtCore.Qt.SortOrder.AscendingOrder)
     assert proxy.data(proxy.index(0, 1)) == "9"
     assert proxy.data(proxy.index(1, 1)) == "25"
     assert proxy.data(proxy.index(2, 1)) == "100"
 
     # Sort descending
-    proxy.sort(1, QtCore.Qt.DescendingOrder)
+    proxy.sort(1, QtCore.Qt.SortOrder.DescendingOrder)
     assert proxy.data(proxy.index(0, 1)) == "100"
     assert proxy.data(proxy.index(1, 1)) == "25"
     assert proxy.data(proxy.index(2, 1)) == "9"

@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 import pytest
-from PyQt5 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 from core.code_analysis.lsp_client import LspClient, LspDiagnostic, LspLocation, path_to_uri, uri_to_path
 from core.code_analysis.openapi_bridge import OpenApiBridge, paths_match

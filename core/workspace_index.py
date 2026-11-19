@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
-SKIP_DIRS = {".git", ".hg", ".svn", "__pycache__", ".venv", "venv", "env", "node_modules", "dist", "build", ".idea", ".vscode"}
+SKIP_DIRS = {".git", ".hg", ".svn", "__pycache__", ".venv", "venv", "env", "node_modules", "dist", "build", ".idea", ".vscode", ".pyscribe", ".codelane"}
 SOURCE_EXTENSIONS = {".py", ".pyw", ".js", ".jsx", ".ts", ".tsx", ".java", ".c", ".h", ".cpp", ".hpp", ".cs", ".go", ".rs", ".php", ".rb", ".kt", ".swift", ".css", ".html"}
 
 # Completion only needs declaration names. Parsing a generated 15k-line module

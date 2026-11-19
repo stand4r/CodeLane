@@ -1,4 +1,4 @@
-"""GitHub integration and authentication service for PyScribe."""
+"""GitHub integration and authentication service for CodeLane."""
 import json
 import os
 import re
@@ -75,7 +75,7 @@ class GitHubService:
             headers={
                 "Authorization": f"token {token}",
                 "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "PyScribe-IDE-Client"
+                "User-Agent": "CodeLane-IDE-Client"
             }
         )
 
@@ -119,7 +119,7 @@ class GitHubService:
             headers={
                 "Authorization": f"token {token}",
                 "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "PyScribe-IDE-Client"
+                "User-Agent": "CodeLane-IDE-Client"
             }
         )
 
@@ -169,7 +169,7 @@ class GitHubService:
                 "Authorization": f"token {token}",
                 "Content-Type": "application/json",
                 "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "PyScribe-IDE-Client"
+                "User-Agent": "CodeLane-IDE-Client"
             },
             method="POST"
         )

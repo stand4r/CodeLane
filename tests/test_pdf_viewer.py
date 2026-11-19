@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import fitz  # noqa: E402
-from PyQt5 import QtWidgets  # noqa: E402
+from PyQt6 import QtWidgets  # noqa: E402
 
 _APP = None
 

@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PyQt5.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication
 
 # Ensure offscreen Qt environment for headless tests
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -109,7 +109,7 @@ def test_ui_titlebar_facade():
 def test_workbench_scale_uses_logical_screen_size():
     from types import SimpleNamespace
 
-    from PyQt5.QtCore import QRect
+    from PyQt6.QtCore import QRect
     from app.ui_scale import effective_scale
 
     def screen(width, height):

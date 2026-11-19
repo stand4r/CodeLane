@@ -1,7 +1,7 @@
 """PyScribe widgets/RunDebugPanel.py: application module and reusable component."""
 from pathlib import Path
 from design.icons import set_line_icon
-from PyQt5 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 
 class _LazyTargetCombo(QtWidgets.QComboBox):
@@ -123,7 +123,7 @@ class RunDebugPanel(QtWidgets.QWidget):
             self.target.addItems([label for label, _ in labels])
             base = 1 if current_label else 0
             for offset, (_, value) in enumerate(labels):
-                self.target.setItemData(base + offset, value, QtCore.Qt.UserRole)
+                self.target.setItemData(base + offset, value, QtCore.Qt.ItemDataRole.UserRole)
         self.target.blockSignals(False)
 
     def _update_state(self):

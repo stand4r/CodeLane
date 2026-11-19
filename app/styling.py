@@ -1,12 +1,12 @@
-"""PyScribe application styling and visual design system integration."""
+"""CodeLane application styling and visual design system integration."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QFont, QIcon, QPalette
-from PyQt5.QtWidgets import QApplication
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QFont, QIcon, QPalette
+from PyQt6.QtWidgets import QApplication
 
 from core.logging_config import get_logger
 from design.themes import THEMES
@@ -19,11 +19,10 @@ logger = get_logger("styling")
 # the whole interface looked horizontally squeezed. The list is ordered by
 # preference and the first installed family wins; a Settings choice overrides it.
 UI_FONT_CANDIDATES = (
-    "Candara",
-    "Corbel",
     "Segoe UI Variable Text",
     "Inter",
     "Segoe UI",
+    "Corbel",
     "Arial",
 )
 # Kept selectable, but last: its condensed default needs an explicit warning.
@@ -90,16 +89,17 @@ def ui_font_family() -> str:
 def ui_qfont(point_size: int = 9, weight=None, bold: bool = False) -> QFont:
     """Interface font as a configured ``QFont``."""
     font = QFont(ui_font_family(), int(point_size))
-    font.setStyleStrategy(QFont.PreferAntialias)
+    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     if bold:
         font.setBold(True)
     elif weight is not None:
-        font.setWeight(int(weight))
+        font.setWeight(weight)
     return font
 
 
 def _set_windows_app_identity():
-    """Give Windows a stable AppUserModelID so the taskbar uses PyScribe identity.
+    """Give Windows a stable AppUserModelID so the taskbar uses CodeLane identity.
 
     When running from Python, Windows can otherwise group the window under the
     Python/Qt host and display the generic Python icon.
@@ -116,7 +116,7 @@ def _set_windows_app_identity():
 
 
 def _load_design_qss(base_path: Path) -> str:
-    """Load the single source of truth for the PyScribe visual system."""
+    """Load the single source of truth for the CodeLane visual system."""
     qss_path = base_path / "design" / "theme.qss"
     try:
         qss = qss_path.read_text(encoding="utf-8")
@@ -162,6 +162,8 @@ def _load_design_qss(base_path: Path) -> str:
             "@markdown_paper@": tint(0.075),
             "@markdown_text@": tint(0.83),
             "@glass_focus@": colors.get("accent_color", "#0078D4"),
+            "@soft_border@": tint(0.10),
+            "@muted_text@": colors.get("text_secondary", "#9DAEC1"),
         }
         for token, value in glass_tokens.items():
             qss = qss.replace(token, value)
@@ -171,7 +173,7 @@ def _load_design_qss(base_path: Path) -> str:
         qss = qss.replace("@mono_font@", resolve_mono_font())
         return qss
     except OSError as exc:
-        logger.exception("PyScribe operation failed")
+        logger.exception("CodeLane operation failed")
         return ""
 
 
@@ -244,17 +246,17 @@ def setup_application_style(app: QApplication, base_path: Path):
     preset = THEMES.get(str(settings.get("theme", "dark")), THEMES["dark"])
     colors = {k: settings.get(k, v) for k, v in preset.items()}
     palette = QPalette()
-    palette.setColor(QPalette.Window, QColor(colors["app_background"]))
-    palette.setColor(QPalette.WindowText, QColor(colors["text_primary"]))
-    palette.setColor(QPalette.Base, QColor(colors["editor_background"]))
-    palette.setColor(QPalette.AlternateBase, QColor(colors["panel_background"]))
-    palette.setColor(QPalette.ToolTipBase, QColor(colors["input_background"]))
-    palette.setColor(QPalette.ToolTipText, QColor(colors["text_primary"]))
-    palette.setColor(QPalette.Text, QColor(colors["text_primary"]))
-    palette.setColor(QPalette.Button, QColor(colors["input_background"]))
-    palette.setColor(QPalette.ButtonText, QColor(colors["text_primary"]))
-    palette.setColor(QPalette.Highlight, QColor(colors["selection_background"]))
-    palette.setColor(QPalette.HighlightedText, QColor(colors["text_primary"]))
+    palette.setColor(QPalette.ColorRole.Window, QColor(colors["app_background"]))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(colors["text_primary"]))
+    palette.setColor(QPalette.ColorRole.Base, QColor(colors["editor_background"]))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(colors["panel_background"]))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(colors["input_background"]))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor(colors["text_primary"]))
+    palette.setColor(QPalette.ColorRole.Text, QColor(colors["text_primary"]))
+    palette.setColor(QPalette.ColorRole.Button, QColor(colors["input_background"]))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(colors["text_primary"]))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(colors["selection_background"]))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(colors["text_primary"]))
     app.setPalette(palette)
     app.setStyleSheet(_load_design_qss(base_path))
     app._pyscribe_design_filter = _DesignSystemEventFilter(app)
@@ -271,7 +273,7 @@ def setup_application_style(app: QApplication, base_path: Path):
 
 
 def _set_windows_app_id(icon_path=None):
-    """Group PyScribe under its own taskbar button on Windows.
+    """Group CodeLane under its own taskbar button on Windows.
 
     Without an explicit AppUserModelID, Windows attributes the window to
     ``python.exe``/the launcher and shows *their* icon in the taskbar, even

@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from core.code_analysis.treesitter_pack import pack_language, parse_pack_root
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -59,6 +61,14 @@ class TreeSitterEngine:
     def __init__(self):
         self._parsers: Dict[str, Any] = {}
         self._languages: Dict[str, Any] = {}
+        self._pack_parsers: Dict[str, Any] = {}
+
+    def _parse_from_pack(self, lang_id: str, source: str):
+        from tree_sitter_language_pack import get_parser
+
+        if lang_id not in self._pack_parsers:
+            self._pack_parsers[lang_id] = get_parser(pack_language(lang_id))
+        return parse_pack_root(self._pack_parsers[lang_id], source)
 
     def _get_parser(self, lang_id: str) -> Optional[Any]:
         if not TREE_SITTER_AVAILABLE:
@@ -136,13 +146,15 @@ class TreeSitterEngine:
                 for name, line, col in labels
             ], imports)
         parser = self._get_parser(lang_id)
-        if parser is None:
+        if parser is None and lang_id not in {
+            "python", "javascript", "typescript", "tsx", "jsx", "c", "cpp",
+            "c_sharp", "csharp", "cs", "java", "go", "rust", "json",
+        }:
             return self._fallback_parse(code, lang_id, file_path)
-
         try:
             source_bytes = code.encode("utf-8", errors="replace")
-            tree = parser.parse(source_bytes)
-            root = tree.root_node
+            root = (parser.parse(source_bytes).root_node if parser is not None
+                    else self._parse_from_pack(lang_id, source_bytes.decode("utf-8")))
 
             result = SyntaxParseResult(lang_id=lang_id, is_tree_sitter=True)
             self._walk_node(root, source_bytes, result, file_path=file_path, parent_name=None)

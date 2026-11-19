@@ -13,8 +13,8 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import QPoint, QRect, QSize, Qt, pyqtSignal, pyqtSlot
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtCore import QPoint, QRect, QSize, Qt, pyqtSignal, pyqtSlot
 
 from core.project_tasks import PRIORITIES, STATUSES, Task, TaskStore
 from design.icons import line_icon, set_line_icon
@@ -38,7 +38,7 @@ class CheckCircleButton(QtWidgets.QAbstractButton):
         self.setCheckable(True)
         self.setChecked(checked)
         self.setFixedSize(28, 28)
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._hovered = False
 
     def enterEvent(self, event):
@@ -53,18 +53,18 @@ class CheckCircleButton(QtWidgets.QAbstractButton):
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
 
         rect = self.rect().adjusted(5, 5, -5, -5)
 
         if self.isChecked():
             # Filled circle (Fluent Blue)
-            painter.setPen(Qt.NoPen)
+            painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QtGui.QColor("#0078D4"))
             painter.drawEllipse(rect)
 
             # White checkmark
-            painter.setPen(QtGui.QPen(QtGui.QColor("#FFFFFF"), 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.setPen(QtGui.QPen(QtGui.QColor("#FFFFFF"), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
             x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
             p1 = QtCore.QPointF(x + w * 0.28, y + h * 0.52)
             p2 = QtCore.QPointF(x + w * 0.45, y + h * 0.70)
@@ -83,7 +83,7 @@ class CheckCircleButton(QtWidgets.QAbstractButton):
 
             # Faint check on hover
             if self._hovered:
-                painter.setPen(QtGui.QPen(QtGui.QColor("#0078D4"), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                painter.setPen(QtGui.QPen(QtGui.QColor("#0078D4"), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
                 x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
                 p1 = QtCore.QPointF(x + w * 0.28, y + h * 0.52)
                 p2 = QtCore.QPointF(x + w * 0.45, y + h * 0.70)
@@ -104,7 +104,7 @@ class StarButton(QtWidgets.QAbstractButton):
         self.setCheckable(True)
         self.setChecked(starred)
         self.setFixedSize(28, 28)
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("Отметить как важную задачу" if not starred else "Снять отметку важности")
         self._hovered = False
 
@@ -120,7 +120,7 @@ class StarButton(QtWidgets.QAbstractButton):
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
 
         rect = self.rect().adjusted(5, 5, -5, -5)
         cx = rect.center().x()
@@ -148,7 +148,7 @@ class StarButton(QtWidgets.QAbstractButton):
         else:
             color = QtGui.QColor("#FFB900" if self._hovered else "#6E7681")
             painter.setPen(QtGui.QPen(color, 1.4))
-            painter.setBrush(QtGui.QColor(255, 185, 0, 35) if self._hovered else Qt.NoBrush)
+            painter.setBrush(QtGui.QColor(255, 185, 0, 35) if self._hovered else Qt.BrushStyle.NoBrush)
             painter.drawPolygon(poly)
 
 
@@ -168,7 +168,7 @@ class TaskCardWidget(QtWidgets.QFrame):
         super().__init__(parent)
         self.task = task
         self.setObjectName("taskCard")
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._build_ui()
         self._apply_style()
 
@@ -194,7 +194,7 @@ class TaskCardWidget(QtWidgets.QFrame):
         self.check_circle = CheckCircleButton(checked=self.task.is_done, parent=self)
         self.check_circle.setAccessibleName("Готовность задачи")
         self.check_circle.clicked.connect(self._on_check_clicked)
-        layout.addWidget(self.check_circle, 0, Qt.AlignTop)
+        layout.addWidget(self.check_circle, 0, Qt.AlignmentFlag.AlignTop)
 
         # 2. Body: Title + Metadata Chips
         body_layout = QtWidgets.QVBoxLayout()
@@ -204,7 +204,7 @@ class TaskCardWidget(QtWidgets.QFrame):
         # Title
         self.title_label = QtWidgets.QLabel(self.task.title)
         self.title_label.setWordWrap(True)
-        self.title_label.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.title_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
 
         font = self.title_label.font()
         font.setPointSize(10)
@@ -259,7 +259,7 @@ class TaskCardWidget(QtWidgets.QFrame):
         self.star_btn = StarButton(starred=is_starred, parent=self)
         self.star_btn.setAccessibleName("Важность задачи")
         self.star_btn.clicked.connect(self._on_star_clicked)
-        layout.addWidget(self.star_btn, 0, Qt.AlignTop)
+        layout.addWidget(self.star_btn, 0, Qt.AlignmentFlag.AlignTop)
 
     def _on_check_clicked(self):
         new_state = self.check_circle.isChecked()
@@ -339,7 +339,7 @@ class TaskCardWidget(QtWidgets.QFrame):
         act_del = menu.addAction(line_icon("trash"), "Удалить задачу")
         act_del.triggered.connect(lambda: self.task_delete_requested.emit(self.task.id))
 
-        menu.exec_(event.globalPos())
+        menu.exec(event.globalPos())
 
 
 # =============================================================================
@@ -397,7 +397,7 @@ class TodoPanel(QtWidgets.QWidget):
         self.btn_sort.setToolTip("Сортировка задач")
         set_line_icon(self.btn_sort, "outline", size=14)
         self.btn_sort.setObjectName("msGhostBtn")
-        self.btn_sort.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.btn_sort.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self._build_sort_menu()
         top_row.addWidget(self.btn_sort)
 
@@ -412,7 +412,7 @@ class TodoPanel(QtWidgets.QWidget):
         self.btn_more.setToolTip("Дополнительно")
         set_line_icon(self.btn_more, "more", size=14)
         self.btn_more.setObjectName("msGhostBtn")
-        self.btn_more.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.btn_more.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self._build_more_menu()
         top_row.addWidget(self.btn_more)
 
@@ -483,7 +483,7 @@ class TodoPanel(QtWidgets.QWidget):
         self.search_input = QtWidgets.QLineEdit()
         self.search_input.setPlaceholderText("Поиск задач...")
         self.search_input.setClearButtonEnabled(True)
-        self.search_input.addAction(line_icon("search"), QtWidgets.QLineEdit.LeadingPosition)
+        self.search_input.addAction(line_icon("search"), QtWidgets.QLineEdit.ActionPosition.LeadingPosition)
         self.search_input.setStyleSheet("""
             QLineEdit {
                 background: #1C1C20;
@@ -544,8 +544,8 @@ class TodoPanel(QtWidgets.QWidget):
         # 5. Scroll Area with Task Cards
         self.scroll_area = QtWidgets.QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         self.cards_container = QtWidgets.QWidget()
@@ -780,7 +780,7 @@ class TodoPanel(QtWidgets.QWidget):
             done_header_btn = QtWidgets.QPushButton()
             set_line_icon(done_header_btn, "chevron-right" if self.completed_collapsed else "chevron-down", size=16)
             done_header_btn.setText("Завершено")
-            done_header_btn.setCursor(Qt.PointingHandCursor)
+            done_header_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             done_header_btn.setStyleSheet("""
                 QPushButton {
                     background: transparent;
@@ -813,21 +813,21 @@ class TodoPanel(QtWidgets.QWidget):
             empty_l = QtWidgets.QVBoxLayout(empty_frame)
             empty_l.setContentsMargins(20, 40, 20, 40)
             empty_l.setSpacing(10)
-            empty_l.setAlignment(Qt.AlignCenter)
+            empty_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             icon_lbl = QtWidgets.QLabel()
             icon_lbl.setPixmap(line_icon("checklist", "#78B9FF").pixmap(38, 38))
-            icon_lbl.setAlignment(Qt.AlignCenter)
+            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty_l.addWidget(icon_lbl)
 
             msg_title = QtWidgets.QLabel("Задачи не найдены" if all_tasks else "Список задач пуст")
-            msg_title.setAlignment(Qt.AlignCenter)
+            msg_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
             msg_title.setStyleSheet("color: #EDEDED; font-size: 14px; font-weight: 600;")
             empty_l.addWidget(msg_title)
 
             msg_desc = QtWidgets.QLabel("Измените запрос или фильтр." if all_tasks
                                        else "Добавьте задачу, чтобы спланировать работу.")
-            msg_desc.setAlignment(Qt.AlignCenter)
+            msg_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
             msg_desc.setWordWrap(True)
             msg_desc.setStyleSheet("color: #71717A; font-size: 12px;")
             empty_l.addWidget(msg_desc)

@@ -41,6 +41,82 @@ def test_read_file_returns_content():
         assert approvals == []          # read-only tools never ask
 
 
+def test_read_file_prefers_the_open_unsaved_editor_buffer():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _make_project(root)
+        box = LocalToolbox(str(root), ui_action=lambda kind, payload:
+                           "unsaved = True\n" if kind == "read_buffer" else "")
+        assert box.read_file("app.py") == "unsaved = True\n"
+
+
+def test_open_file_routes_to_the_ide_callback():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _make_project(root)
+        calls = []
+        box = LocalToolbox(str(root), access_mode="read_only",
+                           ui_action=lambda kind, payload:
+                           calls.append((kind, payload)) or "opened")
+        assert box.run("open_file", json.dumps({"path": "app.py"})) == "opened"
+        assert calls[0][0] == "open_file"
+        assert Path(calls[0][1]["path"]).name == "app.py"
+
+
+def test_edit_file_replaces_only_a_unique_exact_fragment():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _make_project(root)
+        calls = []
+        box, approvals = _toolbox(root, access_mode="write_only",
+                                  ui_action=lambda kind, payload:
+                                  (calls.append((kind, payload)) or
+                                   ("__NO_OPEN_EDITOR_BUFFER__" if kind == "read_buffer"
+                                    else "editor updated")))
+        original = (root / "app.py").read_text(encoding="utf-8")
+        result = box.run("edit_file", json.dumps({
+            "path": "app.py", "old_text": "return 'hi ' + name",
+            "new_text": "return f'hello {name}'"}))
+        assert result == "editor updated"
+        assert approvals == ["edit_file"]
+        assert calls[-1][0] == "edit_file"
+        assert calls[-1][1]["expected"] == original
+        assert (root / "app.py").read_text(encoding="utf-8") == original
+
+
+def test_edit_file_uses_the_unsaved_buffer_as_its_expected_version():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _make_project(root)
+        original = (root / "app.py").read_text(encoding="utf-8")
+        unsaved = original.replace("hi ", "hello ")
+        calls = []
+
+        def ui_action(kind, payload):
+            calls.append((kind, payload))
+            return unsaved if kind == "read_buffer" else "applied in editor"
+
+        box = LocalToolbox(str(root), access_mode="full", ui_action=ui_action)
+        result = box.edit_file("app.py", "return 'hello ' + name",
+                               "return f'hello {name}'")
+        assert result == "applied in editor"
+        assert calls[-1][1]["expected"] == unsaved
+        assert (root / "app.py").read_text(encoding="utf-8") == original
+
+
+def test_edit_file_rejects_non_unique_fragments():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "dup.txt").write_text("same\nsame\n", encoding="utf-8")
+        box = LocalToolbox(str(root), access_mode="full")
+        try:
+            box.edit_file("dup.txt", "same", "changed")
+        except ToolError as exc:
+            assert "ровно один раз" in str(exc)
+        else:
+            raise AssertionError("неоднозначная правка была применена")
+
+
 def test_paths_outside_project_are_rejected():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -118,6 +194,11 @@ def test_search_and_listing():
         assert "app.py" in listing and "sub/" in listing
         found = box.run("search_in_project", json.dumps({"query": "greet"}))
         assert "app.py:1" in found
+        by_extension = box.run("search_in_project", json.dumps({"query": "greet", "glob": ".py"}))
+        assert "app.py:1" in by_extension
+        regex = box.run("search_in_project", json.dumps({
+            "query": r"def\s+greet", "regex": True, "glob": "*.py"}))
+        assert "app.py:1" in regex
 
 
 def test_terminal_command_captures_output():
@@ -131,6 +212,29 @@ def test_terminal_command_captures_output():
         assert "Код возврата" in result
         # Commands are only available in the "full" mode, which asks nothing.
         assert approvals == []
+
+
+def test_terminal_command_can_be_stopped_without_waiting_for_timeout():
+    import threading
+    import time
+    import subprocess
+    import sys
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        stopped = threading.Event()
+        command = subprocess.list2cmdline(
+            [sys.executable, "-c", "import time; time.sleep(5)"])
+        box = LocalToolbox(str(root), should_stop=stopped.is_set)
+        timer = threading.Timer(0.25, stopped.set)
+        started = time.monotonic()
+        timer.start()
+        try:
+            result = box.run_terminal_command(command, timeout_sec=10)
+        finally:
+            timer.cancel()
+        assert "остановлена пользователем" in result
+        assert time.monotonic() - started < 3
 
 
 def test_project_root_required():
@@ -168,10 +272,10 @@ def test_bad_arguments_are_reported():
 
 def test_access_modes_enforced_at_dispatch():
     expected = {
-        "read_only": {"read_file", "list_directory", "search_in_project"},
-        "write_only": {"write_file"},
+        "read_only": {"read_file", "open_file", "list_directory", "search_in_project"},
+        "write_only": {"write_file", "edit_file"},
         "full": {d["function"]["name"] for d in TOOL_DEFINITIONS},
-        "invalid": {"read_file", "list_directory", "search_in_project"},
+        "invalid": {"read_file", "open_file", "list_directory", "search_in_project"},
     }
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -179,6 +283,8 @@ def test_access_modes_enforced_at_dispatch():
         original = (root / "app.py").read_text(encoding="utf-8")
         for mode, allowed in expected.items():
             box, approvals = _toolbox(root, access_mode=mode)
+            if mode in ("read_only", "invalid"):
+                allowed = allowed | {"editor_state", "editor_cursor", "workspace_state"}
             assert {d["function"]["name"] for d in box.definitions()} == allowed
             for definition in TOOL_DEFINITIONS:
                 name = definition["function"]["name"]
@@ -201,6 +307,12 @@ if __name__ == "__main__":
     tests = [
         ("test_access_modes_enforced_at_dispatch", test_access_modes_enforced_at_dispatch),
         ("test_read_file_returns_content", test_read_file_returns_content),
+        ("test_read_file_prefers_the_open_unsaved_editor_buffer",
+         test_read_file_prefers_the_open_unsaved_editor_buffer),
+        ("test_open_file_routes_to_the_ide_callback", test_open_file_routes_to_the_ide_callback),
+        ("test_edit_file_replaces_only_a_unique_exact_fragment",
+         test_edit_file_replaces_only_a_unique_exact_fragment),
+        ("test_edit_file_rejects_non_unique_fragments", test_edit_file_rejects_non_unique_fragments),
         ("test_paths_outside_project_are_rejected", test_paths_outside_project_are_rejected),
         ("test_write_file_asks_in_restricted_mode_and_writes",
          test_write_file_asks_in_restricted_mode_and_writes),

@@ -28,7 +28,7 @@ _APP = None
 def _qapp():
     global _APP
     if _APP is None:
-        from PyQt5 import QtWidgets
+        from PyQt6 import QtWidgets
         _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     return _APP
 

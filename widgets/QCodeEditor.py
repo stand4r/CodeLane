@@ -12,10 +12,11 @@ from abc import ABC, abstractmethod
 from enum import Enum
 
 from design.icons import line_icon, set_line_icon
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import Qt, QRegExp, pyqtSlot, pyqtSignal, QStringListModel, QPoint, QTimer, QPropertyAnimation, QEasingCurve, QRect, QSize, QEvent, QVariantAnimation
-from PyQt5.QtGui import QColor, QSyntaxHighlighter, QFont, QTextCursor, QKeySequence, QTextCharFormat, QPainter, QPen, QLinearGradient, QTextBlock, QMouseEvent, QKeyEvent, QWheelEvent, QTextDocument, QPaintEvent
-from PyQt5.QtWidgets import QCompleter, QPlainTextEdit, QShortcut, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QApplication, QTextEdit, QFrame, QToolButton
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtCore import Qt, pyqtSlot, pyqtSignal, QStringListModel, QPoint, QTimer, QPropertyAnimation, QEasingCurve, QRect, QSize, QEvent, QVariantAnimation
+from PyQt6.QtGui import QColor, QSyntaxHighlighter, QFont, QTextCursor, QKeySequence, QTextCharFormat, QPainter, QPen, QLinearGradient, QTextBlock, QMouseEvent, QKeyEvent, QWheelEvent, QTextDocument, QPaintEvent
+from PyQt6.QtWidgets import QCompleter, QPlainTextEdit, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QApplication, QTextEdit, QFrame, QToolButton
+from PyQt6.QtGui import QShortcut
 from core.language_services import *
 def _ui_font(point_size: int = 9, **kwargs):
     """Interface font for painters (normal width, not the condensed default)."""
@@ -85,7 +86,7 @@ class EnhancedTextEdit(QPlainTextEdit):
         completer = getattr(self, "completer", None)
         if completer is not None and completer.popup().isVisible():
             completer.popup().hide()
-        if event.button() == Qt.LeftButton and event.modifiers() & Qt.AltModifier:
+        if event.button() == Qt.MouseButton.LeftButton and event.modifiers() & Qt.KeyboardModifier.AltModifier:
             # Начало прямоугольного выделения (Alt+ЛКМ, как в VS Code)
             self.selection_mode = SelectionMode.RECTANGLE
             self.is_selecting_rectangle = True
@@ -135,7 +136,7 @@ class EnhancedTextEdit(QPlainTextEdit):
         if hasattr(window, "action_analyze_current_impact"):
             impact_action = menu.addAction("Анализ влияния")
             impact_action.triggered.connect(window.action_analyze_current_impact)
-        menu.exec_(event.globalPos())
+        menu.exec(event.globalPos())
 
     def update_rectangle_selection(self):
         """Обновление прямоугольного выделения"""
@@ -168,7 +169,7 @@ class EnhancedTextEdit(QPlainTextEdit):
             if start_col < line_length:
                 actual_end_col = min(end_col, line_length)
                 cursor.setPosition(block.position() + start_col)
-                cursor.setPosition(block.position() + actual_end_col, QTextCursor.KeepAnchor)
+                cursor.setPosition(block.position() + actual_end_col, QTextCursor.MoveMode.KeepAnchor)
 
                 # Создаем дополнительное выделение
                 selection = QTextEdit.ExtraSelection()
@@ -202,7 +203,7 @@ class EnhancedTextEdit(QPlainTextEdit):
             return
         painter = QPainter(self.viewport())
         try:
-            painter.setPen(QPen(QColor("#007ACC"), 1, Qt.DashLine))
+            painter.setPen(QPen(QColor("#007ACC"), 1, Qt.PenStyle.DashLine))
             painter.setBrush(QColor(0, 122, 204, 30))  # Полупрозрачная заливка
             rect = QRect(self.rectangle_start_pos, self.rectangle_end_pos).normalized()
             painter.drawRect(rect)
@@ -244,7 +245,7 @@ class EnhancedTextEdit(QPlainTextEdit):
             for start, end, insert_text in sorted(pairs, key=lambda item: item[0], reverse=True):
                 cur = QTextCursor(self.document())
                 cur.setPosition(start)
-                cur.setPosition(end, QTextCursor.KeepAnchor)
+                cur.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
                 cur.insertText(insert_text)
         finally:
             block_cursor.endEditBlock()
@@ -271,7 +272,7 @@ class EnhancedTextEdit(QPlainTextEdit):
                     continue
                 cur = QTextCursor(self.document())
                 cur.setPosition(start)
-                cur.setPosition(end, QTextCursor.KeepAnchor)
+                cur.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
                 cur.removeSelectedText()
         finally:
             block_cursor.endEditBlock()
@@ -343,13 +344,13 @@ class ModernSyntaxHighlighter(QSyntaxHighlighter):
         self._supports_lua_comments = self.lang_name in ("lua",)
 
         # Formats
-        self._comment_format = self._get_cached_format("#6A9955", QFont.Normal, True)
-        self._docstring_format = self._get_cached_format("#6A9955", QFont.Normal, True)
-        self._string_format = self._get_cached_format("#CE9178", QFont.Normal, False)
+        self._comment_format = self._get_cached_format("#6A9955", QFont.Weight.Normal, True)
+        self._docstring_format = self._get_cached_format("#6A9955", QFont.Weight.Normal, True)
+        self._string_format = self._get_cached_format("#CE9178", QFont.Weight.Normal, False)
 
         self._rules = self._compile_rules()
 
-    def _get_cached_format(self, color: str, weight: int = QFont.Normal, italic: bool = False) -> QTextCharFormat:
+    def _get_cached_format(self, color: str, weight: int = QFont.Weight.Normal, italic: bool = False) -> QTextCharFormat:
         cache_key = f"{color}_{weight}_{italic}"
         if cache_key not in self._format_cache:
             fmt = QTextCharFormat()
@@ -372,7 +373,7 @@ class ModernSyntaxHighlighter(QSyntaxHighlighter):
                  r"r(?:[89]|1[0-5])[dwb]?|(?:xmm|ymm|zmm)\d+|[re]?ip)\b", "#4EC9B0"),
                 (r"(?i)\b(?:0x[\da-f]+|[\da-f]+h|0b[01]+|\d+)\b", "#B5CEA8"),
             ]
-            return [(re.compile(pattern), self._get_cached_format(color, QFont.Normal, False))
+            return [(re.compile(pattern), self._get_cached_format(color, QFont.Weight.Normal, False))
                     for pattern, color in patterns]
 
         # 1. Distinct control-flow keywords (VS Code purple #C586C0)
@@ -384,13 +385,13 @@ class ModernSyntaxHighlighter(QSyntaxHighlighter):
         cf_matches = sorted(kw_list.intersection(flow_keywords), key=len, reverse=True)
         if cf_matches:
             p = r"\b(?:" + "|".join(re.escape(k) for k in cf_matches) + r")\b"
-            rules.append((re.compile(p), self._get_cached_format("#C586C0", QFont.Normal, False)))
+            rules.append((re.compile(p), self._get_cached_format("#C586C0", QFont.Weight.Normal, False)))
 
         # 2. Other keywords (VS Code blue #569CD6)
         other_keywords = sorted(kw_list - flow_keywords, key=len, reverse=True)
         if other_keywords:
             p = r"\b(?:" + "|".join(re.escape(k) for k in other_keywords) + r")\b"
-            rules.append((re.compile(p), self._get_cached_format("#569CD6", QFont.Normal, False)))
+            rules.append((re.compile(p), self._get_cached_format("#569CD6", QFont.Weight.Normal, False)))
 
         # 3. Built-in types & constants (teal #4EC9B0)
         builtins = [
@@ -401,19 +402,19 @@ class ModernSyntaxHighlighter(QSyntaxHighlighter):
         b_matches = [b for b in builtins if b not in kw_list]
         if b_matches:
             p = r"\b(?:" + "|".join(re.escape(b) for b in b_matches) + r")\b"
-            rules.append((re.compile(p), self._get_cached_format("#4EC9B0", QFont.Normal, False)))
+            rules.append((re.compile(p), self._get_cached_format("#4EC9B0", QFont.Weight.Normal, False)))
 
         # 4. Function definitions & calls (yellow #DCDCAA)
-        rules.append((re.compile(r"\b([A-Za-z_]\w*)\s*(?=\()"), self._get_cached_format("#DCDCAA", QFont.Normal, False)))
+        rules.append((re.compile(r"\b([A-Za-z_]\w*)\s*(?=\()"), self._get_cached_format("#DCDCAA", QFont.Weight.Normal, False)))
 
         # 5. Class names / Types in PascalCase (teal #4EC9B0)
-        rules.append((re.compile(r"\b[A-Z][a-zA-Z0-9_]*\b"), self._get_cached_format("#4EC9B0", QFont.Normal, False)))
+        rules.append((re.compile(r"\b[A-Z][a-zA-Z0-9_]*\b"), self._get_cached_format("#4EC9B0", QFont.Weight.Normal, False)))
 
         # 6. Decorators (@decorator) (gold #D7BA7D)
-        rules.append((re.compile(r"@\w+\b"), self._get_cached_format("#D7BA7D", QFont.Normal, False)))
+        rules.append((re.compile(r"@\w+\b"), self._get_cached_format("#D7BA7D", QFont.Weight.Normal, False)))
 
         # 7. Numbers (light green #B5CEA8)
-        rules.append((re.compile(r"\b(?:0[xX][0-9a-fA-F]+|0[bB][01]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b"), self._get_cached_format("#B5CEA8", QFont.Normal, False)))
+        rules.append((re.compile(r"\b(?:0[xX][0-9a-fA-F]+|0[bB][01]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b"), self._get_cached_format("#B5CEA8", QFont.Weight.Normal, False)))
 
         # 8. Single-line strings (VS Code orange #CE9178)
         rules.append((re.compile(r'(?<!")"(?:\\.|[^"\\])*"(?!")'), self._string_format))
@@ -666,9 +667,9 @@ class ModernSyntaxHighlighter(QSyntaxHighlighter):
 class CompletionDelegate(QtWidgets.QStyledItemDelegate):
     def paint(self, painter, option, index):
         painter.save()
-        if option.state & QtWidgets.QStyle.State_Selected:
+        if option.state & QtWidgets.QStyle.StateFlag.State_Selected:
             painter.fillRect(option.rect, QColor("#264F78"))
-        kind = index.data(Qt.UserRole + 1) or "symbol"
+        kind = index.data(Qt.ItemDataRole.UserRole + 1) or "symbol"
         colors = {
             "keyword": "#569CD6",
             "class": "#4EC9B0",
@@ -682,10 +683,10 @@ class CompletionDelegate(QtWidgets.QStyledItemDelegate):
         badge = {"keyword": "KW", "class": "CLS", "function": "FN", "member": "MEM", "module": "MOD", "builtin": "SYS", "local": "VAR", "workspace": "WSP"}.get(kind, kind[:3].upper())
         painter.setPen(QColor(colors.get(kind, "#A8A8A8")))
         painter.setFont(_ui_font(8, bold=True))
-        painter.drawText(option.rect.adjusted(8, 0, -4, 0), Qt.AlignLeft | Qt.AlignVCenter, badge)
+        painter.drawText(option.rect.adjusted(8, 0, -4, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, badge)
         painter.setPen(QColor("#D4D4D4"))
         painter.setFont(_ui_font(10))
-        painter.drawText(option.rect.adjusted(44, 0, -8, 0), Qt.AlignLeft | Qt.AlignVCenter, str(index.data(Qt.DisplayRole)))
+        painter.drawText(option.rect.adjusted(44, 0, -8, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, str(index.data(Qt.ItemDataRole.DisplayRole)))
         painter.restore()
 
 class CompletionModel(QtCore.QAbstractListModel):
@@ -694,30 +695,30 @@ class CompletionModel(QtCore.QAbstractListModel):
         self.items = items or []
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self.items)
-    def data(self, index, role=Qt.DisplayRole):
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid() or index.row() >= len(self.items): return None
         item = self.items[index.row()]
-        if role == Qt.DisplayRole: return item[0]
-        if role == Qt.UserRole: return item[0]
-        if role == Qt.UserRole + 1: return item[1]
+        if role == Qt.ItemDataRole.DisplayRole: return item[0]
+        if role == Qt.ItemDataRole.UserRole: return item[0]
+        if role == Qt.ItemDataRole.UserRole + 1: return item[1]
         return None
 
 class SmartCompleter(QCompleter):
     insertText = pyqtSignal(str)
     def __init__(self, word_list=None, background_color="#1E1E1E", font_size=13, parent=None):
         super().__init__(parent)
-        self.setCaseSensitivity(Qt.CaseInsensitive)
-        self.setFilterMode(Qt.MatchStartsWith)
-        self.setCompletionRole(Qt.DisplayRole)
-        self.setModelSorting(QCompleter.UnsortedModel)
-        self.setCompletionMode(QCompleter.PopupCompletion)
+        self.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.setFilterMode(Qt.MatchFlag.MatchStartsWith)
+        self.setCompletionRole(Qt.ItemDataRole.DisplayRole)
+        self.setModelSorting(QCompleter.ModelSorting.UnsortedModel)
+        self.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         self.setMaxVisibleItems(10)
         self._items = []
         popup = self.popup()
         popup.setItemDelegate(CompletionDelegate(popup))
         popup.setObjectName("completionPopup")
-        popup.setFocusPolicy(Qt.StrongFocus)
-        popup.setAttribute(Qt.WA_InputMethodEnabled, True)
+        popup.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        popup.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         popup.setStyleSheet(f"""
             QListView#completionPopup {{ background: {background_color}; color: #D4D4D4; border: 1px solid #2B2B2B; border-radius: 3px; padding: 4px; outline: none; }}
             QListView#completionPopup::item {{ min-height: 30px; padding: 0; border: none; }}
@@ -799,11 +800,11 @@ class CodeEditor(EnhancedTextEdit):
         
         # Word wrap setting
         wrap_enabled = bool(self.settings.get("word_wrap", False))
-        self.setLineWrapMode(QPlainTextEdit.WidgetWidth if wrap_enabled else QPlainTextEdit.NoWrap)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth if wrap_enabled else QPlainTextEdit.LineWrapMode.NoWrap)
         
         # Настройка табуляции
         self.tab_width = 4
-        self.setTabStopDistance(self.tab_width * self.fontMetrics().width(' '))
+        self.setTabStopDistance(self.tab_width * self.fontMetrics().horizontalAdvance(' '))
         
         # Подсветка синтаксиса
         self.highlighter = ModernSyntaxHighlighter(self.document(), self.language_config)
@@ -854,10 +855,10 @@ class CodeEditor(EnhancedTextEdit):
         """Обработка изменения режима прямоугольного выделения"""
         if active:
             # Меняем курсор на крестик для прямоугольного выделения
-            self.viewport().setCursor(Qt.CrossCursor)
+            self.viewport().setCursor(Qt.CursorShape.CrossCursor)
         else:
             # Возвращаем стандартный курсор
-            self.viewport().setCursor(Qt.IBeamCursor)
+            self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
     
     def _reposition_completion(self):
         if hasattr(self, "completer") and self.completer.popup().isVisible():
@@ -900,7 +901,7 @@ class CodeEditor(EnhancedTextEdit):
         font_family = str(self.settings.get("editor_font", "Cascadia Code")) or self.font().family()
         new_font = QFont(font_family, size)
         new_font.setPointSize(size)
-        new_font.setStyleHint(QFont.Monospace)
+        new_font.setStyleHint(QFont.StyleHint.Monospace)
         
         self.setFont(new_font)
         
@@ -911,7 +912,7 @@ class CodeEditor(EnhancedTextEdit):
             doc = self.document()
             if doc and not doc.isEmpty():
                 c = QTextCursor(doc)
-                c.select(QTextCursor.Document)
+                c.select(QTextCursor.SelectionType.Document)
                 fmt = QTextCharFormat()
                 fmt.setFont(new_font)
                 fmt.setFontPointSize(size)
@@ -951,7 +952,7 @@ class CodeEditor(EnhancedTextEdit):
         self._apply_font_size(base)
 
     def wheelEvent(self, event: QWheelEvent):
-        if event.modifiers() & Qt.ControlModifier:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             delta = event.angleDelta().y()
             if delta > 0:
                 self._zoom_in()
@@ -1059,7 +1060,7 @@ class CodeEditor(EnhancedTextEdit):
         act_prep = ai_menu.addAction(line_icon("info"), "Архитектурный анализ и вопросы для Code Review")
         act_prep.triggered.connect(self._explain_code_intelligence)
 
-        menu.exec_(event.globalPos())
+        menu.exec(event.globalPos())
 
     def get_file_path(self) -> Optional[str]:
         p = self._get_modern_editor_parent()
@@ -1074,7 +1075,7 @@ class CodeEditor(EnhancedTextEdit):
         sel = cursor.selectedText().strip()
         if sel and "\n" not in sel and len(sel) < 100:
             return sel, line, col
-        cursor.select(QTextCursor.WordUnderCursor)
+        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
         word = cursor.selectedText().strip()
         return word, line, col
 
@@ -1089,11 +1090,11 @@ class CodeEditor(EnhancedTextEdit):
         current_fp = self.get_file_path()
         if current_fp and Path(current_fp).resolve() == Path(file_path).resolve():
             cursor = self.textCursor()
-            cursor.movePosition(QTextCursor.Start)
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
             for _ in range(max(0, line - 1)):
-                cursor.movePosition(QTextCursor.Down)
+                cursor.movePosition(QTextCursor.MoveOperation.Down)
             if col > 0:
-                cursor.movePosition(QTextCursor.Right, QTextCursor.MoveAnchor, col)
+                cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.MoveAnchor, col)
             self.setTextCursor(cursor)
             self.centerCursor()
             self.setFocus()
@@ -1106,11 +1107,11 @@ class CodeEditor(EnhancedTextEdit):
             ed = win.get_current_editor() if hasattr(win, "get_current_editor") else None
             if ed and hasattr(ed, "editor"):
                 c = ed.editor.textCursor()
-                c.movePosition(QTextCursor.Start)
+                c.movePosition(QTextCursor.MoveOperation.Start)
                 for _ in range(max(0, line - 1)):
-                    c.movePosition(QTextCursor.Down)
+                    c.movePosition(QTextCursor.MoveOperation.Down)
                 if col > 0:
-                    c.movePosition(QTextCursor.Right, QTextCursor.MoveAnchor, col)
+                    c.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.MoveAnchor, col)
                 ed.editor.setTextCursor(c)
                 ed.editor.centerCursor()
                 ed.editor.setFocus()
@@ -1250,7 +1251,7 @@ class CodeEditor(EnhancedTextEdit):
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         """Обработка отпускания мыши (включая Ctrl+Click для перехода к определению)."""
-        if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ControlModifier):
+        if event.button() == Qt.MouseButton.LeftButton and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             cursor = self.cursorForPosition(event.pos())
             self.setTextCursor(cursor)
             self.action_goto_definition()
@@ -1307,7 +1308,7 @@ class CodeEditor(EnhancedTextEdit):
             from widgets.CodeExplainerDialog import CodeExplainerDialog
             data = CodeIntelligenceService.explain_code_snippet(selected_text, getattr(self, 'language', 'python'))
             dlg = CodeExplainerDialog(data, selected_text, self)
-            dlg.exec_()
+            dlg.exec()
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Ошибка разбора", f"Не удалось разобрать фрагмент: {exc}")
 
@@ -1381,13 +1382,13 @@ class CodeEditor(EnhancedTextEdit):
                     pt = 13
                 if block_number + 1 == current_line:
                     painter.setPen(QColor("#00F2FE"))
-                    painter.setFont(QFont(self.font().family(), pt, QFont.Bold))
+                    painter.setFont(QFont(self.font().family(), pt, QFont.Weight.Bold))
                 else:
                     painter.setPen(QColor("#6E7681"))
                     painter.setFont(self.font())
                 
                 painter.drawText(0, int(top), area_w - 6, 
-                                int(line_height), Qt.AlignRight | Qt.AlignVCenter, number)
+                                int(line_height), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, number)
             
             block = block.next()
             top = bottom
@@ -1443,7 +1444,7 @@ class CodeEditor(EnhancedTextEdit):
             sel1 = QTextEdit.ExtraSelection()
             c1 = self.textCursor()
             c1.setPosition(bracket_pos)
-            c1.setPosition(bracket_pos + 1, QTextCursor.KeepAnchor)
+            c1.setPosition(bracket_pos + 1, QTextCursor.MoveMode.KeepAnchor)
             sel1.cursor = c1
             sel1.format = bracket_format
             selections.append(sel1)
@@ -1452,7 +1453,7 @@ class CodeEditor(EnhancedTextEdit):
                 sel2 = QTextEdit.ExtraSelection()
                 c2 = self.textCursor()
                 c2.setPosition(match_pos)
-                c2.setPosition(match_pos + 1, QTextCursor.KeepAnchor)
+                c2.setPosition(match_pos + 1, QTextCursor.MoveMode.KeepAnchor)
                 sel2.cursor = c2
                 sel2.format = bracket_format
                 selections.append(sel2)
@@ -1471,7 +1472,7 @@ class CodeEditor(EnhancedTextEdit):
             word = tc.selectedText().strip()
         else:
             word_cur = QTextCursor(tc)
-            word_cur.select(QTextCursor.WordUnderCursor)
+            word_cur.select(QTextCursor.SelectionType.WordUnderCursor)
             word = word_cur.selectedText().strip()
 
         if not word or len(word) < 2 or not word.isidentifier():
@@ -1484,7 +1485,7 @@ class CodeEditor(EnhancedTextEdit):
 
         count = 0
         while count < 80:
-            find_cur = doc.find(word, find_cur, QTextDocument.FindWholeWords)
+            find_cur = doc.find(word, find_cur, QTextDocument.FindFlag.FindWholeWords)
             if find_cur.isNull():
                 break
             sel = QTextEdit.ExtraSelection()
@@ -1504,7 +1505,7 @@ class CodeEditor(EnhancedTextEdit):
             line_color = QColor("#2D3139")
             line_color.setAlpha(80)
             selection.format.setBackground(line_color)
-            selection.format.setProperty(QTextCharFormat.FullWidthSelection, True)
+            selection.format.setProperty(QTextCharFormat.Property.FullWidthSelection, True)
             selection.cursor = self.textCursor()
             selection.cursor.clearSelection()
             extra_selections.append(selection)
@@ -1551,7 +1552,7 @@ class CodeEditor(EnhancedTextEdit):
         cursor.beginEditBlock()
         try:
             full = QTextCursor(self.document())
-            full.select(QTextCursor.Document)
+            full.select(QTextCursor.SelectionType.Document)
             full.removeSelectedText()
             full.insertText('\n'.join(lines))
         finally:
@@ -1573,7 +1574,7 @@ class CodeEditor(EnhancedTextEdit):
             if last == doc.blockCount() - 1:
                 end = doc.characterCount() - 1
             new_cursor.setPosition(start)
-            new_cursor.setPosition(end, QTextCursor.KeepAnchor)
+            new_cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
         self.setTextCursor(new_cursor)
 
     def _move_line_up(self):
@@ -1657,16 +1658,16 @@ class CodeEditor(EnhancedTextEdit):
         """Выбрать следующее вхождение слова или текущее слово (Ctrl+D)"""
         tc = self.textCursor()
         if not tc.hasSelection():
-            tc.select(QTextCursor.WordUnderCursor)
+            tc.select(QTextCursor.SelectionType.WordUnderCursor)
             self.setTextCursor(tc)
             return
 
         selected = tc.selectedText()
         doc = self.document()
-        find_cur = doc.find(selected, tc, QTextDocument.FindCaseSensitively)
+        find_cur = doc.find(selected, tc, QTextDocument.FindFlag.FindCaseSensitively)
         if find_cur.isNull():
             # Зацикливание к началу документа
-            find_cur = doc.find(selected, 0, QTextDocument.FindCaseSensitively)
+            find_cur = doc.find(selected, 0, QTextDocument.FindFlag.FindCaseSensitively)
         if not find_cur.isNull():
             self.setTextCursor(find_cur)
     
@@ -1676,12 +1677,12 @@ class CodeEditor(EnhancedTextEdit):
         prefix = str(self.completer.completionPrefix())
         tc = self.textCursor()
         if prefix:
-            tc.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, len(prefix))
+            tc.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, len(prefix))
             tc.removeSelectedText()
         tc.insertText(completion)
         self.setTextCursor(tc)
         self.completer.popup().hide()
-        self.setFocus(Qt.OtherFocusReason)
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _accept_completion(self):
         popup = self.completer.popup()
@@ -1689,7 +1690,7 @@ class CodeEditor(EnhancedTextEdit):
         if not index.isValid() and self.completer.completionCount():
             index = self.completer.completionModel().index(0, 0)
         if index.isValid():
-            self._insert_completion(index.data(Qt.DisplayRole))
+            self._insert_completion(index.data(Qt.ItemDataRole.DisplayRole))
         else:
             popup.hide()
     
@@ -1713,19 +1714,38 @@ class CodeEditor(EnhancedTextEdit):
         # 1. Интеллектуальный анализатор Python через Jedi
         is_python = self.language.lower() in ("python", "py", "") or getattr(self.language_config, "name", "").lower() == "python"
         if is_python:
-            try:
-                import jedi
+            key = (self.document().revision(), tc.position())
+            cached_key, cached_items = getattr(self, "_jedi_cache", (None, {}))
+            if cached_key == key:
+                completion_items.update(cached_items)
+            elif not getattr(self, "_jedi_busy", False):
+                self._jedi_busy = True
                 parent_mod = self._get_modern_editor_parent()
-                file_path = str(parent_mod.file_path) if parent_mod and getattr(parent_mod, 'file_path', None) else "temp.py"
-                script = jedi.Script(code=text, path=file_path)
-                cur_line = tc.blockNumber() + 1
-                cur_col = tc.positionInBlock()
-                jedi_results = script.complete(line=cur_line, column=cur_col)
-                for item in jedi_results:
-                    k = "function" if item.type in ("function", "method") else ("class" if item.type == "class" else ("module" if item.type in ("module", "package") else ("keyword" if item.type == "keyword" else "local")))
-                    completion_items[item.name] = k
-            except Exception:
-                pass
+                file_path = str(getattr(parent_mod, "file_path", "") or "temp.py")
+                line, column = tc.blockNumber() + 1, tc.positionInBlock()
+
+                def compute():
+                    import jedi
+                    items = {}
+                    for item in jedi.Script(code=text, path=file_path).complete(line=line, column=column):
+                        kind = {"function": "function", "method": "function",
+                                "class": "class", "module": "module",
+                                "keyword": "keyword"}.get(item.type, "local")
+                        items[item.name] = kind
+                    return items
+
+                def ready(items):
+                    self._jedi_busy = False
+                    self._jedi_cache = (key, items)
+                    current = (self.document().revision(), self.textCursor().position())
+                    if current == key and self.hasFocus():
+                        self._trigger_completion()
+
+                def failed(_message):
+                    self._jedi_busy = False
+
+                from services.background import run_async
+                run_async(compute, on_done=ready, on_error=failed)
 
         # 2. Ключевые слова синтаксиса языка
         for word in self.language_config.keywords:
@@ -1734,7 +1754,10 @@ class CodeEditor(EnhancedTextEdit):
 
         # 3. Символы из локального синтаксического AST анализатора
         try:
-            self.analyzer.analyze_code(text)
+            revision = self.document().revision()
+            if getattr(self, "_completion_analysis_revision", None) != revision:
+                self.analyzer.analyze_code(text)
+                self._completion_analysis_revision = revision
             for word in self.analyzer.get_completion_list():
                 if str(word) not in completion_items:
                     completion_items[str(word)] = "keyword" if str(word) in self.language_config.keywords else "local"
@@ -1787,7 +1810,10 @@ class CodeEditor(EnhancedTextEdit):
 
     def _delayed_analysis(self):
         """Отложенный анализ кода"""
-        self.analyzer.analyze_code(self.toPlainText())
+        revision = self.document().revision()
+        if getattr(self, "_completion_analysis_revision", None) != revision:
+            self.analyzer.analyze_code(self.toPlainText())
+            self._completion_analysis_revision = revision
     
     def _get_modern_editor_parent(self):
         p = self.parent()
@@ -1841,7 +1867,7 @@ class CodeEditor(EnhancedTextEdit):
                     else:
                         break
                 if spaces_to_remove > 0:
-                    c.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, spaces_to_remove)
+                    c.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, spaces_to_remove)
                     c.removeSelectedText()
                 if block == end_block:
                     break
@@ -1866,12 +1892,12 @@ class CodeEditor(EnhancedTextEdit):
 
     def keyPressEvent(self, event):
         """Обработка нажатий клавиш с расширенными возможностями"""
-        ctrl = bool(event.modifiers() & Qt.ControlModifier)
-        shift = bool(event.modifiers() & Qt.ShiftModifier)
-        alt = bool(event.modifiers() & Qt.AltModifier)
+        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        alt = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
 
         # F12: перейти к определению (Go to Definition), Shift+F12: найти ссылки (Find References)
-        if event.key() == Qt.Key_F12:
+        if event.key() == Qt.Key.Key_F12:
             if shift:
                 self.action_find_references()
             else:
@@ -1880,9 +1906,9 @@ class CodeEditor(EnhancedTextEdit):
             return
 
         # 0. Масштабирование шрифта редактора (Ctrl++, Ctrl+=, Ctrl+-, Ctrl+_, Ctrl+0, Numpad)
-        is_zoom_in = ctrl and not alt and event.key() in (Qt.Key_Equal, Qt.Key_Plus)
-        is_zoom_out = ctrl and not alt and event.key() in (Qt.Key_Minus, Qt.Key_Underscore)
-        is_zoom_reset = ctrl and not alt and event.key() == Qt.Key_0
+        is_zoom_in = ctrl and not alt and event.key() in (Qt.Key.Key_Equal, Qt.Key.Key_Plus)
+        is_zoom_out = ctrl and not alt and event.key() in (Qt.Key.Key_Minus, Qt.Key.Key_Underscore)
+        is_zoom_reset = ctrl and not alt and event.key() == Qt.Key.Key_0
 
         if is_zoom_in:
             self._zoom_in()
@@ -1898,32 +1924,32 @@ class CodeEditor(EnhancedTextEdit):
             return
 
         # 1. Ctrl+Space: автодополнение
-        if ctrl and event.key() == Qt.Key_Space:
+        if ctrl and event.key() == Qt.Key.Key_Space:
             self._explicit_completion = True
             self._trigger_completion()
             return
 
         # 2. Перемещение строк вверх/вниз (Alt+Up, Alt+Down)
         #    Shift+Alt+<стрелка> обрабатывается раньше, чтобы не конфликтовать.
-        if alt and not ctrl and (event.key() in (Qt.Key_Up, Qt.Key_Down)):
+        if alt and not ctrl and (event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)):
             if shift:
-                if event.key() == Qt.Key_Up:
+                if event.key() == Qt.Key.Key_Up:
                     self._duplicate_line_up()
                 else:
                     self._duplicate_line_down()
-            elif event.key() == Qt.Key_Up:
+            elif event.key() == Qt.Key.Key_Up:
                 self._move_line_up()
             else:
                 self._move_line_down()
             return
 
         # 4. Выбор следующего вхождения (Ctrl+D)
-        if ctrl and not shift and not alt and event.key() == Qt.Key_D:
+        if ctrl and not shift and not alt and event.key() == Qt.Key.Key_D:
             self._select_next_occurrence()
             return
 
         # 5. Прямоугольное выделение
-        if event.key() == Qt.Key_Escape and self.selection_mode == SelectionMode.RECTANGLE:
+        if event.key() == Qt.Key.Key_Escape and self.selection_mode == SelectionMode.RECTANGLE:
             # Leaving rectangle mode with Esc used to live in a second, dead
             # keyPressEvent definition that the class body overrode.
             self.selection_mode = SelectionMode.NORMAL
@@ -1932,16 +1958,16 @@ class CodeEditor(EnhancedTextEdit):
             self.viewport().update()
             return
         if self.selection_mode == SelectionMode.RECTANGLE and self.rectangle_selections:
-            if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 self.delete_rectangle_selection()
                 return
-            elif ctrl and event.key() == Qt.Key_C:
+            elif ctrl and event.key() == Qt.Key.Key_C:
                 self.copy_rectangle_selection()
                 return
-            elif ctrl and event.key() == Qt.Key_X:
+            elif ctrl and event.key() == Qt.Key.Key_X:
                 self.cut_rectangle_selection()
                 return
-            elif event.key() in (Qt.Key_Enter, Qt.Key_Return):
+            elif event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return):
                 self.insert_text_in_rectangle("\n")
                 return
             elif event.text() and not event.modifiers():
@@ -1949,10 +1975,10 @@ class CodeEditor(EnhancedTextEdit):
                 return
 
         # 6. Отступы блоков клавишами Tab / Shift+Tab
-        if event.key() == Qt.Key_Backtab or (event.key() == Qt.Key_Tab and shift):
+        if event.key() == Qt.Key.Key_Backtab or (event.key() == Qt.Key.Key_Tab and shift):
             self._unindent_selection()
             return
-        elif event.key() == Qt.Key_Tab and not self.completer.popup().isVisible():
+        elif event.key() == Qt.Key.Key_Tab and not self.completer.popup().isVisible():
             if self.textCursor().hasSelection():
                 self._indent_selection()
                 return
@@ -1961,7 +1987,7 @@ class CodeEditor(EnhancedTextEdit):
         # Важно: НЕ перехватываем стандартные клавиши редактирования текста
         # (Ctrl+C/V/X/A/Z/Y/D/W/Del) — их обрабатывает сам QPlainTextEdit,
         # а действия уровня приложения приходят через QShortcut в главном окне.
-        if ctrl and event.key() == Qt.Key_P:
+        if ctrl and event.key() == Qt.Key.Key_P:
             win = self.window()
             if shift and hasattr(win, 'show_command_palette'):
                 win.show_command_palette()
@@ -1969,12 +1995,12 @@ class CodeEditor(EnhancedTextEdit):
             if not shift and hasattr(win, 'action_quick_open'):
                 win.action_quick_open()
                 return
-        if event.key() == Qt.Key_F1:
+        if event.key() == Qt.Key.Key_F1:
             win = self.window()
             if hasattr(win, 'show_command_palette'):
                 win.show_command_palette()
                 return
-        if event.key() == Qt.Key_F5:
+        if event.key() == Qt.Key.Key_F5:
             win = self.window()
             if ctrl and hasattr(win, 'action_run_project'):
                 win.action_run_project()
@@ -1982,55 +2008,55 @@ class CodeEditor(EnhancedTextEdit):
             if hasattr(win, 'action_run_file'):
                 win.action_run_file()
                 return
-        if ctrl and event.key() == Qt.Key_G:
+        if ctrl and event.key() == Qt.Key.Key_G:
             win = self.window()
             if hasattr(win, 'action_goto_line'):
                 win.action_goto_line()
                 return
-        if ctrl and shift and event.key() == Qt.Key_B:
+        if ctrl and shift and event.key() == Qt.Key.Key_B:
             p = self._get_modern_editor_parent()
             if p and hasattr(p, 'toggle_code_lens'):
                 p.toggle_code_lens()
                 return
-        if ctrl and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+        if ctrl and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             p = self._get_modern_editor_parent()
             if p and hasattr(p, '_run_current_block_shortcut'):
                 p._run_current_block_shortcut()
                 return
-        if ctrl and (event.key() in (Qt.Key_QuoteLeft, Qt.Key_AsciiTilde) or event.text() == '`'):
+        if ctrl and (event.key() in (Qt.Key.Key_QuoteLeft, Qt.Key.Key_AsciiTilde) or event.text() == '`'):
             win = self.window()
             if hasattr(win, 'toggle_terminal'):
                 win.toggle_terminal()
                 return
-        if ctrl and (event.key() == Qt.Key_Backslash or event.text() == '\\'):
+        if ctrl and (event.key() == Qt.Key.Key_Backslash or event.text() == '\\'):
             win = self.window()
             if hasattr(win, 'toggle_sidebar'):
                 win.toggle_sidebar()
                 return
-        if ctrl and shift and event.key() == Qt.Key_F:
+        if ctrl and shift and event.key() == Qt.Key.Key_F:
             win = self.window()
             if hasattr(win, '_focus_search'):
                 win._focus_search()
                 return
-        if ctrl and event.key() == Qt.Key_Slash:
+        if ctrl and event.key() == Qt.Key.Key_Slash:
             self._toggle_comment_current()
             return
-        if ctrl and shift and event.key() == Qt.Key_K:
+        if ctrl and shift and event.key() == Qt.Key.Key_K:
             self._delete_line_current()
             return
-        if ctrl and not shift and event.key() == Qt.Key_F:
+        if ctrl and not shift and event.key() == Qt.Key.Key_F:
             p = self._get_modern_editor_parent()
             if p:
                 p.show_find_bar()
                 return
-        if ctrl and not shift and event.key() == Qt.Key_H:
+        if ctrl and not shift and event.key() == Qt.Key.Key_H:
             p = self._get_modern_editor_parent()
             if p:
                 p.show_replace_bar()
                 return
 
         # 8. Удаление парных скобок и кавычек при Backspace
-        if event.key() == Qt.Key_Backspace and not self.textCursor().hasSelection():
+        if event.key() == Qt.Key.Key_Backspace and not self.textCursor().hasSelection():
             cursor = self.textCursor()
             block_text = cursor.block().text()
             pos = cursor.positionInBlock()
@@ -2050,23 +2076,23 @@ class CodeEditor(EnhancedTextEdit):
                 return
 
         # 10. Умные отступы при Enter с расщеплением фигурных скобок
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._handle_smart_indent()
             return
 
         # 11. Комплитер
         if self.completer.popup().isVisible():
-            if event.key() in (Qt.Key_Tab, Qt.Key_Enter, Qt.Key_Return):
+            if event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Enter, Qt.Key.Key_Return):
                 self._accept_completion()
                 return
-            if event.key() == Qt.Key_Escape:
+            if event.key() == Qt.Key.Key_Escape:
                 self.completer.popup().hide()
                 return
-            if event.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_PageUp, Qt.Key_PageDown):
+            if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
                 QtWidgets.QApplication.sendEvent(self.completer.popup(), event)
                 return
 
-        if event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.completer.popup().hide()
 
         if event.text() and not event.text().isspace() and not ctrl:
@@ -2087,7 +2113,7 @@ class CodeEditor(EnhancedTextEdit):
                 block_text = cursor.block().text()
                 pos = cursor.positionInBlock()
                 if pos < len(block_text) and block_text[pos] == char:
-                    cursor.movePosition(QTextCursor.Right)
+                    cursor.movePosition(QTextCursor.MoveOperation.Right)
                     self.setTextCursor(cursor)
                     return True
 
@@ -2099,7 +2125,7 @@ class CodeEditor(EnhancedTextEdit):
                 return True
             else:
                 cursor.insertText(char + closure_map[char])
-                cursor.movePosition(QTextCursor.Left)
+                cursor.movePosition(QTextCursor.MoveOperation.Left)
                 self.setTextCursor(cursor)
                 return True
         return False
@@ -2123,8 +2149,8 @@ class CodeEditor(EnhancedTextEdit):
             if (prev_ch == '{' and next_ch == '}') or (prev_ch == '(' and next_ch == ')') or (prev_ch == '[' and next_ch == ']'):
                 cursor.beginEditBlock()
                 cursor.insertText('\n' + base_indent + tab_spaces + '\n' + base_indent)
-                cursor.movePosition(QTextCursor.Up)
-                cursor.movePosition(QTextCursor.EndOfLine)
+                cursor.movePosition(QTextCursor.MoveOperation.Up)
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfLine)
                 cursor.endEditBlock()
                 self.setTextCursor(cursor)
                 return
@@ -2138,6 +2164,8 @@ class CodeEditor(EnhancedTextEdit):
     def set_language(self, language: str):
         """Изменение языка программирования"""
         self.language = language
+        self._completion_analysis_revision = None
+        self._jedi_cache = (None, {})
         self.language_config = self._get_language_config(language)
         self.analyzer = CodeAnalyzer(language)
         self.highlighter = ModernSyntaxHighlighter(self.document(), self.language_config)
@@ -2237,7 +2265,7 @@ class ModernCodeEditor(QWidget):
         self.clean_code_btn.setProperty("class", "statusActionBtn")
         self.clean_code_btn.setText("Форматирование")
         set_line_icon(self.clean_code_btn, "code")
-        self.clean_code_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.clean_code_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.clean_code_btn.setToolTip("Форматирование по принципам Clean Code и PEP-8")
         clean_menu = QtWidgets.QMenu(self.clean_code_btn)
         clean_menu.setStyleSheet("QMenu { background: #121822; border: 1px solid #1C2533; color: #E6EDF3;  font-size: 12px; border-radius: 6px; padding: 4px; } QMenu::item { padding: 4px 12px; border-radius: 4px; } QMenu::item:selected { background: #1A3650; color: #00F2FE; }")
@@ -2256,7 +2284,7 @@ class ModernCodeEditor(QWidget):
         self.docstring_btn.setProperty("class", "statusActionBtn")
         self.docstring_btn.setText("Автодокументирование")
         set_line_icon(self.docstring_btn, "document")
-        self.docstring_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.docstring_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.docstring_btn.setToolTip("Генерация структурированных описаний и комментариев для функций, классов и всего файла")
         doc_menu = QtWidgets.QMenu(self.docstring_btn)
         doc_menu.setStyleSheet("QMenu { background: #121822; border: 1px solid #1C2533; color: #E6EDF3;  font-size: 12px; border-radius: 6px; padding: 4px; } QMenu::item { padding: 4px 12px; border-radius: 4px; } QMenu::item:selected { background: #1A3650; color: #00F2FE; }")
@@ -2305,7 +2333,7 @@ class ModernCodeEditor(QWidget):
         
         # Информация о режиме
         mode = "RECT" if self.editor.selection_mode == SelectionMode.RECTANGLE else "INS"
-        wrap_info = " | Wrap: ON" if self.editor.lineWrapMode() == QPlainTextEdit.WidgetWidth else ""
+        wrap_info = " | Wrap: ON" if self.editor.lineWrapMode() == QPlainTextEdit.LineWrapMode.WidgetWidth else ""
         
         self.status_bar.setText(f"Ln {line}, Col {column} | Lines: {lines} | Mode: {mode}{rect_info}{wrap_info}")
     
@@ -2343,7 +2371,7 @@ class ModernCodeEditor(QWidget):
         self._shortcuts = []
         for key_sequence, callback in shortcuts.items():
             sc = QShortcut(QKeySequence(key_sequence), self)
-            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             sc.activated.connect(callback)
             self._shortcuts.append(sc)
 
@@ -2378,7 +2406,7 @@ class ModernCodeEditor(QWidget):
 
     def toggle_word_wrap(self):
         current_mode = self.editor.lineWrapMode()
-        new_mode = QPlainTextEdit.NoWrap if current_mode == QPlainTextEdit.WidgetWidth else QPlainTextEdit.WidgetWidth
+        new_mode = QPlainTextEdit.LineWrapMode.NoWrap if current_mode == QPlainTextEdit.LineWrapMode.WidgetWidth else QPlainTextEdit.LineWrapMode.WidgetWidth
         self.editor.setLineWrapMode(new_mode)
         self.update_status_bar()
 
@@ -2418,7 +2446,7 @@ class ModernCodeEditor(QWidget):
     def document(self):
         return self.editor.document()
 
-    def setFocus(self, reason=Qt.OtherFocusReason):
+    def setFocus(self, reason=Qt.FocusReason.OtherFocusReason):
         self.editor.setFocus(reason)
     
     def format_entire_file(self):

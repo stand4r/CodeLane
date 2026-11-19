@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from PyQt5 import QtCore
+from PyQt6 import QtCore
 
 from core.code_analysis.lsp_client import LspCallItem, LspClient, LspDiagnostic, LspLocation
 from core.code_analysis.openapi_bridge import OpenApiBridge
@@ -47,6 +47,8 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
         self.root_path: Optional[str] = None
         self._lsp_clients: Dict[str, LspClient] = {}     # lang_id -> LspClient
         self._lsp_lock = threading.Lock()
+        self._lsp_starting = set()
+        self._document_lsp_requested = set()
         self._file_buffers: Dict[str, Tuple[int, str]] = {}  # file_path -> (version, text)
         self._debounce_timers: Dict[str, QtCore.QTimer] = {}
         self._diagnostics_cache: Dict[str, List[LspDiagnostic]] = {}
@@ -75,6 +77,7 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
         logger.info("Switching project root to: %s", norm_path)
         self.root_path = norm_path
         self._query_generation += 1
+        self._document_lsp_requested.clear()
 
         # Stop debounce timers
         for timer in self._debounce_timers.values():
@@ -101,54 +104,55 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
 
     def _shutdown_all_lsp_servers(self) -> None:
         with self._lsp_lock:
-            for lang_id, client in list(self._lsp_clients.items()):
-                try:
-                    logger.info("Stopping LSP client for %s", lang_id)
-                    client.shutdown_and_exit()
-                except Exception as exc:
-                    logger.debug("Error shutting down LSP %s: %s", lang_id, exc)
+            clients = list(self._lsp_clients.values())
             self._lsp_clients.clear()
+        for client in clients:
+            client.shutdown_and_exit()
 
-    # ------------------------------------------------------------------
-    # LSP Server Management
-    # ------------------------------------------------------------------
-    def _get_or_start_lsp(self, spec: LanguageSpec) -> Optional[LspClient]:
-        if not self.root_path or not spec.lsp_candidates:
-            return None
-
+    def _get_or_start_lsp(self, spec: LanguageSpec, generation=None) -> Optional[LspClient]:
         with self._lsp_lock:
+            if generation is None:
+                generation = self._query_generation
+            root = self.root_path
+            if generation != self._query_generation or not root or not spec.lsp_candidates:
+                return None
             client = self._lsp_clients.get(spec.id)
             if client and client.is_alive and client.is_initialized:
                 return client
+            key = (generation, spec.id)
+            if key in self._lsp_starting:
+                return None
+            self._lsp_starting.add(key)
 
-            # Check if custom path is configured in PyScribe settings
+        try:
             configured_path = None
             try:
                 from utils.settings_manager import get_settings_manager
+
                 sm = get_settings_manager()
                 configured_path = sm.get_setting(f"lsp_{spec.id}_path") or sm.get_setting(f"toolchain_{spec.toolchain_key}_path")
-            except Exception:
+            except RuntimeError:
                 pass
-
             server_exe, server_args = self.registry.resolve_lsp_server(spec, configured_path=configured_path)
             if not server_exe:
                 return None
 
-            logger.info("Starting LSP server for %s: %s %s", spec.id, server_exe, server_args)
             client = LspClient(
-                lang_id=spec.id,
-                server_path=server_exe,
-                server_args=server_args,
-                root_path=self.root_path,
-                on_diagnostics=self._on_lsp_diagnostics,
+                lang_id=spec.id, server_path=server_exe, server_args=server_args, root_path=root,
+                on_diagnostics=lambda path, items: self._on_lsp_diagnostics(path, items)
+                if generation == self._query_generation else None,
                 on_exit=self._on_lsp_exit,
             )
-
-            ok = client.start(timeout=6.0)
-            if ok:
-                self._lsp_clients[spec.id] = client
-                return client
+            if client.start(timeout=6.0):
+                with self._lsp_lock:
+                    if generation == self._query_generation and client.is_alive:
+                        self._lsp_clients[spec.id] = client
+                        return client
+            client.shutdown_and_exit()
             return None
+        finally:
+            with self._lsp_lock:
+                self._lsp_starting.discard(key)
 
     def _on_lsp_diagnostics(self, file_path: str, diagnostics: List[LspDiagnostic]) -> None:
         """Callback from background thread when server publishes diagnostics."""
@@ -156,7 +160,7 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
         QtCore.QMetaObject.invokeMethod(
             self,
             "_emit_diagnostics",
-            QtCore.Qt.QueuedConnection,
+            QtCore.Qt.ConnectionType.QueuedConnection,
             QtCore.Q_ARG(str, file_path),
             QtCore.Q_ARG(list, diagnostics),
         )
@@ -168,7 +172,9 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
     def _on_lsp_exit(self, lang_id: str, exit_code: int) -> None:
         logger.info("LSP server %s exited with code %s", lang_id, exit_code)
         with self._lsp_lock:
-            self._lsp_clients.pop(lang_id, None)
+            client = self._lsp_clients.get(lang_id)
+            if client is not None and not client.is_alive:
+                self._lsp_clients.pop(lang_id, None)
 
     # ------------------------------------------------------------------
     # Document Change & In-Memory Synchronization
@@ -180,9 +186,24 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
 
         spec = self.registry.get_by_path(norm_path)
         if spec:
-            client = self._get_or_start_lsp(spec)
-            if client:
+            client = self._lsp_clients.get(spec.id)
+            if client and client.is_alive:
                 client.did_open(norm_path, spec.id, text, version=1)
+            elif self.root_path and spec.lsp_candidates and spec.id not in self._document_lsp_requested:
+                self._document_lsp_requested.add(spec.id)
+                from services.background import run_async
+
+                generation = self._query_generation
+
+                def ready(client):
+                    if client is None or generation != self._query_generation:
+                        return
+                    for path, (version, latest) in list(self._file_buffers.items()):
+                        language = self.registry.get_by_path(path)
+                        if language and language.id == spec.id:
+                            client.did_open(path, language.id, latest, version=version)
+
+                run_async(lambda: self._get_or_start_lsp(spec, generation), on_done=ready)
 
     def on_document_changed(self, file_path: str, text: str) -> None:
         """Called on text edits. Debounces notifications to avoid freezing/flooding."""
@@ -209,8 +230,8 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
 
         spec = self.registry.get_by_path(file_path)
         if spec:
-            client = self._get_or_start_lsp(spec)
-            if client:
+            client = self._lsp_clients.get(spec.id)
+            if client and client.is_alive:
                 client.did_change(file_path, text, version=version)
 
     def on_document_saved(self, file_path: str) -> None:

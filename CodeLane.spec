@@ -1,8 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyScribe PyInstaller Specification
+# CodeLane PyInstaller Specification
 # Builds a self-contained, windowless Windows desktop IDE executable and bundle.
 
 from pathlib import Path
+import sys
 
 ROOT = Path(SPECPATH)
 
@@ -19,13 +20,14 @@ datas = [
 ]
 
 hiddenimports = [
-    # PyQt5 Core and GUI
-    "PyQt5.QtCore",
-    "PyQt5.QtGui",
-    "PyQt5.QtWidgets",
-    "PyQt5.QtPrintSupport",
-    "PyQt5.QtWebEngineWidgets",
-    "PyQt5.sip",
+    # PyQt6 Core and GUI
+    "PyQt6.QtCore",
+    "PyQt6.QtGui",
+    "PyQt6.QtWidgets",
+    "PyQt6.QtPrintSupport",
+    "PyQt6.QtWebEngineCore",
+    "PyQt6.QtWebEngineWidgets",
+    "PyQt6.sip",
     # System and Process inspection
     "psutil",
     "pyte",
@@ -104,6 +106,14 @@ a = Analysis(
     optimize=0,
 )
 
+if sys.platform == "win32":
+    # Qt imports the Windows ICU API. A third-party ICU on the build machine's
+    # PATH can have the same DLL name but incompatible versioned exports.
+    a.binaries = [
+        entry for entry in a.binaries
+        if entry[0].lower() not in {"icuuc.dll", "icuin.dll", "icu.dll"}
+    ]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -111,7 +121,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="PyScribe",
+    name="CodeLane",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -132,5 +142,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="PyScribe",
+    name="CodeLane",
 )

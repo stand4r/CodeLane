@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 # A single QApplication for the whole module, created before any widget exists.
 _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -58,7 +58,7 @@ def _make_editor(code: str = ""):
 def _select(ed, start: int, end: int):
     cursor = ed.editor.textCursor()
     cursor.setPosition(start)
-    cursor.setPosition(end, QtGui.QTextCursor.KeepAnchor)
+    cursor.setPosition(end, QtGui.QTextCursor.MoveMode.KeepAnchor)
     ed.editor.setTextCursor(cursor)
 
 
@@ -104,7 +104,7 @@ def test_delete_last_line():
     """Regression: deleting the last line used to leave the line and a stray newline."""
     ed = _make_editor("a\nb\nc")
     cursor = ed.editor.textCursor()
-    cursor.movePosition(QtGui.QTextCursor.End)
+    cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
     ed.editor.setTextCursor(cursor)
     ed._delete_line()
     assert ed.get_code() == "a\nb"
@@ -113,7 +113,7 @@ def test_delete_last_line():
 def test_delete_middle_line():
     ed = _make_editor("a\nb\nc")
     cursor = ed.editor.textCursor()
-    cursor.movePosition(QtGui.QTextCursor.Down)
+    cursor.movePosition(QtGui.QTextCursor.MoveOperation.Down)
     ed.editor.setTextCursor(cursor)
     ed._delete_line()
     assert ed.get_code() == "a\nc"
@@ -123,7 +123,7 @@ def test_duplicate_last_line():
     """Regression: duplicating the last line only appended a newline."""
     ed = _make_editor("a\nb")
     cursor = ed.editor.textCursor()
-    cursor.movePosition(QtGui.QTextCursor.End)
+    cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
     ed.editor.setTextCursor(cursor)
     ed._duplicate_line()
     assert ed.get_code() == "a\nb\nb"
@@ -139,8 +139,8 @@ def test_duplicate_first_line():
 def test_move_lines():
     ed = _make_editor("one\ntwo\nthree")
     cursor = ed.editor.textCursor()
-    cursor.movePosition(QtGui.QTextCursor.Start)
-    cursor.movePosition(QtGui.QTextCursor.Down)
+    cursor.movePosition(QtGui.QTextCursor.MoveOperation.Start)
+    cursor.movePosition(QtGui.QTextCursor.MoveOperation.Down)
     ed.editor.setTextCursor(cursor)
     ed.editor._move_line_up()
     assert ed.get_code() == "two\none\nthree"
@@ -168,25 +168,25 @@ def test_ctrl_w_is_handled_by_editor_not_window():
         def get_current_editor(self):
             return None
     ed.window = lambda: StubWindow()
-    event = QtGui.QKeyEvent(QtCore.QEvent.KeyPress, QtCore.Qt.Key_W, QtCore.Qt.ControlModifier, "w")
+    event = QtGui.QKeyEvent(QtCore.QEvent.Type.KeyPress, QtCore.Qt.Key.Key_W, QtCore.Qt.KeyboardModifier.ControlModifier, "w")
     ed.editor.keyPressEvent(event)
     assert not calls, "Ctrl+W must not trigger action_close_file from the editor"
 
 
 def test_zoom_shortcuts_single_effect():
-    from PyQt5.QtTest import QTest
+    from PyQt6.QtTest import QTest
     ed = _make_editor()
     ed.editor.setFocus()
     start = ed.editor.current_font_size
-    QTest.keyClick(ed.editor, QtCore.Qt.Key_Equal, QtCore.Qt.ControlModifier)
+    QTest.keyClick(ed.editor, QtCore.Qt.Key.Key_Equal, QtCore.Qt.KeyboardModifier.ControlModifier)
     assert ed.editor.current_font_size == start + 1
-    QTest.keyClick(ed.editor, QtCore.Qt.Key_0, QtCore.Qt.ControlModifier)
+    QTest.keyClick(ed.editor, QtCore.Qt.Key.Key_0, QtCore.Qt.KeyboardModifier.ControlModifier)
     assert ed.editor.current_font_size == start
 
 
 def test_editor_shortcuts_with_workbench_shortcuts_installed():
     """Use real Qt shortcut dispatch with both scopes present."""
-    from PyQt5.QtTest import QTest
+    from PyQt6.QtTest import QTest
     from app.main_window import ModernMainWindow
     from widgets.QCodeEditor import ModernCodeEditor
 
@@ -205,23 +205,23 @@ def test_editor_shortcuts_with_workbench_shortcuts_installed():
     _app().processEvents()
     try:
         assert editor.editor.hasFocus()
-        QTest.keyClick(editor.editor, QtCore.Qt.Key_F, QtCore.Qt.ControlModifier)
+        QTest.keyClick(editor.editor, QtCore.Qt.Key.Key_F, QtCore.Qt.KeyboardModifier.ControlModifier)
         assert editor.find_bar.isVisible()
 
         editor.find_bar.hide_bar()
         editor.editor.setFocus()
-        QTest.keyClick(editor.editor, QtCore.Qt.Key_H, QtCore.Qt.ControlModifier)
+        QTest.keyClick(editor.editor, QtCore.Qt.Key.Key_H, QtCore.Qt.KeyboardModifier.ControlModifier)
         assert editor.find_bar.replace_input.isVisible()
 
         editor.find_bar.hide_bar()
         editor.editor.setFocus()
         original_size = editor.editor.current_font_size
-        QTest.keyClick(editor.editor, QtCore.Qt.Key_Equal, QtCore.Qt.ControlModifier)
+        QTest.keyClick(editor.editor, QtCore.Qt.Key.Key_Equal, QtCore.Qt.KeyboardModifier.ControlModifier)
         assert editor.editor.current_font_size == original_size + 1
 
         editor.set_code("first\nsecond")
-        QTest.keyClick(editor.editor, QtCore.Qt.Key_K,
-                       QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier)
+        QTest.keyClick(editor.editor, QtCore.Qt.Key.Key_K,
+                       QtCore.Qt.KeyboardModifier.ControlModifier | QtCore.Qt.KeyboardModifier.ShiftModifier)
         assert editor.get_code() == "second"
     finally:
         host.close()
@@ -245,15 +245,15 @@ def test_rectangle_selection_copy_insert_delete():
 
 
 def test_auto_closure_and_smart_indent():
-    from PyQt5.QtTest import QTest
+    from PyQt6.QtTest import QTest
     ed = _make_editor()
     ed.editor.setFocus()
     QTest.keyClicks(ed.editor, "def f():")
-    QTest.keyClick(ed.editor, QtCore.Qt.Key_Return)
+    QTest.keyClick(ed.editor, QtCore.Qt.Key.Key_Return)
     assert ed.get_code() == "def f():\n    "
     QTest.keyClicks(ed.editor, "print(")
     assert ed.get_code() == "def f():\n    print()"
-    QTest.keyClick(ed.editor, QtCore.Qt.Key_Backspace)
+    QTest.keyClick(ed.editor, QtCore.Qt.Key.Key_Backspace)
     assert ed.get_code() == "def f():\n    print"
 
 
@@ -280,11 +280,13 @@ def test_editor_survives_deletion():
         app.processEvents()
 
 
-def test_terminal_opens_clean_without_banner():
+def test_terminal_opens_clean_without_banner(tmp_path, monkeypatch):
     """A fresh terminal shows only the prompt — no welcome/help banner."""
     import time
+    from utils import programs
     from widgets.TerminalWidget import TerminalWidget
 
+    monkeypatch.setattr(programs, "_state_dir", lambda: tmp_path)
     app = _app()
     widget = TerminalWidget()
     widget.resize(700, 240)
@@ -293,7 +295,7 @@ def test_terminal_opens_clean_without_banner():
     while time.time() < deadline:
         app.processEvents()
         tab = widget._current()
-        if tab is not None and tab._shell_running() and tab.screen.toPlainText().strip():
+        if tab is not None and tab._shell_running() and "$ " in tab.screen.toPlainText():
             break
         time.sleep(0.02)
     for _ in range(40):
@@ -607,7 +609,7 @@ def test_palette_pill_paint_helper():
     """The flash overlay paints without a QSS round-trip."""
     from widgets.animations import flash
     app = _app()
-    from PyQt5.QtWidgets import QLabel
+    from PyQt6.QtWidgets import QLabel
     lbl = QLabel("x")
     lbl.resize(40, 20)
     lbl.show()

@@ -17,10 +17,10 @@ import re
 from typing import List, Tuple, Optional, Dict, Any
 
 from design.icons import line_icon, set_line_icon
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint
-from PyQt5.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QToolButton, QMenu, QAction,
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint
+from PyQt6.QtWidgets import (
+    QFrame, QHBoxLayout, QLabel, QToolButton, QMenu,
     QApplication, QPlainTextEdit, QMessageBox, QDialog, QVBoxLayout,
     QTextEdit
 )
@@ -377,8 +377,8 @@ class DocumentationGenerator:
 class CompactOutlinePopup(QDialog):
     """Compact, scrollable symbol outline popup with instant search filtering."""
     def __init__(self, symbols: List[CodeSymbol], on_jump, parent=None, title_text="Структура файла"):
-        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.symbols = sorted(symbols, key=lambda s: s.line)
         self.on_jump = on_jump
         self.setFixedSize(460, 360)
@@ -450,12 +450,12 @@ class CompactOutlinePopup(QDialog):
         QTimer.singleShot(0, self.search_input.setFocus)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Down:
+        if event.key() == Qt.Key.Key_Down:
             self.list_widget.setFocus()
             if self.list_widget.count() > 0 and self.list_widget.currentRow() == -1:
                 self.list_widget.setCurrentRow(0)
             return
-        elif event.key() == Qt.Key_Escape:
+        elif event.key() == Qt.Key.Key_Escape:
             self.close()
             return
         super().keyPressEvent(event)
@@ -482,7 +482,7 @@ class CompactOutlinePopup(QDialog):
             )
             item_text = f"{icon}  {display_name}  ·  {kind_label} (стр. {sym.line})"
             item = QtWidgets.QListWidgetItem(item_text)
-            item.setData(Qt.UserRole, sym.line)
+            item.setData(Qt.ItemDataRole.UserRole, sym.line)
             self.list_widget.addItem(item)
         if self.list_widget.count() > 0:
             self.list_widget.setCurrentRow(0)
@@ -493,7 +493,7 @@ class CompactOutlinePopup(QDialog):
             self._on_item_activated(item)
 
     def _on_item_activated(self, item):
-        line = item.data(Qt.UserRole)
+        line = item.data(Qt.ItemDataRole.UserRole)
         if line and self.on_jump:
             self.on_jump(line)
         self.accept()
@@ -555,6 +555,7 @@ class CodeLensBar(QFrame):
         self._symbols: List[CodeSymbol] = []
         self._syntax_error_line: Optional[int] = None
         self._current_scope = {"class": None, "function": None}
+        self._parse_pending = True
 
         self._debounce_timer = QTimer(self)
         self._debounce_timer.setSingleShot(True)
@@ -619,7 +620,7 @@ class CodeLensBar(QFrame):
         self.preview_btn.setProperty("class", "lensActionBtn")
         self.preview_btn.setText("Предпросмотр   ")
         self.preview_btn.setToolTip("Открыть отрисованный Markdown (Ctrl+Shift+V)")
-        self.preview_btn.setCursor(Qt.PointingHandCursor)
+        self.preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.preview_btn.clicked.connect(self._on_preview_clicked)
         self.preview_btn.hide()
         layout.addWidget(self.preview_btn)
@@ -627,15 +628,15 @@ class CodeLensBar(QFrame):
         # 3. Syntax Status Chip
         self.syntax_badge = QToolButton()
         self._set_syntax_badge("Синтаксис ОК")
-        self.syntax_badge.setCursor(Qt.PointingHandCursor)
+        self.syntax_badge.setCursor(Qt.CursorShape.PointingHandCursor)
         self.syntax_badge.setToolTip("Статус синтаксиса Python. Нажмите, чтобы открыть компактную структуру (Outline) или перейти к ошибке.")
         self.syntax_badge.clicked.connect(self._on_syntax_badge_clicked)
         layout.addWidget(self.syntax_badge)
 
         layout.addSpacing(6)
         for name, tooltip, orientation in (
-            ("split_right_btn", "Разделить редактор вправо", Qt.Horizontal),
-            ("split_down_btn", "Разделить редактор вниз", Qt.Vertical),
+            ("split_right_btn", "Разделить редактор вправо", Qt.Orientation.Horizontal),
+            ("split_down_btn", "Разделить редактор вниз", Qt.Orientation.Vertical),
             ("unsplit_btn", "Объединить группы редактора", None),
         ):
             button = QToolButton(self)
@@ -643,8 +644,8 @@ class CodeLensBar(QFrame):
             button.setProperty("class", "lensActionBtn")
             button.setToolTip(tooltip)
             button.setAccessibleName(tooltip)
-            button.setCursor(Qt.PointingHandCursor)
-            button.setFocusPolicy(Qt.NoFocus)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setIcon(self._split_icon(orientation))
             button.clicked.connect(
                 lambda checked=False, direction=orientation: self._on_split_clicked(direction)
@@ -658,7 +659,7 @@ class CodeLensBar(QFrame):
         self.clean_code_btn = QToolButton()
         self.clean_code_btn.setProperty("class", "lensActionBtn")
         self.clean_code_btn.setText("Форматирование  ")
-        self.clean_code_btn.setPopupMode(QToolButton.InstantPopup)
+        self.clean_code_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.clean_code_btn.setToolTip("Форматирование по принципам Clean Code ")
         clean_menu = QMenu(self.clean_code_btn)
         clean_menu.setStyleSheet("QMenu { background: #1C2128; border: 1px solid #30363D; color: #E6EDF3;  font-size: 12px; } QMenu::item:selected { background: #1F6FEB; }")
@@ -677,7 +678,7 @@ class CodeLensBar(QFrame):
         self.docstring_btn = QToolButton()
         self.docstring_btn.setProperty("class", "lensActionBtn")
         self.docstring_btn.setText("Документация   ")
-        self.docstring_btn.setPopupMode(QToolButton.InstantPopup)
+        self.docstring_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.docstring_btn.setToolTip("Генерация структурированных описаний и комментариев для функций, классов и всего файла")
         doc_menu = QMenu(self.docstring_btn)
         doc_menu.setStyleSheet("QMenu { background: #1C2128; border: 1px solid #30363D; color: #E6EDF3;  font-size: 12px; } QMenu::item:selected { background: #1F6FEB; }")
@@ -693,7 +694,7 @@ class CodeLensBar(QFrame):
         self.docstring_btn.hide()
 
     def _split_icon(self, orientation):
-        name = "split-right" if orientation == Qt.Horizontal else "split-down" if orientation == Qt.Vertical else "unsplit"
+        name = "split-right" if orientation == Qt.Orientation.Horizontal else "split-down" if orientation == Qt.Orientation.Vertical else "unsplit"
         return line_icon(name)
 
     def _on_split_clicked(self, orientation):
@@ -713,11 +714,15 @@ class CodeLensBar(QFrame):
 
     def _connect_signals(self):
         if hasattr(self.editor, 'cursorPositionChanged'):
-            self.editor.cursorPositionChanged.connect(self._schedule_refresh)
+            self.editor.cursorPositionChanged.connect(self._schedule_cursor_refresh)
         if hasattr(self.editor, 'textChanged'):
-            self.editor.textChanged.connect(self._schedule_refresh)
+            self.editor.textChanged.connect(self._schedule_parse_refresh)
 
-    def _schedule_refresh(self):
+    def _schedule_cursor_refresh(self):
+        self._debounce_timer.start(80)
+
+    def _schedule_parse_refresh(self):
+        self._parse_pending = True
         self._debounce_timer.start(200)
 
     def _detect_language(self) -> str:
@@ -840,7 +845,6 @@ class CodeLensBar(QFrame):
         return symbols, syntax_error
 
     def _refresh_lens(self):
-        code = self.editor.toPlainText()
         cursor = self.editor.textCursor()
         line = cursor.blockNumber() + 1
 
@@ -858,8 +862,12 @@ class CodeLensBar(QFrame):
         else:
             self.syntax_badge.show()
 
-        # 2. Parse symbols and AST
-        self._parse_symbols(code)
+        # Cursor movement only updates the active breadcrumb. Parsing the
+        # document here used to synchronously invoke Tree-sitter on every
+        # cursor move; its native parser could stall or crash the UI thread.
+        if self._parse_pending:
+            self._parse_pending = False
+            self._parse_symbols(self.editor.toPlainText())
 
         # 3. Find current scope and telemetry
         curr_class = None
@@ -918,45 +926,8 @@ class CodeLensBar(QFrame):
 
         lang = self._detect_language()
 
-        # 1. First attempt: Unified Code Analysis Service (Tree-sitter AST & LSP integration)
-        filepath = getattr(self.modern_editor, 'file_path', None)
-        filepath_str = str(filepath) if filepath else f"buffer.{lang}"
-        try:
-            from core.code_analysis.service import UnifiedCodeAnalysisService
-            service = UnifiedCodeAnalysisService.get_instance()
-            status = service.get_language_status(filepath_str)
-            syntax_res = service.get_syntax_result(filepath_str, text=code)
-
-            if syntax_res and syntax_res.lang_id == "asm":
-                self._symbols = syntax_res.symbols
-                self._set_syntax_badge("ASM · Метки")
-                self.syntax_badge.setToolTip("Метки и подключения. Проверка инструкций выполняется при сборке.")
-                return
-
-            if syntax_res and (syntax_res.symbols or syntax_res.is_tree_sitter):
-                self._symbols = syntax_res.symbols
-                has_err = bool(syntax_res.syntax_errors)
-                if has_err:
-                    err_line, err_msg = syntax_res.syntax_errors[0]
-                    self._syntax_error_line = err_line
-                    self._set_syntax_badge(f"Синтаксис: строка {err_line}", error=True)
-                    self.syntax_badge.setToolTip(f"{status['display_name']}: {err_msg}")
-                else:
-                    self._set_syntax_badge(status["badge"], error=False)
-                    if status["lsp_active"]:
-                        tip = f"Семантический анализ LSP активен ({status['server_name'] or 'LSP'})"
-                    elif status["server_found"]:
-                        tip = f"Синтаксический анализ Tree-sitter ОК. Сервер {status['server_name']} готов к запуску."
-                    elif status["install_hint"]:
-                        tip = f"Синтаксический анализ Tree-sitter ОК.\n{status['install_hint']}"
-                    else:
-                        tip = f"Синтаксический анализ Tree-sitter ({status['display_name']}) ОК"
-                    self.syntax_badge.setToolTip(tip)
-                return
-        except Exception:
-            pass
-
-        # 2. Fallback: Python AST and Regex-based parser
+        # Keep CodeLens lightweight: full Tree-sitter/LSP analysis belongs to
+        # the analysis worker and must never run from a UI refresh callback.
         is_python = lang in ('py', 'python')
 
         if is_python:
@@ -1012,8 +983,8 @@ class CodeLensBar(QFrame):
 
     def _jump_to_line(self, line: int):
         cursor = self.editor.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.Start)
-        cursor.movePosition(QtGui.QTextCursor.Down, QtGui.QTextCursor.MoveAnchor, max(0, line - 1))
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.Start)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.Down, QtGui.QTextCursor.MoveMode.MoveAnchor, max(0, line - 1))
         self.editor.setTextCursor(cursor)
         self.editor.setFocus()
         self.editor.centerCursor()
@@ -1024,13 +995,13 @@ class CodeLensBar(QFrame):
             return
         popup = CompactOutlinePopup(self._symbols, self._jump_to_line, self, "Структура файла (Outline)")
         pt = self.syntax_badge.mapToGlobal(QtCore.QPoint(0, self.syntax_badge.height() + 4))
-        screen_geo = QApplication.desktop().availableGeometry(pt)
+        screen_geo = (QApplication.screenAt(pt) or self.screen()).availableGeometry()
         if pt.x() + popup.width() > screen_geo.right():
             pt.setX(screen_geo.right() - popup.width() - 10)
         if pt.y() + popup.height() > screen_geo.bottom():
             pt.setY(pt.y() - popup.height() - self.syntax_badge.height() - 8)
         popup.move(pt)
-        popup.exec_()
+        popup.exec()
 
     def _show_classes_menu(self):
         classes = [s for s in self._symbols if s.kind in ('class', 'struct', 'interface', 'trait')]
@@ -1039,7 +1010,7 @@ class CodeLensBar(QFrame):
         popup = CompactOutlinePopup(classes, self._jump_to_line, self, "Классы и структуры")
         pt = self.class_btn.mapToGlobal(QtCore.QPoint(0, self.class_btn.height() + 4))
         popup.move(pt)
-        popup.exec_()
+        popup.exec()
 
     def _show_functions_menu(self):
         funcs = [s for s in self._symbols if s.kind in ('function', 'method')]
@@ -1048,7 +1019,7 @@ class CodeLensBar(QFrame):
         popup = CompactOutlinePopup(funcs, self._jump_to_line, self, "Функции и методы")
         pt = self.func_btn.mapToGlobal(QtCore.QPoint(0, self.func_btn.height() + 4))
         popup.move(pt)
-        popup.exec_()
+        popup.exec()
 
     def run_current_block(self):
         """Execute the current selection or current function in the integrated terminal."""
@@ -1347,7 +1318,7 @@ class CodeLensBar(QFrame):
         """Find occurrences of the word/symbol under cursor in the current project."""
         cursor = self.editor.textCursor()
         if not cursor.hasSelection():
-            cursor.select(QtGui.QTextCursor.WordUnderCursor)
+            cursor.select(QtGui.QTextCursor.SelectionType.WordUnderCursor)
         word = cursor.selectedText().strip()
 
         if not word:

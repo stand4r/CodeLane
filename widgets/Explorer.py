@@ -5,9 +5,9 @@ Provides file system navigation and operations
 
 import os
 from design.icons import set_line_icon
-from PyQt5 import QtWidgets, QtCore, QtGui
-from PyQt5.QtGui import QIcon, QDesktopServices
-from PyQt5.QtCore import Qt, QFileInfo
+from PyQt6 import QtWidgets, QtCore, QtGui
+from PyQt6.QtGui import QIcon, QDesktopServices
+from PyQt6.QtCore import Qt, QFileInfo
 from pathlib import Path
 
 
@@ -20,7 +20,7 @@ IGNORED_NAMES = {
 IGNORED_SUFFIXES = {".pyc", ".pyo", ".class", ".o", ".obj", ".a", ".lib", ".tmp", ".log"}
 
 
-class ProjectFileSystemModel(QtWidgets.QFileSystemModel):
+class ProjectFileSystemModel(QtGui.QFileSystemModel):
     def _ignored(self, index):
         try:
             p = Path(self.filePath(index))
@@ -28,17 +28,21 @@ class ProjectFileSystemModel(QtWidgets.QFileSystemModel):
         except Exception:
             return False
 
-    def data(self, index, role=QtCore.Qt.DisplayRole):
+    def data(self, index, role=QtCore.Qt.ItemDataRole.DisplayRole):
         value = super().data(index, role)
+        if role not in (QtCore.Qt.ItemDataRole.ForegroundRole,
+                        QtCore.Qt.ItemDataRole.FontRole,
+                        QtCore.Qt.ItemDataRole.ToolTipRole):
+            return value
         if self._ignored(index):
-            if role == QtCore.Qt.ForegroundRole:
+            if role == QtCore.Qt.ItemDataRole.ForegroundRole:
                 return QtGui.QBrush(QtGui.QColor("#68717D"))
-            if role == QtCore.Qt.FontRole:
-                font = super().data(index, QtCore.Qt.FontRole) or QtGui.QFont()
+            if role == QtCore.Qt.ItemDataRole.FontRole:
+                font = super().data(index, QtCore.Qt.ItemDataRole.FontRole) or QtGui.QFont()
                 font = QtGui.QFont(font)
                 font.setItalic(True)
                 return font
-            if role == QtCore.Qt.ToolTipRole:
+            if role == QtCore.Qt.ItemDataRole.ToolTipRole:
                 return "Игнорируется анализом проекта / сгенерированные файлы или кэш"
         return value
 
@@ -60,6 +64,7 @@ class Explorer(QtWidgets.QTreeView):
         self.workspace_root = None
 
         self.model = ProjectFileSystemModel()
+        self.model.setOption(QtGui.QFileSystemModel.Option.DontUseCustomDirectoryIcons, True)
         self.model.setRootPath(QtCore.QDir.rootPath())
         self.model.setIconProvider(CustomIconProvider())
         self.setModel(self.model)
@@ -76,11 +81,11 @@ class Explorer(QtWidgets.QTreeView):
         self.setIndentation(8)
         self.setIconSize(QtCore.QSize(16, 16))
         self.setAnimated(True)
-        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setMouseTracking(True)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, False)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, False)
         
-        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.open_context_menu)
         
         # Store clipboard for copy/paste operations
@@ -175,7 +180,7 @@ class Explorer(QtWidgets.QTreeView):
             delete_action = menu.addAction("Удалить")
             delete_action.triggered.connect(self.delete_item)
 
-        menu.exec_(self.viewport().mapToGlobal(position))
+        menu.exec(self.viewport().mapToGlobal(position))
 
     def rename_item(self):
         index = self.currentIndex()
@@ -369,11 +374,11 @@ class Explorer(QtWidgets.QTreeView):
             self,
             "Подтверждение удаления",
             f"Вы уверены, что хотите удалить «{item_name}»?",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.No
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No
         )
         
-        if reply == QtWidgets.QMessageBox.Yes:
+        if reply == QtWidgets.QMessageBox.StandardButton.Yes:
             try:
                 if self.model.isDir(index):
                     # Delete directory recursively
@@ -472,21 +477,21 @@ class YouTubeStyleToolBar(QtWidgets.QWidget):
         # Up button
         self.up_btn = QtWidgets.QPushButton("⬆️ Up")
         self.up_btn.setStyleSheet(button_style)
-        self.up_btn.setCursor(Qt.PointingHandCursor)
+        self.up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.up_btn.clicked.connect(self.explorer.go_up)
         
         # Refresh button
         self.refresh_btn = QtWidgets.QPushButton("Refresh")
         set_line_icon(self.refresh_btn, "reload")
         self.refresh_btn.setStyleSheet(button_style)
-        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.clicked.connect(self.explorer.refresh_model)
         
         # Home button
         self.home_btn = QtWidgets.QPushButton("Home")
         set_line_icon(self.home_btn, "home")
         self.home_btn.setStyleSheet(button_style)
-        self.home_btn.setCursor(Qt.PointingHandCursor)
+        self.home_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.home_btn.clicked.connect(self.go_home)
         
         # Add buttons to layout

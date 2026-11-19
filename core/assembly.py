@@ -34,7 +34,7 @@ def windows_build(source: Path, scratch: Path, arguments: list[str]):
     fasm = tools / "fasm" / "fasm.exe"
     nasm = tools / "nasm" / "nasm.exe"
     if not (fasm.is_file() and nasm.is_file()):
-        raise ValueError("В сборке PyScribe отсутствуют NASM или FASM.")
+        raise ValueError("В сборке CodeLane отсутствуют NASM или FASM.")
 
     text = source.read_text(encoding="utf-8-sig")
     directives = "\n".join(line.split(";", 1)[0] for line in text.splitlines())

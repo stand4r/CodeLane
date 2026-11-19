@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 
 
-from PyQt5.QtGui import QFont
+from PyQt6.QtGui import QFont
 
 
 
@@ -59,7 +59,7 @@ class Language(Enum):
 class SyntaxRule:
     pattern: str
     color: str
-    weight: int = QFont.Normal
+    weight: int = QFont.Weight.Normal
     italic: bool = False
 
 
@@ -108,7 +108,7 @@ class PythonLanguageProvider(LanguageProvider):
         
         syntax_rules = [
             SyntaxRule(r'#.*$', "#6A9955"),  # Комментарии
-            SyntaxRule(r'\b(class|def)\s+(\w+)', "#D7BA7D", QFont.Normal, False),
+            SyntaxRule(r'\b(class|def)\s+(\w+)', "#D7BA7D", QFont.Weight.Normal, False),
             SyntaxRule(r'\b(self|cls)\b', "#569CD6"),
             SyntaxRule(r'@\w+\b', "#D7BA7D"),  # Декораторы
             SyntaxRule(r'\b(None|True|False)\b', "#569CD6"),
@@ -189,10 +189,10 @@ class CSLanguageProvider(LanguageProvider):
         syntax_rules = [
             SyntaxRule(r'//[^\n]*', "#6A9955"),  # Комментарии
             SyntaxRule(r'/\*.*?\*/', "#6A9955"),
-            SyntaxRule(r'\bclass\s+(\w+)', "#D7BA7D", QFont.Normal, False),
-            SyntaxRule(r'\binterface\s+(\w+)', "#D7BA7D", QFont.Normal, False),
-            SyntaxRule(r'\bstruct\s+(\w+)', "#D7BA7D", QFont.Normal, False),
-            SyntaxRule(r'\benum\s+(\w+)', "#D7BA7D", QFont.Normal, False),
+            SyntaxRule(r'\bclass\s+(\w+)', "#D7BA7D", QFont.Weight.Normal, False),
+            SyntaxRule(r'\binterface\s+(\w+)', "#D7BA7D", QFont.Weight.Normal, False),
+            SyntaxRule(r'\bstruct\s+(\w+)', "#D7BA7D", QFont.Weight.Normal, False),
+            SyntaxRule(r'\benum\s+(\w+)', "#D7BA7D", QFont.Weight.Normal, False),
             SyntaxRule(r'^\s*#\w+', "#D7BA7D"),  # Декораторы
             SyntaxRule(r'\b(None|True|False)\b', "#569CD6"),
             SyntaxRule(r'\b\d+\b', "#B5CEA8"),  # Числа

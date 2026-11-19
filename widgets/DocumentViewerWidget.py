@@ -2,7 +2,7 @@
 from pathlib import Path
 
 from design.icons import set_line_icon
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from services.background import run_async
 from services.office_reader import OfficeReader
@@ -16,7 +16,7 @@ class _ReadingDocument(QtGui.QTextDocument):
         self._images = {url.toString(): image for url, image in images}
 
     def loadResource(self, resource_type, url):
-        if resource_type == QtGui.QTextDocument.ImageResource:
+        if resource_type == QtGui.QTextDocument.ResourceType.ImageResource:
             return self._images.get(url.toString())
         return None
 
@@ -77,7 +77,7 @@ class _LoadingArc(QtWidgets.QWidget):
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         rect = QtCore.QRectF(self.rect()).adjusted(3, 3, -3, -3)
         painter.setPen(QtGui.QPen(self.palette().mid().color(), 2))
         painter.drawEllipse(rect)
@@ -102,10 +102,10 @@ class _PageCanvas(QtWidgets.QAbstractScrollArea):
         self.zoom = 1.0
         self.page_count = 1
         self._wheel_remainder = 0.0
-        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.verticalScrollBar().setSingleStep(48)
         self.verticalScrollBar().valueChanged.connect(self._emit_page)
-        self.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self.viewport().setMouseTracking(True)
 
     def show_document(self, document, page_count, sheet, margins):
@@ -155,12 +155,12 @@ class _PageCanvas(QtWidgets.QAbstractScrollArea):
         bar.setValue(round(page_offset * self._page_pitch()))
 
     def wheelEvent(self, event):
-        if event.modifiers() & QtCore.Qt.ControlModifier:
+        if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
             delta = event.angleDelta().y() or event.pixelDelta().y()
             self.change_zoom(1.12 ** (delta / 120))
             event.accept()
             return
-        if not event.modifiers() & QtCore.Qt.ShiftModifier:
+        if not event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
             pixels = event.pixelDelta().y()
             angle = event.angleDelta().y()
             if pixels or angle:
@@ -192,7 +192,7 @@ class _PageCanvas(QtWidgets.QAbstractScrollArea):
 
     def mouseMoveEvent(self, event):
         link = self._link_at(event.pos())
-        self.viewport().setCursor(QtCore.Qt.PointingHandCursor if link else QtCore.Qt.ArrowCursor)
+        self.viewport().setCursor(QtCore.Qt.CursorShape.PointingHandCursor if link else QtCore.Qt.CursorShape.ArrowCursor)
         super().mouseMoveEvent(event)
 
     def _goto_bookmark(self, name):
@@ -213,7 +213,7 @@ class _PageCanvas(QtWidgets.QAbstractScrollArea):
             block = block.next()
 
     def mouseReleaseEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             url = QtCore.QUrl(self._link_at(event.pos()))
             if url.scheme().lower() in {"http", "https", "mailto"}:
                 QtGui.QDesktopServices.openUrl(url)
@@ -237,7 +237,7 @@ class _PageCanvas(QtWidgets.QAbstractScrollArea):
         left = self._sheet_left(scale)
         size = self.document.pageSize()
         context = QtGui.QAbstractTextDocumentLayout.PaintContext()
-        context.palette.setColor(QtGui.QPalette.Text, self.ink)
+        context.palette.setColor(QtGui.QPalette.ColorRole.Text, self.ink)
         for page in range(first, last):
             top = self.gap + page * pitch - offset
             rect = QtCore.QRectF(left, top, width, height)
@@ -266,10 +266,10 @@ class DocumentViewerWidget(QtWidgets.QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         toolbar = QtWidgets.QHBoxLayout()
         name = QtWidgets.QLabel(Path(self.file_path).name)
-        name.setTextFormat(QtCore.Qt.PlainText)
+        name.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         name.setObjectName("markdownTitle")
         name.setToolTip(self.file_path)
-        name.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        name.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         toolbar.addWidget(name, 1)
         layout.addLayout(toolbar)
         self.stack = QtWidgets.QStackedWidget()
@@ -309,9 +309,9 @@ class DocumentViewerWidget(QtWidgets.QWidget):
         wait_layout = QtWidgets.QVBoxLayout(self._loading)
         wait_layout.addStretch(1)
         label = QtWidgets.QLabel("Открываем документ…")
-        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         wait_layout.addWidget(label)
-        wait_layout.addWidget(_LoadingArc(), 0, QtCore.Qt.AlignHCenter)
+        wait_layout.addWidget(_LoadingArc(), 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
         wait_layout.addStretch(1)
         self.stack.addWidget(self._loading)
         self._render()
@@ -345,9 +345,9 @@ class DocumentViewerWidget(QtWidgets.QWidget):
 
     def _show_error(self, message):
         error = QtWidgets.QLabel(f"Не удалось открыть документ:\n{message}")
-        error.setTextFormat(QtCore.Qt.PlainText)
+        error.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         error.setWordWrap(True)
-        error.setAlignment(QtCore.Qt.AlignCenter)
+        error.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.stack.addWidget(error)
         self.stack.setCurrentWidget(error)
         self.status.setText("Ошибка чтения")

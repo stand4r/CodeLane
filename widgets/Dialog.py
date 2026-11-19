@@ -1,5 +1,5 @@
 """PyScribe widgets/Dialog.py: application module and reusable component."""
-from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QLabel
 
 
 class CustomDialog(QDialog):
@@ -8,10 +8,10 @@ class CustomDialog(QDialog):
 
         self.setWindowTitle("Сообщение")
 
-        QBtn = QDialogButtonBox.Ok
+        QBtn = QDialogButtonBox.StandardButton.Ok
 
         self.buttonBox = QDialogButtonBox(QBtn)
-        ok_btn = self.buttonBox.button(QDialogButtonBox.Ok)
+        ok_btn = self.buttonBox.button(QDialogButtonBox.StandardButton.Ok)
         if ok_btn:
             ok_btn.setText("ОК")
         self.buttonBox.accepted.connect(self.accept)

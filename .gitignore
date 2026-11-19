@@ -1,5 +1,5 @@
 # =============================================================================
-# PyScribe IDE - Git Ignore Configuration
+# CodeLane IDE - Git Ignore Configuration
 # =============================================================================
 
 # --- Byte-compiled / Python artifacts ---
@@ -25,17 +25,18 @@ installer_output/
 *.manifest
 
 # Explicitly ensure PyInstaller spec and build scripts are version controlled:
-!PyScribe.spec
+!CodeLane.spec
 !build_exe.bat
 !installer/build_installer.bat
-!installer/PyScribe.iss
+!installer/CodeLane.iss
 
 # --- Runtime state, logs & user local configuration ---
 session.pkl
 projects.json
 config/github_auth.json
-# Agent chat sessions and other per-project PyScribe state.
+# Agent chat sessions and other per-project CodeLane state.
 .pyscribe/
+.codelane/
 logs/*.log
 logs/*.log.*
 !logs/.gitkeep

@@ -1,7 +1,7 @@
 """Reading and folding controls for a terminal's output."""
 from contextlib import contextmanager
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class TerminalOutputControls(QtWidgets.QWidget):
