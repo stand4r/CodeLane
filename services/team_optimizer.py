@@ -67,13 +67,16 @@ class TeamOptimizer:
         return {"recommendation": self.plan, "total_with_supervisor": best["workers"] + 1,
                 "alternatives": sorted(candidates, key=lambda c: c["score"])[:5],
                 "history_samples": len(history), "advisory": True,
+                "recent_lessons": [{"outcome": h["outcome"], "roles": [a.get("role") for a in h["agents"]],
+                                    "assessment": h.get("assessment", {})} for h in history[:5]],
                 "note": "Число исполнителей включает постановку, тестирование и ревью. Это рекомендация, не лимит. "
                         "Токены — приближение стоимости для одной модели, не цена API. "
                         "failure_proxy отражает сбои выполнения, а не доказанное качество кода."}
 
     def record(self, *, goal, agents, seconds, usage, outcome):
         record = dict(goal=goal, agents=agents, seconds=seconds, usage=usage, outcome=outcome,
-                      tokens=usage.get("total_tokens"), plan=self.plan, assessment=self.assessment)
+                      tokens=usage.get("total_tokens"), plan=self.plan, assessment=self.assessment,
+                      assessment_missing=not bool(self.assessment))
         if self.cache is not None:
             with self.cache.connect() as db:
                 db.execute("INSERT INTO team_experience VALUES (?,?,?,?,?)",

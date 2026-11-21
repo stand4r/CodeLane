@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 import json
+import time
 from threading import RLock
 
 from services.agent_delegation import ROLES, delegate
@@ -9,6 +10,7 @@ from services.agent_edits import EDIT_SCHEMA, EditCandidate, FileEdit
 from services.agent_harness import AgentUsage
 from services.ai_service import AIError
 from services.team_scheduler import TeamScheduler
+from services.team_optimizer import TeamOptimizer
 
 
 def _tool(name, description, properties, required):
@@ -39,10 +41,35 @@ class TeamResult:
     edits: list[FileEdit] = field(default_factory=list)
     complete: bool = True
     changed_files: list[str] = field(default_factory=list)
+    optimization: dict = field(default_factory=dict)
 
 
 def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelism=None, report=None, trace=None,
              scheduled_role=None, relationship=None):
+    started = time.monotonic()
+    learning_warning = ""
+    try:
+        optimizer = TeamOptimizer(getattr(toolbox, "team_cache", None), str(getattr(toolbox, "root", "")),
+                                  str(getattr(service, "base_url", "")) + "|" + str(getattr(service, "model", "")))
+    except Exception as exc:
+        learning_warning = f"История оптимизации недоступна: {exc}"
+        optimizer = TeamOptimizer()
+    try:
+        initial_plan = optimizer.recommend()
+    except Exception as exc:
+        learning_warning = f"История оптимизации недоступна: {exc}"
+        optimizer = TeamOptimizer()
+        initial_plan = optimizer.recommend()
+    team_description = {}
+    optimize_tool = _tool("optimize_team", "Рассчитать рекомендуемое число исполнителей по сложности и истории. "
+                          "Вызывай после оценки задачи, до назначения команды; work_units — независимые части работы.",
+                          {key: {"type": "number"} for key in (
+                              "work_units", "parallel_fraction", "risk", "quality_weight", "time_weight", "cost_weight")},
+                          ["work_units", "parallel_fraction", "risk"])
+    assess_tool = _tool("assess_team", "Перед итогом запиши оценку состава команды. "
+                        "Отделяй фактические проверки от предположений.",
+                        {key: {"type": "string"} for key in ("description", "evidence", "inefficiencies", "next_structure")},
+                        ["description", "evidence", "inefficiencies", "next_structure"])
     definitions = toolbox.definitions()
     from services.ide_mcp import IDEMCP
     ide = IDEMCP(toolbox)
@@ -102,6 +129,8 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
     seen = set()
 
     def run_agent(agent_id, role, task, children, dependency_context):
+        with mutation_lock:
+            team_description[agent_id] = {"role": role, "task": task}
         agent_usage = AgentUsage()
         title = ROLES[role][0]
         if stopped():
@@ -133,6 +162,17 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
         nonlocal assigned, question, failed_agents, requirements_ready, requirements_assigned
         if stopped() or question:
             return "Запуск остановлен."
+        if name == "optimize_team":
+            try:
+                return json.dumps(optimizer.recommend(**args), ensure_ascii=False)
+            except (ValueError, TypeError) as exc:
+                return f"Ошибка параметров оптимизации: {exc}"
+        if name == "assess_team":
+            keys = ("description", "evidence", "inefficiencies", "next_structure")
+            if any(not isinstance(args.get(key), str) or not args[key].strip() for key in keys):
+                return "Заполни описание, доказательства, недостатки и предложение следующего состава."
+            optimizer.assessment = {key: args[key] for key in keys}
+            return "Оценка будет сохранена вместе с фактическими метриками запуска."
         if name in {"propose_edit", "reconcile_edit", "accept_proposal"} and edits_enabled and requirements_assigned:
             try:
                 if name == "accept_proposal":
@@ -211,13 +251,14 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
 
     emit(0, "Руководитель", goal, "Координирует")
     prompt = (
-        "Ты единственный руководитель команды CodeLane. Первым вызовом assign_team отправь "
+        "Ты единственный руководитель команды CodeLane. Сначала оцени объём, независимость частей и риск "
+        "через optimize_team. Используй рекомендацию для числа агентов; отклонения обоснуй в assess_team. "
         "Подбирай минимальный достаточный состав под конкретный запрос. "
         "Для небольшой правки достаточно постановки, исполнителя и тестировщика. "
         "Не запускай каскады повторного ревью и исследования уже подтверждённых фактов. "
         "Субагентов создавай для самостоятельных частей, когда это экономит общее время и стоимость. "
         "После целевых тестов и одного ревью заверши задачу, если не найден воспроизводимый дефект. "
-        "единый пакет: агент постановки и все задачи, которые можно начать без его выводов. "
+        "Первым вызовом assign_team отправь единый пакет: агент постановки и независимые задачи. "
         "Агент постановки формулирует критерии и вопросы. Если без ответа нельзя продолжить, "
         "вызови ask_user. Иначе сам выбери число, роли и разные конкретные цели исполнителей. "
         "Независимые задания отправляй одним пакетом. Для запроса о правках подключи тестировщика, "
@@ -234,12 +275,15 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
         "Если агент постановки упал, сформулируй критерии из исходной цели и продолжи. "
         "Для веб-исследования найди страницы через browser_search, открой и прочитай источники и дай ссылки. "
         "Не проси пользователя выбирать способ повторного запуска команды. "
-        "Заверши общим результатом и укажи ограничения проверки.\n\nЦель:\n" + goal
+        "Перед итогом вызови assess_team: опиши состав, подтверждения результата, лишние затраты "
+        "и что изменить в составе следующей похожей команды. Не выдавай самооценку за результаты тестов. "
+        "Заверши общим результатом и укажи ограничения проверки.\n"
+        "Начальная оценка (уточни под задачу): " + json.dumps(initial_plan, ensure_ascii=False) + "\n\nЦель:\n" + goal
     )
     error = ""
     try:
         answer = service.converse(
-            prompt, tools=TOOLS + supervisor_tools + ([EDIT_SCHEMA, accept, reconcile] if edits_enabled else []),
+            prompt, tools=TOOLS + [optimize_tool, assess_tool] + supervisor_tools + ([EDIT_SCHEMA, accept, reconcile] if edits_enabled else []),
             tool_runner=traced_route, should_stop=lambda: stopped() or bool(question), unlimited_rounds=True,
         )
         usage.add(service.last_usage)
@@ -268,5 +312,23 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
     status = ("Отменено" if stopped() else "Ждёт ответа" if question else
               "Частичный итог" if incomplete else "Готово")
     emit(0, "Руководитель", goal, status)
+    outcome = "cancelled" if stopped() else "question" if question else "failed" if incomplete else "complete"
+    agents = [{"id": number, **team_description.get(number, {}),
+               "parent_id": result.get("parent_id", 0), "error": result.get("error"),
+               "child_errors": result.get("child_errors", [])}
+              for number, (result, _) in sorted(scheduler.results.items())]
+    try:
+        experience = optimizer.record(goal=goal, agents=agents, seconds=time.monotonic() - started,
+                                      usage=usage.as_dict(), outcome=outcome)
+    except Exception as exc:
+        experience = {"plan": optimizer.plan}
+        learning_warning = f"Не удалось сохранить опыт команды: {exc}"
+    if not optimizer.assessment:
+        experience["assessment_missing"] = True
+    if learning_warning:
+        experience["warning"] = learning_warning
+        answer += "\n\n" + learning_warning
+    if trace:
+        trace(0, "Оптимизация команды:\n" + json.dumps(experience, ensure_ascii=False, indent=2))
     return TeamResult(answer, question, usage.as_dict(), failed_agents, edits, not incomplete,
-                      sorted(changed_files))
+                      sorted(changed_files), experience)
