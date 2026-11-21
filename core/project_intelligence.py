@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import re
 import sys
 import time
@@ -157,6 +158,8 @@ class ProjectIntelligenceEngine:
         self.io_pause_sec = 0.002
         self._source_cache = OrderedDict()
         self._source_cache_weight = 0
+        self._metrics_cache = OrderedDict()
+        self._security_cache = OrderedDict()
         self.last_scan = None
         self.scan_truncated = False
         self.skipped_dirs = 0
@@ -166,6 +169,8 @@ class ProjectIntelligenceEngine:
 
     def set_root(self, root: Optional[str]):
         self._source_cache.clear()
+        self._metrics_cache.clear()
+        self._security_cache.clear()
         self._source_cache_weight = 0
         self.root = Path(root).resolve() if root else None
         self.analysis = ProjectAnalysis(str(self.root) if self.root else '')
@@ -343,6 +348,9 @@ class ProjectIntelligenceEngine:
                          f'Исключены служебные каталоги и крупные файлы.'),
                 file=str(self.root), line=0))
         source_paths = set(paths)
+        for cache in (self._metrics_cache, self._security_cache):
+            for removed in cache.keys() - {str(p) for p in paths}:
+                del cache[removed]
         for removed in self._source_cache.keys() - source_paths:
             self._source_cache_weight -= self._source_cache.pop(removed)[3]
         total = len(paths)
@@ -461,23 +469,38 @@ class ProjectIntelligenceEngine:
 
     def _enrich_python_metrics(self, analysis: ProjectAnalysis):
         try:
-            from radon.complexity import cc_visit
-            from radon.metrics import mi_visit
+            import ast
+            from radon.visitors import ComplexityVisitor
+            from radon.metrics import mi_compute, h_visit_ast
             from radon.raw import analyze as raw_analyze
         except Exception:
             return
         for info in analysis.files.values():
             if info.language != 'python': continue
             text = self._analysis_source_text(Path(info.path))
+            digest = hashlib.sha256(text.encode('utf-8')).digest()
+            cached = self._metrics_cache.get(info.path)
+            if cached and cached[0] == digest:
+                info.metrics.update(cached[1])
+                self._metrics_cache.move_to_end(info.path)
+                continue
             try:
-                blocks = cc_visit(text)
+                tree = ast.parse(text)
+                visitor = ComplexityVisitor.from_ast(tree)
+                blocks = visitor.blocks
                 raw = raw_analyze(text)
-                mi = mi_visit(text, multi=True)
-                info.metrics.update({
+                comments = (raw.comments + raw.multi) / float(raw.sloc) * 100 if raw.sloc else 0
+                mi = mi_compute(h_visit_ast(tree).total.volume, visitor.total_complexity, raw.lloc, comments)
+                metrics = {
                     'radon_complexity': round(sum(getattr(b, 'complexity', 1) for b in blocks) / max(1, len(blocks)), 2),
                     'maintainability_index': round(float(mi), 2),
                     'sloc': int(raw.sloc), 'lloc': int(raw.lloc), 'comments': int(raw.comments), 'blank': int(raw.blank),
-                })
+                }
+                info.metrics.update(metrics)
+                self._metrics_cache[info.path] = (digest, metrics)
+                self._metrics_cache.move_to_end(info.path)
+                while len(self._metrics_cache) > 1024:
+                    self._metrics_cache.popitem(last=False)
             except Exception:
                 pass
 
@@ -489,12 +512,41 @@ class ProjectIntelligenceEngine:
             from bandit.core.config import BanditConfig
             from bandit.core.manager import BanditManager
 
-            manager = BanditManager(BanditConfig(), "file", quiet=True)
-            manager.discover_files([info.path for info in analysis.python_files])
-            manager.run_tests()
+            # Bandit reads files itself. Check metadata both before and after the
+            # scan, so an edit during analysis is never cached as a newer version.
+            def fingerprint(filename):
+                stat = Path(filename).stat()
+                return stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino
+
+            stamps = {info.path: fingerprint(info.path) for info in analysis.python_files}
+            changed = [path for path, stamp in stamps.items()
+                       if path not in self._security_cache or self._security_cache[path][0] != stamp]
+            findings = {path: [] for path in changed}
+            if changed:
+                manager = BanditManager(BanditConfig(), "file", quiet=True)
+                manager.discover_files(changed)
+                manager.run_tests()
+                for finding in manager.get_issue_list():
+                    item = finding.as_dict(with_code=False)
+                    filename = str(Path(item.get('filename', '')).resolve())
+                    if filename in findings:
+                        findings[filename].append(item)
+                skipped = {str(Path(path).resolve()) for path, _ in manager.skipped}
+                for path in changed:
+                    if path not in skipped and fingerprint(path) == stamps[path]:
+                        self._security_cache[path] = (stamps[path], findings[path])
             existing = {(i.file, i.line, i.code) for i in analysis.issues}
-            for finding in manager.get_issue_list():
-                item = finding.as_dict(with_code=False)
+            items = []
+            # Match Bandit's case-sensitive filename ordering on every run.
+            for path in sorted(stamps):
+                if path in findings:
+                    items.extend(findings[path])
+                else:
+                    items.extend(self._security_cache[path][1])
+                    self._security_cache.move_to_end(path)
+            while len(self._security_cache) > 1024:
+                self._security_cache.popitem(last=False)
+            for item in items:
                 filename = str(Path(item.get('filename', '')).resolve())
                 line = int(item.get('line_number') or 1)
                 code = str(item.get('test_id') or 'BANDIT')
