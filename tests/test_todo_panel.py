@@ -93,7 +93,7 @@ class DummyMainWindow:
 def test_todo_panel_initialization(qapp):
     panel = TodoPanel()
     assert panel.objectName() == "todoPanel"
-    assert panel.search_input is not None
+    assert not hasattr(panel, "search_input")
     assert panel.cards_container is not None
     assert panel._filter_chips is not None
     assert "all" in panel._filter_chips
@@ -101,6 +101,27 @@ def test_todo_panel_initialization(qapp):
     assert "doing" in panel._filter_chips
     assert "done" in panel._filter_chips
     assert panel.current_filter == "all"
+
+
+def test_todo_panel_filter_icons_are_accessible(qapp):
+    """Icon-only filter row: same square size, tooltip and accessible name."""
+    panel = TodoPanel()
+    expected = {
+        "all": "Все задачи",
+        "urgent": "Важные",
+        "doing": "В работе",
+        "done": "Готово",
+    }
+    assert set(panel._filter_chips) == set(expected)
+    for key, tooltip in expected.items():
+        btn = panel._filter_chips[key]
+        assert btn.text() == ""
+        assert btn.isCheckable()
+        assert btn.width() == btn.height() == 24
+        assert btn.toolTip() == tooltip
+        assert btn.accessibleName() == tooltip
+        assert not btn.icon().isNull()
+    assert panel._filter_chips["all"].isChecked()
 
 
 def test_todo_panel_quick_add(qapp):
@@ -162,19 +183,27 @@ def test_todo_panel_filter_chips(qapp):
         assert panel.current_filter == "done"
 
 
-def test_todo_panel_search_filtering(qapp):
+def test_todo_panel_search_removed_but_filtering_works(qapp):
     with tempfile.TemporaryDirectory() as td:
         panel = TodoPanel()
         panel.set_project(td)
 
+        # The text search field and its handler are gone.
+        assert not hasattr(panel, "search_input")
+        assert not hasattr(panel, "_on_search_changed")
+
         panel.task_store.add("Оптимизировать UI рендер")
         panel.task_store.add("Написать документацию")
+        panel._render_tasks()
 
-        panel.search_input.setText("UI")
-        assert panel.search_query == "ui"
-
-        panel.search_input.setText("НЕ_СУЩЕСТВУЕТ_XYZ")
-        assert panel.search_query == "не_существует_xyz"
+        # Rendering keeps working and the filter icons still narrow the list.
+        visible = [t for t in panel.task_store.tasks if panel._matches_filter(t)]
+        assert len(visible) == 2
+        panel.task_store.set_status(visible[0].id, "done")
+        panel._set_filter("done")
+        assert [t.title for t in panel.task_store.tasks if panel._matches_filter(t)] == [visible[0].title]
+        panel._set_filter("all")
+        assert len([t for t in panel.task_store.tasks if panel._matches_filter(t)]) == 2
 
 
 def test_todo_panel_collapsible_completed(qapp):

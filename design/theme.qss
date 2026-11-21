@@ -1071,6 +1071,40 @@ QScrollBar::handle:horizontal:hover { background: #4F4F4F; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
+/* ---------- Side menus: no vertical scrollbar rail ----------------------- */
+/* Explorer, search, git, task and intelligence menus live inside
+   QFrame#sidePanel (app/ui_manager.py). Their content uses the full panel
+   width: the 10px right-hand rail is collapsed to 0px. The scrollbars still
+   exist internally, so the mouse wheel, touchpad, keyboard and programmatic
+   scrolling keep working. The editor, terminal, AI chat and PDF outline are
+   NOT descendants of #sidePanel and keep their normal scrollbars. */
+QFrame#sidePanel QScrollBar:vertical {
+    background: transparent;
+    width: 0px;
+    min-width: 0px;
+    max-width: 0px;
+    margin: 0px;
+    border: none;
+}
+QFrame#sidePanel QScrollBar::handle:vertical {
+    background: transparent;
+    min-height: 0px;
+    max-height: 0px;
+    border: none;
+}
+QFrame#sidePanel QScrollBar::add-line:vertical,
+QFrame#sidePanel QScrollBar::sub-line:vertical {
+    background: transparent;
+    width: 0px;
+    height: 0px;
+    border: none;
+}
+QFrame#sidePanel QScrollBar::add-page:vertical,
+QFrame#sidePanel QScrollBar::sub-page:vertical {
+    background: transparent;
+    border: none;
+}
+
 /* ---------- Welcome ------------------------------------------------------ */
 QWidget#Main { background: #1E1E1E; }
 QFrame#welcomeAction {
@@ -1243,15 +1277,14 @@ QTreeWidget#agentPlannerTree::item:hover, QTreeWidget#agentPlannerTree::item:sel
     background: @glass_hover@; color: @glass_text@;
 }
 QToolButton#agentPlannerButton, QToolButton#agentPlannerAdd,
-QPushButton#agentModeButton, QPushButton#agentStopButton, QPushButton#agentChangesButton {
+QPushButton#agentStopButton, QPushButton#agentChangesButton {
     background: @glass_surface@; color: @glass_text@; border: 1px solid @glass_border@;
     border-radius: 6px; padding: 5px 9px; min-height: 18px;
 }
 QToolButton#agentPlannerButton:hover, QToolButton#agentPlannerAdd:hover,
-QPushButton#agentModeButton:hover, QPushButton#agentStopButton:hover, QPushButton#agentChangesButton:hover {
+QPushButton#agentStopButton:hover, QPushButton#agentChangesButton:hover {
     background: @glass_hover@;
 }
-QPushButton#agentModeButton:checked { border-color: #438bd2; color: #a9d4ff; }
 QPushButton#agentStopButton:disabled { color: #777a80; }
 QToolButton#aiScopeButton, QToolButton#aiModeButton, QToolButton#aiModelButton {
     background: @glass_surface@;

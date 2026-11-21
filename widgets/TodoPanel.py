@@ -22,6 +22,39 @@ from design.icons import line_icon, set_line_icon
 logger = logging.getLogger(__name__)
 
 
+# Icon-only filter buttons (Все / Важные / В работе / Готово). Kept as a single
+# constant so the four squares stay pixel-identical: 24px, 6px radius and the
+# Fluent accent (#0078D4) when checked.
+_FILTER_ICON_QSS = """
+QPushButton#msFilterIcon {
+    background: #1C1C20;
+    color: #C9D1D9;
+    border: 1px solid #2D2D35;
+    border-radius: 6px;
+    padding: 0;
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
+}
+QPushButton#msFilterIcon:hover {
+    background: #25252C;
+    border-color: #3A3A44;
+}
+QPushButton#msFilterIcon:focus {
+    border-color: #0078D4;
+}
+QPushButton#msFilterIcon:checked {
+    background: #0078D4;
+    border-color: #0078D4;
+}
+QPushButton#msFilterIcon:checked:hover {
+    background: #1F8AE0;
+    border-color: #1F8AE0;
+}
+"""
+
+
 # =============================================================================
 # Custom Microsoft To Do-Style Controls
 # =============================================================================
@@ -363,7 +396,6 @@ class TodoPanel(QtWidgets.QWidget):
         self.root_path: Optional[Path] = None
         self.task_store: TaskStore = TaskStore(None)
         self.current_filter: str = "all"  # all, urgent, doing, done
-        self.search_query: str = ""
         self.completed_collapsed: bool = False
         self.sort_mode: str = "default"   # default, importance, title
 
@@ -479,66 +511,44 @@ class TodoPanel(QtWidgets.QWidget):
 
         main_layout.addWidget(self.add_capsule)
 
-        # 3. Search Bar
-        self.search_input = QtWidgets.QLineEdit()
-        self.search_input.setPlaceholderText("Поиск задач...")
-        self.search_input.setClearButtonEnabled(True)
-        self.search_input.addAction(line_icon("search"), QtWidgets.QLineEdit.ActionPosition.LeadingPosition)
-        self.search_input.setStyleSheet("""
-            QLineEdit {
-                background: #1C1C20;
-                border: 1px solid #2B2B32;
-                border-radius: 6px;
-                color: #C9D1D9;
-                padding: 5px 10px;
-                font-size: 12px;
-            }
-            QLineEdit:focus { border-color: #0078D4; }
-        """)
-        self.search_input.textChanged.connect(self._on_search_changed)
-        main_layout.addWidget(self.search_input)
-
-        # 4. Smart Filter Pills (Segmented Ribbon)
-        filter_layout = QtWidgets.QGridLayout()
+        # 3. Smart Filter Icons — a single row of icon-only 24px Fluent squares.
+        filter_layout = QtWidgets.QHBoxLayout()
         filter_layout.setContentsMargins(0, 0, 0, 0)
-        filter_layout.setSpacing(4)
+        filter_layout.setSpacing(6)
+
+        def _paint_filter_icon(button: QtWidgets.QPushButton, icon_name: str):
+            """Tint the codicon white on the accent background, grey otherwise."""
+            color = "#FFFFFF" if button.isChecked() else "#9CA3AF"
+            button.setIcon(line_icon(icon_name, color))
+            button.setIconSize(QtCore.QSize(14, 14))
 
         self._filter_chips = {}
-        for index, (key, label, icon) in enumerate((
-            ("all", "Все", "checklist"),
+        for key, tooltip, icon in (
+            ("all", "Все задачи", "checklist"),
             ("urgent", "Важные", "star"),
             ("doing", "В работе", "play"),
             ("done", "Готово", "check"),
-        )):
-            btn = QtWidgets.QPushButton(label)
-            set_line_icon(btn, icon, size=14)
+        ):
+            btn = QtWidgets.QPushButton()
+            btn.setObjectName("msFilterIcon")
             btn.setCheckable(True)
             btn.setChecked(key == "all")
-            btn.setObjectName("msFilterPill")
-            btn.setStyleSheet("""
-                QPushButton#msFilterPill {
-                    background: #1C1C20;
-                    color: #8E8E98;
-                    border: 1px solid #2D2D35;
-                    border-radius: 12px;
-                    padding: 3px 10px;
-                    font-size: 11px;
-                    font-weight: 600;
-                }
-                QPushButton#msFilterPill:hover {
-                    background: #25252C;
-                    color: #D4D4D8;
-                }
-                QPushButton#msFilterPill:checked {
-                    background: #0078D4;
-                    color: #FFFFFF;
-                    border-color: #0078D4;
-                }
-            """)
+            btn.setFixedSize(24, 24)
+            btn.setStyleSheet(_FILTER_ICON_QSS)
+            btn.setToolTip(tooltip)
+            btn.setAccessibleName(tooltip)
+            btn.setAccessibleDescription(f"Фильтр задач: {tooltip}")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            btn.toggled.connect(
+                lambda checked=False, b=btn, n=icon: _paint_filter_icon(b, n)
+            )
             btn.clicked.connect(lambda checked=False, k=key: self._set_filter(k))
-            filter_layout.addWidget(btn, index // 2, index % 2)
+            _paint_filter_icon(btn, icon)
+            filter_layout.addWidget(btn)
             self._filter_chips[key] = btn
 
+        filter_layout.addStretch(1)
         main_layout.addLayout(filter_layout)
 
         # 5. Scroll Area with Task Cards
@@ -664,10 +674,6 @@ class TodoPanel(QtWidgets.QWidget):
             btn.setChecked(k == filter_key)
         self._render_tasks()
 
-    def _on_search_changed(self, text: str):
-        self.search_query = text.strip().lower()
-        self._render_tasks()
-
     # =========================================================================
     # Task Creation & Mutation
     # =========================================================================
@@ -718,19 +724,14 @@ class TodoPanel(QtWidgets.QWidget):
     # Rendering
     # =========================================================================
     def _matches_filter(self, task: Task) -> bool:
-        # Category Filter
+        # Category Filter (the text-search field was removed; the query is
+        # always empty, so filtering is driven by the filter icons only).
         if self.current_filter == "urgent" and task.priority not in ("urgent", "high"):
             return False
         elif self.current_filter == "doing" and task.status != "doing":
             return False
         elif self.current_filter == "done" and not task.is_done:
             return False
-
-        # Text Search
-        if self.search_query:
-            haystack = f"{task.title} {task.details} {task.file} {task.priority}".lower()
-            if self.search_query not in haystack:
-                return False
 
         return True
 
