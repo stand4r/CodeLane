@@ -287,7 +287,7 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
             tool_runner=traced_route, should_stop=lambda: stopped() or bool(question), unlimited_rounds=True,
         )
         usage.add(service.last_usage)
-    except AIError as exc:
+    except Exception as exc:
         answer, error = "", str(exc)
     edits = candidate.files() if not question and not stopped() else []
     reason = getattr(service, "last_stop_reason", None)
@@ -314,6 +314,8 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
     emit(0, "Руководитель", goal, status)
     outcome = "cancelled" if stopped() else "question" if question else "failed" if incomplete else "complete"
     agents = [{"id": number, **team_description.get(number, {}),
+               "role": result.get("role"), "task": result.get("task", team_description.get(number, {}).get("task", "")),
+               "dependencies": result.get("dependencies", []),
                "parent_id": result.get("parent_id", 0), "error": result.get("error"),
                "child_errors": result.get("child_errors", [])}
               for number, (result, _) in sorted(scheduler.results.items())]

@@ -37,7 +37,9 @@ class TeamOptimizer:
         weights = [v / sum(weights) for v in weights]
         history = [h for h in self.history() if h.get("outcome") in {"complete", "failed"}
                    and h.get("plan") and h["plan"]["work_units"] / work_units >= 0.5
-                   and h["plan"]["work_units"] / work_units <= 2]
+                   and h["plan"]["work_units"] / work_units <= 2
+                   and abs(h["plan"]["risk"] - risk) <= 0.25
+                   and abs(h["plan"]["parallel_fraction"] - parallel_fraction) <= 0.25]
         # Amdahl time + pairwise coordination; saturating review benefit.
         candidates = []
         for workers in range(1, math.ceil(work_units) + 1):

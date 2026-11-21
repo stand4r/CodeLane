@@ -104,6 +104,8 @@ class TeamScheduler:
                 result = result or {"role": entries[key][0], "error": "Отменено."}
                 result["agent_id"] = ids[key]
                 result["parent_id"] = parent
+                result["task"] = entries[key][1]
+                result["dependencies"] = [ids[dep] for dep in entries[key][2]]
                 outputs[key] = result
                 with self.lock:
                     self.results[ids[key]] = (result, tokens)
