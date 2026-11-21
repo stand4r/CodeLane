@@ -13,6 +13,51 @@ from widgets.ProjectManager import project_manager
 from utils.toolchain_detector import detect_all_toolchains, build_run_command_for_file
 
 
+def test_project_dialog_navigates_filtered_projects(tmp_path, monkeypatch):
+    from PyQt6 import QtCore, QtTest, QtWidgets
+    from widgets.ProjectDialog import ProjectDialog
+    from widgets.ProjectManager import ProjectConfig
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    projects = [ProjectConfig(name, str(tmp_path / name)) for name in ("Alpha", "Beta", "Alpine")]
+    monkeypatch.setattr(project_manager, "get_sorted_projects", lambda: projects)
+    opened = []
+    monkeypatch.setattr(project_manager, "open_project", lambda path: opened.append(path) or projects[2])
+    dialog = ProjectDialog()
+    try:
+        dialog.show()
+        app.processEvents()
+        dialog.search_edit.setText("missing")
+        assert dialog.empty_projects.isVisible()
+        QtTest.QTest.keyClick(dialog.search_edit, QtCore.Qt.Key.Key_Return)
+        assert not opened
+        assert dialog.isVisible()
+
+        dialog.search_edit.setText("alp")
+        assert not dialog.empty_projects.isVisible()
+        QtTest.QTest.keyClick(dialog.search_edit, QtCore.Qt.Key.Key_Down)
+        assert dialog.selected_project is projects[0]
+        QtTest.QTest.keyClick(dialog.search_edit, QtCore.Qt.Key.Key_Down)
+        assert dialog.selected_project is projects[2]
+        QtTest.QTest.keyClick(dialog.search_edit, QtCore.Qt.Key.Key_Return)
+        assert opened == [projects[2].root_path]
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    finally:
+        dialog.close()
+
+
+def test_project_config_write_error_propagates(tmp_path):
+    import pytest
+    from core.project_state import sync_project_config
+    from widgets.ProjectManager import ProjectConfig
+
+    (tmp_path / ".codelane").write_text("blocked", encoding="utf-8")
+    config = ProjectConfig("Test", str(tmp_path))
+    with pytest.raises(OSError):
+        sync_project_config(config, str(tmp_path), save=True)
+
+
 def test_project_delete_case_insensitive():
     """Verify projects can be deleted regardless of path casing on Windows."""
     test_dir = os.path.join(tempfile.gettempdir(), "py_scribe_del_test_case")

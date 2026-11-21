@@ -168,7 +168,7 @@ def _matches_patterns(relative_posix: str, patterns: Sequence[str]) -> bool:
 def walk_files(root: Path, *, extensions: Optional[Iterable[str]] = None,
                max_files: Optional[int] = MAX_FILES_DEFAULT,
                max_bytes: Optional[int] = MAX_SOURCE_BYTES,
-               use_ignore_files: bool = True) -> ScanResult:
+               use_ignore_files: bool = True, cancelled=None) -> ScanResult:
     """Walk *root*, pruning ignored directories **during** traversal.
 
     ``Path.rglob`` cannot do this: it descends into ``node_modules`` and then the
@@ -188,6 +188,8 @@ def walk_files(root: Path, *, extensions: Optional[Iterable[str]] = None,
 
     stack: List[Tuple[str, str]] = [(root_str, "")]
     while stack:
+        if cancelled is not None and cancelled():
+            break
         dir_path, rel_prefix = stack.pop()
         try:
             with os.scandir(dir_path) as iterator:
@@ -198,7 +200,14 @@ def walk_files(root: Path, *, extensions: Optional[Iterable[str]] = None,
 
         subdirs: List[Tuple[str, str]] = []
         for entry in entries:
+            if cancelled is not None and cancelled():
+                return result
             try:
+                is_junction = getattr(entry, "is_junction", None)
+                if is_junction is not None and is_junction():
+                    result.skipped_dirs += 1
+                    result._note_dir(entry.name)
+                    continue
                 is_dir = entry.is_dir(follow_symlinks=False)
             except OSError:
                 continue

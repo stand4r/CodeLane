@@ -55,11 +55,13 @@ class Explorer(QtWidgets.QTreeView):
     open_text_requested = QtCore.pyqtSignal(str)
     preview_markdown_requested = QtCore.pyqtSignal(str)
     run_requested = QtCore.pyqtSignal(str, bool)
+    close_project_requested = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
         super(Explorer, self).__init__(parent=parent)
 
         self.setHeaderHidden(True)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setColumnWidth(0, 300)
         self.workspace_root = None
 
@@ -163,8 +165,10 @@ class Explorer(QtWidgets.QTreeView):
                 if suffix in {".csv", ".tsv", ".tab"}:
                     text_action = menu.addAction("Открыть в редакторе (как текст)")
                     text_action.triggered.connect(lambda checked=False, p=path: self.open_text_requested.emit(p))
-                elif suffix in {".md", ".markdown"}:
-                    preview_action = menu.addAction("Предпросмотр Markdown")
+                elif suffix in {".md", ".markdown", ".html", ".htm"}:
+                    preview_action = menu.addAction(
+                        "Предпросмотр HTML" if suffix in {".html", ".htm"} else "Предпросмотр Markdown"
+                    )
                     preview_action.triggered.connect(lambda checked=False, p=path: self.preview_markdown_requested.emit(p))
                 if Path(path).suffix.lower() in {".py", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".java", ".cs", ".go", ".rs", ".php", ".rb", ".kt", ".swift", ".sh", ".lua", ".pl"}:
                     menu.addSeparator()
@@ -180,6 +184,9 @@ class Explorer(QtWidgets.QTreeView):
             delete_action = menu.addAction("Удалить")
             delete_action.triggered.connect(self.delete_item)
 
+        if self.workspace_root:
+            menu.addSeparator()
+            menu.addAction("Закрыть проект", self.close_project_requested.emit)
         menu.exec(self.viewport().mapToGlobal(position))
 
     def rename_item(self):

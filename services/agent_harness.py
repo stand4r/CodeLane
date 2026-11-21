@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
+from http.client import IncompleteRead
 from typing import Any, Callable, Dict, List, Optional
 
 from services.ai_service import AIError, AIService, ToolCall
@@ -123,11 +124,13 @@ class AgentHarness:
         on_tool_end: Optional[Callable[[ToolRun], None]] = None,
         should_stop: Optional[Callable[[], bool]] = None,
         tool_result_limit: int = MAX_TOOL_RESULT_CHARS,
+        unlimited_rounds: bool = False,
     ):
         self.service = service
         self.tools = list(tools or [])
         self.tool_runner = tool_runner
         self.max_rounds = max_rounds
+        self.unlimited_rounds = unlimited_rounds
         self.on_text = on_text
         self.on_reasoning = on_reasoning
         self.on_tool_start = on_tool_start
@@ -154,7 +157,7 @@ class AgentHarness:
                 stop_reason = "stopped"
                 break
             rounds += 1
-            if rounds > SAFETY_MAX_ROUNDS:
+            if not self.unlimited_rounds and rounds > SAFETY_MAX_ROUNDS:
                 stop_reason = "limit"
                 break
             if self.max_rounds is not None and rounds > self.max_rounds:
@@ -172,7 +175,7 @@ class AgentHarness:
                 if self.service.truncated:
                     answer = self._join(answer,
                                         self._extend_truncated(messages, answer))
-                stop_reason = "answer"
+                stop_reason = "answer" if text.strip() else "empty"
                 break
 
             if text.strip():
@@ -230,10 +233,13 @@ class AgentHarness:
                     messages, self.tools, self._text_callback, self._reasoning_callback)
                 usage.add(self.service.last_usage)
                 return text, calls
-            except AIError as exc:
-                last_error = exc
-                if not self._is_retryable(exc) or attempt >= RETRY_ATTEMPTS - 1:
-                    raise
+            except (AIError, ConnectionError, IncompleteRead, TimeoutError) as exc:
+                last_error = exc if isinstance(exc, AIError) else AIError(
+                    f"Соединение с API прервано: {exc}", retryable=True)
+                if not self._is_retryable(last_error) or attempt >= RETRY_ATTEMPTS - 1:
+                    if last_error is exc:
+                        raise
+                    raise last_error from exc
                 self._sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
         raise last_error or AIError("Не удалось выполнить запрос к модели.")
 
@@ -298,7 +304,7 @@ class AgentHarness:
         signature = call.name + "|" + json.dumps(call.arguments or {},
                                                  sort_keys=True, ensure_ascii=False)
         seen_calls[signature] = seen_calls.get(signature, 0) + 1
-        repeated = seen_calls[signature] > SAME_CALL_LIMIT
+        repeated = not self.unlimited_rounds and seen_calls[signature] > SAME_CALL_LIMIT
 
         if repeated:
             output = self._repeat_notice(call)
@@ -326,7 +332,7 @@ class AgentHarness:
         duration_ms = int((time.perf_counter() - started) * 1000)
 
         text = "" if output is None else str(output)
-        if len(text) > self.tool_result_limit:
+        if not self.unlimited_rounds and len(text) > self.tool_result_limit:
             text = (text[: self.tool_result_limit]
                     + f"\n… (результат обрезан на {self.tool_result_limit} символах; "
                       "запроси нужный фрагмент отдельно через смещение/лимит)")

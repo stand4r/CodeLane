@@ -14,13 +14,14 @@ from __future__ import annotations
 import ast
 import os
 import re
+from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 
-from design.icons import line_icon, set_line_icon
+from design.icons import set_line_icon
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QToolButton, QMenu,
+    QFrame, QHBoxLayout, QLabel, QToolButton,
     QApplication, QPlainTextEdit, QMessageBox, QDialog, QVBoxLayout,
     QTextEdit
 )
@@ -37,74 +38,28 @@ class CodeSymbol:
 
 
 class CleanCodeRefactorer:
-    """Advanced Clean Code refactoring and formatting engine supporting Python and multi-language files."""
+    """Python formatting through Black with a semantic guard."""
 
-    @classmethod
-    def format_code(cls, code: str, language: str = "py") -> str:
-        """Format and clean code according to Clean Code and formatting principles."""
-        if not code.strip():
+    @staticmethod
+    def format_code(code: str, language: str = "py", path=None) -> str:
+        if not code.strip() or language.lower().lstrip(".") not in {"py", "python", "pyw", "pyi"}:
             return code
+        import black
 
-        lang = (language or "").lower().lstrip(".")
-        lines = code.splitlines()
-        cleaned_lines = []
-        prev_blank = 0
-
-        for line in lines:
-            r_line = line.rstrip()
-            if not r_line:
-                prev_blank += 1
-                if prev_blank <= 2:
-                    cleaned_lines.append("")
-            else:
-                prev_blank = 0
-                if lang in ("py", "python"):
-                    mod_line = cls._clean_syntax_line(r_line)
-                else:
-                    mod_line = r_line
-                cleaned_lines.append(mod_line)
-
-        if lang in ("py", "python"):
-            result_lines = cls._normalize_declarations_spacing(cleaned_lines)
-        else:
-            result_lines = cleaned_lines
-
-        result = "\n".join(result_lines)
-        if result and not result.endswith('\n'):
-            result += '\n'
-        return result
-
-    @classmethod
-    def _clean_syntax_line(cls, line: str) -> str:
-        """Apply Clean Code micro-refactorings without breaking string literals."""
-        line = re.sub(r'\bif\s+([A-Za-z0-9_\.]+)\s*==\s*True\s*:', r'if \1:', line)
-        line = re.sub(r'\bif\s+([A-Za-z0-9_\.]+)\s*==\s*False\s*:', r'if not \1:', line)
-        line = re.sub(r'\bif\s+([A-Za-z0-9_\.]+)\s*!=\s*True\s*:', r'if not \1:', line)
-        line = re.sub(r'\bif\s+([A-Za-z0-9_\.]+)\s*==\s*None\s*:', r'if \1 is None:', line)
-        line = re.sub(r'\bif\s+([A-Za-z0-9_\.]+)\s*!=\s*None\s*:', r'if \1 is not None:', line)
-        if not ('"' in line or "'" in line):
-            line = re.sub(r'(?<=[a-zA-Z0-9_])\s*==\s*(?=[a-zA-Z0-9_])', ' == ', line)
-            line = re.sub(r'(?<=[a-zA-Z0-9_])\s*!=\s*(?=[a-zA-Z0-9_])', ' != ', line)
-            line = re.sub(r'(?<=[a-zA-Z0-9_])\s*<=\s*(?=[a-zA-Z0-9_])', ' <= ', line)
-            line = re.sub(r'(?<=[a-zA-Z0-9_])\s*>=\s*(?=[a-zA-Z0-9_])', ' >= ', line)
-        return line
-
-    @classmethod
-    def _normalize_declarations_spacing(cls, lines: List[str]) -> List[str]:
-        """Ensure top-level classes/defs have 2 blank lines, and inner methods have 1."""
-        output = []
-        for i, line in enumerate(lines):
-            if (line.startswith("def ") or line.startswith("class ") or line.startswith("async def ")) and i > 0:
-                while len(output) > 0 and output[-1] == "":
-                    output.pop()
-                output.append("")
-                output.append("")
-            elif (re.match(r'^\s{4}(def|async def)\s+', line)) and i > 0:
-                while len(output) > 0 and output[-1] == "":
-                    output.pop()
-                output.append("")
-            output.append(line)
-        return output
+        opts = {"string_normalization": False, "is_pyi": language.lower().lstrip(".") == "pyi"}
+        if path:
+            config_path = black.find_pyproject_toml((str(path),))
+            if config_path:
+                config = black.parse_pyproject_toml(config_path)
+                if "line_length" in config:
+                    opts["line_length"] = int(config["line_length"])
+                if "target_version" in config:
+                    opts["target_versions"] = {black.TargetVersion[v.upper()] for v in config["target_version"]}
+        before = ast.dump(ast.parse(code))
+        formatted = black.format_str(code, mode=black.Mode(**opts))
+        if ast.dump(ast.parse(formatted)) != before:
+            raise ValueError("Форматирование изменило бы содержимое программы.")
+        return formatted
 
 
 class DocumentationGenerator:
@@ -189,22 +144,6 @@ class DocumentationGenerator:
         ('port',): 'Сетевой порт сервиса.',
     }
 
-    CLASS_ROLES = {
-        'manager': 'Менеджер: координирует жизненный цикл, распределение задач и управление состоянием.',
-        'controller': 'Контроллер: обрабатывает команды, маршрутизирует операции и связывает модель с представлением.',
-        'service': 'Сервис: инкапсулирует бизнес-логику и сервисные операции доменной области.',
-        'repository': 'Репозиторий: обеспечивает уровень абстракции для доступа к данным и постоянному хранилищу.',
-        'parser': 'Парсер: выполняет синтаксический анализ, валидацию и преобразование входных структур данных.',
-        'widget': 'Виджет UI: отвечает за визуальное отображение и обработку пользовательских событий.',
-        'view': 'Представление UI: формирует графический интерфейс для пользователя.',
-        'handler': 'Обработчик: выполняет целевую обработку специфичных событий и сигналов.',
-        'client': 'Клиент: предоставляет сетевой интерфейс для взаимодействия с внешним API.',
-        'factory': 'Фабрика: отвечает за конструирование и инициализацию экземпляров объектов.',
-        'model': 'Модель данных: определяет структуру сущности и правила валидации полей.',
-        'provider': 'Провайдер: поставляет данные или конфигурационные ресурсы для подсистем.',
-        'adapter': 'Адаптер: согласует интерфейсы несовместимых компонентов.',
-    }
-
     @classmethod
     def describe_name(cls, name: str) -> str:
         words = re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z][a-z]|\b)|\d+', name)
@@ -229,101 +168,113 @@ class DocumentationGenerator:
             return f"Параметр {clean.replace('_', ' ')}."
         return f"Значение аргумента `{arg_name}`."
 
+    @staticmethod
+    def _docstring(summary, sections, indent):
+        if not sections:
+            return f'{indent}"""{summary}"""'
+        lines = [f'{indent}"""{summary}']
+        for heading, entries in sections:
+            lines.extend(("", f"{indent}{heading}:"))
+            for entry in entries:
+                escaped = entry.replace("\\", "\\\\").replace('"""', '\\"""')
+                lines.append(f"{indent}    {escaped}")
+        lines.append(f'{indent}"""')
+        return "\n".join(lines)
+
     @classmethod
-    def generate_function_docstring(cls, func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-        """Create a comprehensive docstring for a Python function or method."""
-        indent = " " * (func_node.col_offset + 4)
-        summary = cls.describe_name(func_node.name)
-        args_info = []
-        for a in func_node.args.args:
-            if a.arg in ('self', 'cls'):
+    def generate_function_docstring(cls, func_node, indent=""):
+        args = func_node.args
+        params = [(a, "") for a in (*args.posonlyargs, *args.args) if a.arg not in ("self", "cls")]
+        if args.vararg:
+            params.append((args.vararg, "*"))
+        params.extend((arg, "") for arg in args.kwonlyargs)
+        if args.kwarg:
+            params.append((args.kwarg, "**"))
+        sections = []
+        if params:
+            sections.append(("Args", [
+                f"{prefix}{arg.arg}: {ast.unparse(arg.annotation) if arg.annotation else cls.describe_param(arg.arg)}"
+                for arg, prefix in params
+            ]))
+        body = list(func_node.body)
+        returns = yields = False
+        raises = {}
+        while body:
+            node = body.pop()
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 continue
-            type_hint = ""
-            if a.annotation:
-                try:
-                    type_hint = f" ({ast.unparse(a.annotation)})"
-                except Exception:
-                    pass
-            desc = cls.describe_param(a.arg, type_hint)
-            args_info.append(f"{indent}    {a.arg}{type_hint}: {desc}")
-
-        return_hint = ""
-        has_returns = any(isinstance(n, ast.Return) and n.value is not None for n in ast.walk(func_node))
-        has_yields = any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in ast.walk(func_node))
-        if getattr(func_node, 'returns', None):
-            try:
-                return_hint = ast.unparse(func_node.returns)
-            except Exception:
-                pass
-
-        raises_info = []
-        for n in ast.walk(func_node):
-            if isinstance(n, ast.Raise):
-                exc_name = ""
-                if isinstance(n.exc, ast.Name):
-                    exc_name = n.exc.id
-                elif isinstance(n.exc, ast.Call) and isinstance(n.exc.func, ast.Name):
-                    exc_name = n.exc.func.id
-                if exc_name and exc_name not in raises_info:
-                    raises_info.append(exc_name)
-
-        doc = f'\n{indent}"""{summary}\n'
-        if args_info:
-            doc += f'\n{indent}Args:\n' + "\n".join(args_info) + "\n"
-        if has_yields:
-            doc += f'\n{indent}Yields:\n{indent}    Генератор элементов в процессе выполнения.\n'
-        elif return_hint or has_returns:
-            ret_type_str = f"{return_hint}: " if return_hint else ""
-            if func_node.name.startswith(('is_', 'has_', 'can_', 'check_', 'should_')):
-                ret_desc = "True, если проверка пройдена успешно; иначе False."
-            else:
-                ret_desc = "Результат выполнения операции или результирующий объект."
-            doc += f'\n{indent}Returns:\n{indent}    {ret_type_str}{ret_desc}\n'
-        if raises_info:
-            doc += f'\n{indent}Raises:\n'
-            for r in raises_info:
-                doc += f'{indent}    {r}: При возникновении ошибки в процессе выполнения.\n'
-        doc += f'{indent}"""'
-        return doc
+            body.extend(ast.iter_child_nodes(node))
+            returns |= isinstance(node, ast.Return) and node.value is not None
+            yields |= isinstance(node, (ast.Yield, ast.YieldFrom))
+            if isinstance(node, ast.Raise) and node.exc:
+                exc = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+                if isinstance(exc, (ast.Name, ast.Attribute)):
+                    raises[ast.unparse(exc)] = None
+        if yields:
+            sections.append(("Yields", ["Элементы генератора."]))
+        elif returns or (func_node.returns and ast.unparse(func_node.returns) != "None"):
+            hint = ast.unparse(func_node.returns) if func_node.returns else "Значение, возвращаемое функцией."
+            sections.append(("Returns", [hint]))
+        if raises:
+            sections.append(("Raises", list(reversed(raises))))
+        return cls._docstring(cls.describe_name(func_node.name), sections, indent)
 
     @classmethod
-    def generate_class_docstring(cls, class_node: ast.ClassDef) -> str:
-        """Create a structured docstring for a Python class."""
-        indent = " " * (class_node.col_offset + 4)
-        bases = [b.id for b in class_node.bases if hasattr(b, 'id')]
-        bases_str = f" Наследует: {', '.join(bases)}." if bases else ""
+    def generate_class_docstring(cls, class_node, indent=""):
+        return cls._docstring(f"Класс {class_node.name}.", [], indent)
 
-        class_lower = class_node.name.lower()
-        role = "Инкапсулирует бизнес-логику и состояние объекта."
-        for suffix, desc in cls.CLASS_ROLES.items():
-            if class_lower.endswith(suffix):
-                role = desc
-                break
+    @classmethod
+    def document_python(cls, code, *, line=None, filename=""):
+        """Insert documentation at the body start, preserving code and existing docstrings."""
+        tree = ast.parse(code)
+        lines = code.split("\n")
+        offsets = [0]
+        for text in lines:
+            offsets.append(offsets[-1] + len(text) + 1)
 
-        attributes = []
-        for item in class_node.body:
-            if isinstance(item, ast.FunctionDef) and item.name == '__init__':
-                for stmt in ast.walk(item):
-                    if isinstance(stmt, ast.Assign):
-                        for target in stmt.targets:
-                            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == 'self':
-                                attr_name = target.attr
-                                if not attr_name.startswith('__') and attr_name not in [a[0] for a in attributes]:
-                                    attr_desc = cls.describe_param(attr_name)
-                                    attributes.append((attr_name, attr_desc))
+        def first_line(node):
+            decorators = getattr(node, "decorator_list", ())
+            if not decorators:
+                return node.lineno
+            row = decorators[0].lineno - 1
+            while row > 0 and not lines[row].lstrip().startswith("@"):
+                row -= 1
+            return row + 1
 
-        methods = [n.name for n in class_node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith('_')]
-        methods_str = f"\n{indent}Ключевые методы: {', '.join(methods)}." if methods else ""
+        scopes = [n for n in ast.walk(tree)
+                  if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))]
+        if line is not None:
+            scopes = [n for n in scopes if first_line(n) <= line <= n.end_lineno]
+            scopes = sorted(scopes, key=lambda n: (first_line(n), n.col_offset), reverse=True)[:1]
 
-        doc = f'\n{indent}"""Класс `{class_node.name}`.{bases_str}\n\n{indent}{role}\n'
-        if attributes:
-            doc += f'\n{indent}Attributes:\n'
-            for a_name, a_desc in attributes:
-                doc += f'{indent}    {a_name}: {a_desc}\n'
-        if methods_str:
-            doc += f'{methods_str}\n'
-        doc += f'{indent}"""'
-        return doc
+        edits = []
+        if line is None and tree.body and ast.get_docstring(tree) is None:
+            name = Path(filename).stem if filename else "Python"
+            name = re.sub(r'[^\w .-]', '_', name)
+            edits.append((offsets[first_line(tree.body[0]) - 1], f'"""Модуль {name}."""\n\n'))
+
+        for node in scopes:
+            if ast.get_docstring(node) is not None:
+                continue
+            first = node.body[0]
+            row = first_line(first) - 1
+            source_line = lines[row]
+            leading = source_line[:len(source_line) - len(source_line.lstrip(" \t"))]
+            prefix = source_line.encode("utf-8")[:first.col_offset].decode("utf-8")
+            inline = bool(prefix.strip()) and row + 1 == first.lineno
+            padding = leading + ("\t" if "\t" in leading else "    ") if inline else leading
+            create = cls.generate_class_docstring if isinstance(node, ast.ClassDef) else cls.generate_function_docstring
+            doc = create(node, padding)
+            if inline:
+                edits.append((offsets[row] + len(prefix), "\n" + doc + "\n" + padding))
+            else:
+                edits.append((offsets[row], doc + "\n"))
+
+        for position, addition in sorted(edits, key=lambda item: item[0], reverse=True):
+            code = code[:position] + addition + code[position:]
+        if edits:
+            ast.parse(code)
+        return code
 
     @classmethod
     def generate_multilang_docstring(
@@ -572,8 +523,8 @@ class CodeLensBar(QFrame):
         # design/theme.qss so the breadcrumb strip matches the status strip.
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 0, 8, 0)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 2, 8, 3)
+        layout.setSpacing(6)
 
         # 1. Breadcrumbs: File
         self.file_btn = QToolButton()
@@ -618,7 +569,7 @@ class CodeLensBar(QFrame):
         #    VS Code code lens action.
         self.preview_btn = QToolButton()
         self.preview_btn.setProperty("class", "lensActionBtn")
-        self.preview_btn.setText("Предпросмотр   ")
+        self.preview_btn.setText("Предпросмотр")
         self.preview_btn.setToolTip("Открыть отрисованный Markdown (Ctrl+Shift+V)")
         self.preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.preview_btn.clicked.connect(self._on_preview_clicked)
@@ -632,85 +583,6 @@ class CodeLensBar(QFrame):
         self.syntax_badge.setToolTip("Статус синтаксиса Python. Нажмите, чтобы открыть компактную структуру (Outline) или перейти к ошибке.")
         self.syntax_badge.clicked.connect(self._on_syntax_badge_clicked)
         layout.addWidget(self.syntax_badge)
-
-        layout.addSpacing(6)
-        for name, tooltip, orientation in (
-            ("split_right_btn", "Разделить редактор вправо", Qt.Orientation.Horizontal),
-            ("split_down_btn", "Разделить редактор вниз", Qt.Orientation.Vertical),
-            ("unsplit_btn", "Объединить группы редактора", None),
-        ):
-            button = QToolButton(self)
-            button.setObjectName(name)
-            button.setProperty("class", "lensActionBtn")
-            button.setToolTip(tooltip)
-            button.setAccessibleName(tooltip)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.setIcon(self._split_icon(orientation))
-            button.clicked.connect(
-                lambda checked=False, direction=orientation: self._on_split_clicked(direction)
-            )
-            setattr(self, name, button)
-            layout.addWidget(button)
-
-        layout.addSpacing(6)
-
-        # 3. Action: Clean Code Menu
-        self.clean_code_btn = QToolButton()
-        self.clean_code_btn.setProperty("class", "lensActionBtn")
-        self.clean_code_btn.setText("Форматирование  ")
-        self.clean_code_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.clean_code_btn.setToolTip("Форматирование по принципам Clean Code ")
-        clean_menu = QMenu(self.clean_code_btn)
-        clean_menu.setStyleSheet("QMenu { background: #1C2128; border: 1px solid #30363D; color: #E6EDF3;  font-size: 12px; } QMenu::item:selected { background: #1F6FEB; }")
-
-        act_clean_all = clean_menu.addAction("Форматировать весь файл ")
-        act_clean_all.triggered.connect(self.format_entire_file)
-
-        act_clean_sel = clean_menu.addAction("Форматировать выделенный фрагмент")
-        act_clean_sel.triggered.connect(self.format_selection)
-
-        self.clean_code_btn.setMenu(clean_menu)
-        # Кнопка форматирования перенесена в нижний статус-бар редактора
-        self.clean_code_btn.hide()
-
-        # 4. Action: Documentation Menu
-        self.docstring_btn = QToolButton()
-        self.docstring_btn.setProperty("class", "lensActionBtn")
-        self.docstring_btn.setText("Документация   ")
-        self.docstring_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.docstring_btn.setToolTip("Генерация структурированных описаний и комментариев для функций, классов и всего файла")
-        doc_menu = QMenu(self.docstring_btn)
-        doc_menu.setStyleSheet("QMenu { background: #1C2128; border: 1px solid #30363D; color: #E6EDF3;  font-size: 12px; } QMenu::item:selected { background: #1F6FEB; }")
-
-        act_doc_curr = doc_menu.addAction("Документировать текущий блок / функцию / класс")
-        act_doc_curr.triggered.connect(self.generate_docstring_current)
-
-        act_doc_all = doc_menu.addAction("Документировать весь файл)")
-        act_doc_all.triggered.connect(self.generate_docstrings_entire_file)
-
-        self.docstring_btn.setMenu(doc_menu)
-        # Кнопка автодокументирования перенесена в нижний статус-бар редактора
-        self.docstring_btn.hide()
-
-    def _split_icon(self, orientation):
-        name = "split-right" if orientation == Qt.Orientation.Horizontal else "split-down" if orientation == Qt.Orientation.Vertical else "unsplit"
-        return line_icon(name)
-
-    def _on_split_clicked(self, orientation):
-        window = getattr(self.modern_editor, 'main_window', None) or self.window()
-        action = getattr(window, 'unsplit_editor' if orientation is None else 'split_editor', None)
-        if not callable(action):
-            return
-        # The clicked editor may belong to the currently inactive group.
-        group, index = window.find_tab_for_widget(self.modern_editor)
-        if group is not None:
-            group.setCurrentIndex(index)
-            window._set_active_group(group)
-        if orientation is None:
-            action()
-        else:
-            action(orientation=orientation)
 
     def _connect_signals(self):
         if hasattr(self.editor, 'cursorPositionChanged'):
@@ -1069,37 +941,79 @@ class CodeLensBar(QFrame):
 
         QMessageBox.information(self, "Запуск блока", f"Код {target_name} отправлен на выполнение:\n\n{code_to_run[:200]}")
 
-    def format_entire_file(self):
-        """Clean and format the entire file according to Clean Code and PEP-8."""
+    def _replace_document(self, text):
         cursor = self.editor.textCursor()
+        line, column = cursor.blockNumber(), cursor.positionInBlock()
         cursor.beginEditBlock()
+        cursor.select(QtGui.QTextCursor.SelectionType.Document)
+        cursor.insertText(text)
+        cursor.endEditBlock()
+        document = self.editor.document()
+        block = document.findBlockByNumber(min(line, document.blockCount() - 1))
+        cursor.setPosition(block.position() + min(column, block.length() - 1))
+        self.editor.setTextCursor(cursor)
+
+    def _format_message(self, message):
+        window = self.window()
+        status = getattr(window, "status_bar", None)
+        if status is not None:
+            status.showMessage(message, 4000)
+
+    def format_entire_file(self, *, quiet=False):
+        text = self.editor.toPlainText()
         try:
-            text = self.editor.toPlainText()
-            lang = self._detect_language()
-            formatted = CleanCodeRefactorer.format_code(text, language=lang)
-            pos = cursor.position()
-            self.editor.setPlainText(formatted)
-            new_cursor = self.editor.textCursor()
-            new_cursor.setPosition(min(pos, len(formatted)))
-            self.editor.setTextCursor(new_cursor)
-        finally:
-            cursor.endEditBlock()
+            formatted = CleanCodeRefactorer.format_code(
+                text, self._detect_language(), getattr(self.modern_editor, "file_path", None)
+            )
+        except (ValueError, SyntaxError, OSError, ImportError, KeyError) as exc:
+            if not quiet:
+                self._format_message(f"Форматирование: {exc}")
+            return False
+        if formatted != text:
+            self._replace_document(formatted)
+            return True
+        return False
 
     def format_selection(self):
-        """Format only the selected block of code or current line."""
+        from textwrap import dedent, indent
+
         cursor = self.editor.textCursor()
         if not cursor.hasSelection():
             self.format_entire_file()
             return
-
-        cursor.beginEditBlock()
+        text = self.editor.toPlainText()
+        document = self.editor.document()
+        first = document.findBlock(cursor.selectionStart())
+        end = cursor.selectionEnd()
+        last = document.findBlock(end - 1)
+        fragment_cursor = QtGui.QTextCursor(first)
+        fragment_cursor.setPosition(last.position() + last.length() - 1,
+                                    QtGui.QTextCursor.MoveMode.KeepAnchor)
+        original = fragment_cursor.selectedText().replace("\u2029", "\n")
+        fragment = dedent(original)
+        padding = original[:len(original) - len(original.lstrip(" \t"))]
         try:
-            selected_text = cursor.selectedText().replace('\u2029', '\n')
-            lang = self._detect_language()
-            formatted = CleanCodeRefactorer.format_code(selected_text, language=lang).rstrip('\n')
-            cursor.insertText(formatted)
-        finally:
-            cursor.endEditBlock()
+            formatted = CleanCodeRefactorer.format_code(
+                fragment, self._detect_language(), getattr(self.modern_editor, "file_path", None)
+            )
+            replacement = indent(formatted.rstrip("\n"), padding)
+            left = QtGui.QTextCursor(document)
+            left.setPosition(first.position(), QtGui.QTextCursor.MoveMode.KeepAnchor)
+            left_text = left.selectedText().replace("\u2029", "\n")
+            right = QtGui.QTextCursor(document)
+            right.setPosition(fragment_cursor.selectionEnd())
+            right.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
+            right_text = right.selectedText().replace("\u2029", "\n")
+            if self._detect_language() not in ("py", "python", "pyw", "pyi"):
+                return
+            if ast.dump(ast.parse(left_text + replacement + right_text)) != ast.dump(ast.parse(text)):
+                raise ValueError("Выдели самостоятельный блок Python.")
+        except (ValueError, SyntaxError, OSError, ImportError, KeyError) as exc:
+            self._format_message(f"Форматирование: {exc}")
+            return
+        if replacement != original:
+            fragment_cursor.insertText(replacement)
+            self.editor.setTextCursor(fragment_cursor)
 
     def generate_docstring_current(self):
         """Generate high-quality documentation for the function or class under cursor, or selected block."""
@@ -1108,38 +1022,9 @@ class CodeLensBar(QFrame):
         code = self.editor.toPlainText()
         lang = self._detect_language()
 
-        if lang in ('py', 'python'):
-            try:
-                tree = ast.parse(code)
-                # 1. Search for function first
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        if node.lineno <= line_idx <= getattr(node, 'end_lineno', node.lineno + 10):
-                            doc = DocumentationGenerator.generate_function_docstring(node)
-                            lines = code.splitlines()
-                            lines[node.lineno - 1] += doc
-
-                            cursor.beginEditBlock()
-                            self.editor.setPlainText("\n".join(lines))
-                            self._jump_to_line(node.lineno + 2)
-                            cursor.endEditBlock()
-                            return
-
-                # 2. Search for class
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.ClassDef):
-                        if node.lineno <= line_idx <= getattr(node, 'end_lineno', node.lineno + 10):
-                            doc = DocumentationGenerator.generate_class_docstring(node)
-                            lines = code.splitlines()
-                            lines[node.lineno - 1] += doc
-
-                            cursor.beginEditBlock()
-                            self.editor.setPlainText("\n".join(lines))
-                            self._jump_to_line(node.lineno + 2)
-                            cursor.endEditBlock()
-                            return
-            except Exception:
-                pass
+        if lang in ("py", "python", "pyw", "pyi"):
+            self._document_python(code, line=line_idx)
+            return
 
         # 3. Multi-language or generic symbol fallback
         target_sym = None
@@ -1170,41 +1055,29 @@ class CodeLensBar(QFrame):
                             if p_name and p_name.isidentifier():
                                 params.append(p_name)
 
-                if lang in ('py', 'python'):
-                    body_indent = indent + "    "
-                    doc = DocumentationGenerator.describe_name(target_sym.name)
-                    doc_block = f'\n{body_indent}"""{doc}\n'
-                    if params:
-                        doc_block += f'\n{body_indent}Args:\n'
-                        for p in params:
-                            doc_block += f'{body_indent}    {p}: {DocumentationGenerator.describe_param(p)}\n'
-                    doc_block += f'{body_indent}"""'
-                    lines[target_sym.line - 1] += doc_block
-                else:
-                    doc = DocumentationGenerator.generate_multilang_docstring(
-                        target_sym.name, target_sym.kind, lang, params, indent=indent
-                    )
-                    doc_lines = doc.rstrip('\n').splitlines()
-                    for dl in reversed(doc_lines):
-                        lines.insert(target_sym.line - 1, dl)
-
-                cursor.beginEditBlock()
-                self.editor.setPlainText("\n".join(lines))
-                self._jump_to_line(target_sym.line)
-                cursor.endEditBlock()
+                if target_sym.line > 1 and lines[target_sym.line - 2].strip().startswith(("*/", "///", "//", "#", "--")):
+                    return
+                doc = DocumentationGenerator.generate_multilang_docstring(
+                    target_sym.name, target_sym.kind, lang, params, indent=indent
+                )
+                lines[target_sym.line - 1:target_sym.line - 1] = doc.rstrip("\n").splitlines()
+                self._replace_document("\n".join(lines) + ("\n" if code.endswith("\n") else ""))
                 return
 
-        # 4. If selected text or arbitrary block, insert explanatory header
-        if cursor.hasSelection():
-            cursor.beginEditBlock()
-            selected = cursor.selectedText().replace('\u2029', '\n')
-            pfx = "//" if lang not in ('py', 'python') else "#"
-            commented = f"{pfx} --- Логический блок ---\n" + "\n".join(f"{pfx} {l}" if l.strip() else "" for l in selected.splitlines()) + f"\n{selected}"
-            cursor.insertText(commented)
-            cursor.endEditBlock()
-            return
+        self._format_message("Помести курсор внутрь функции или класса.")
 
-        QMessageBox.information(self, "Генератор Docstring", "Установите курсор внутрь функции, метода или класса для добавления описания.")
+    def _document_python(self, code, *, line=None):
+        try:
+            updated = DocumentationGenerator.document_python(
+                code, line=line, filename=str(getattr(self.modern_editor, "file_path", "") or "")
+            )
+        except SyntaxError as exc:
+            self._format_message(f"Docstrings: проверь синтаксис в строке {exc.lineno}.")
+            return
+        if updated != code:
+            self._replace_document(updated)
+        else:
+            self._format_message("Нет функций или классов без docstring.")
 
     def generate_docstrings_entire_file(self):
         """Generate high-quality documentation for all classes, functions and module in the entire file."""
@@ -1213,58 +1086,9 @@ class CodeLensBar(QFrame):
             return
 
         lang = self._detect_language()
-        is_python = lang in ('py', 'python')
-        filepath = getattr(self.modern_editor, 'file_path', None)
-        filename = os.path.basename(filepath) if filepath else "модуля"
-
-        if is_python:
-            try:
-                tree = ast.parse(code)
-                has_module_doc = ast.get_docstring(tree) is not None
-                lines = code.splitlines()
-                insertions = []
-
-                if not has_module_doc:
-                    classes_count = len([n for n in tree.body if isinstance(n, ast.ClassDef)])
-                    funcs_count = len([n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))])
-                    mod_doc = (
-                        f'"""Модуль {filename}.\n\n'
-                        f'Предоставляет компоненты и функции для работы проекта ({classes_count} классов, {funcs_count} функций).\n'
-                        f'"""\n'
-                    )
-                    insertions.append((1, mod_doc, True))
-
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        if ast.get_docstring(node) is None:
-                            doc = DocumentationGenerator.generate_function_docstring(node)
-                            insertions.append((node.lineno, doc, False))
-                    elif isinstance(node, ast.ClassDef):
-                        if ast.get_docstring(node) is None:
-                            doc = DocumentationGenerator.generate_class_docstring(node)
-                            insertions.append((node.lineno, doc, False))
-
-                if not insertions:
-                    QMessageBox.information(self, "Документирование", "Все функции и классы в файле уже имеют документацию!")
-                    return
-
-                insertions.sort(key=lambda x: x[0], reverse=True)
-                cursor = self.editor.textCursor()
-                cursor.beginEditBlock()
-                try:
-                    for line_no, doc_text, is_mod in insertions:
-                        if is_mod:
-                            lines.insert(0, doc_text.rstrip('\n'))
-                        else:
-                            lines[line_no - 1] += doc_text
-                    self.editor.setPlainText("\n".join(lines))
-                finally:
-                    cursor.endEditBlock()
-
-                QMessageBox.information(self, "Документирование завершено", f"Успешно созданы описания и docstrings для {len(insertions)} компонентов файла!")
-                return
-            except SyntaxError:
-                pass
+        if lang in ("py", "python", "pyw", "pyi"):
+            self._document_python(code)
+            return
 
         # Multi-language or generic symbol fallback
         if not self._symbols:
@@ -1311,14 +1135,7 @@ class CodeLensBar(QFrame):
             QMessageBox.information(self, "Документирование", "Все функции и классы в файле уже имеют описания!")
             return
 
-        cursor = self.editor.textCursor()
-        cursor.beginEditBlock()
-        try:
-            self.editor.setPlainText("\n".join(lines))
-        finally:
-            cursor.endEditBlock()
-
-        QMessageBox.information(self, "Документирование завершено", f"Успешно созданы описания для {count} компонентов файла!")
+        self._replace_document("\n".join(lines) + ("\n" if code.endswith("\n") else ""))
 
     def find_symbol_references(self):
         """Find occurrences of the word/symbol under cursor in the current project."""

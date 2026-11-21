@@ -1,9 +1,20 @@
 """PyScribe widgets/SearchPanel.py: application module and reusable component."""
+from dataclasses import dataclass, field
+import os
 from pathlib import Path
 import re
-from threading import Event
+from threading import Event, Lock
 from design.icons import set_line_icon
 from PyQt6 import QtCore, QtWidgets, QtGui
+
+
+@dataclass
+class _ReplacementJob:
+    root: Path
+    protected: set
+    cancel: Event = field(default_factory=Event)
+    lock: Lock = field(default_factory=Lock)
+    switched_workspace: bool = False
 
 
 class SearchPanel(QtWidgets.QWidget):
@@ -26,6 +37,7 @@ class SearchPanel(QtWidgets.QWidget):
         self._search_cancel = Event()
         self._last_request = None
         self._pending_results = None
+        self._replacement = None
         self._build()
 
     def _build(self):
@@ -53,7 +65,7 @@ class SearchPanel(QtWidgets.QWidget):
         layout.addWidget(self.query)
 
         options = QtWidgets.QHBoxLayout()
-        options.setSpacing(4)
+        options.setSpacing(6)
         self.case_sensitive = QtWidgets.QToolButton()
         self.case_sensitive.setText('Aa')
         self.case_sensitive.setToolTip('Учитывать регистр (Aa)')
@@ -96,6 +108,10 @@ class SearchPanel(QtWidgets.QWidget):
         self.replace_button.setMinimumHeight(30)
         self.replace_button.clicked.connect(self.replace_all)
         replace_row.addWidget(self.replace_button)
+        self.cancel_replace_button = QtWidgets.QPushButton("Остановить")
+        self.cancel_replace_button.clicked.connect(self.stop_replace)
+        self.cancel_replace_button.hide()
+        replace_row.addWidget(self.cancel_replace_button)
         layout.addLayout(replace_row)
 
         self.results = QtWidgets.QTreeWidget()
@@ -111,6 +127,9 @@ class SearchPanel(QtWidgets.QWidget):
 
     def set_root(self, path):
         root = Path(path) if path else Path.cwd()
+        if self._replacement is not None and (path is None or root != self.root_path):
+            self._replacement.switched_workspace = True
+            self.stop_replace()
         if root != self.root_path:
             self._search_cancel.set()
             self.root_path = root
@@ -129,24 +148,34 @@ class SearchPanel(QtWidgets.QWidget):
         return re.compile(pattern, 0 if self.case_sensitive.isChecked() else re.IGNORECASE)
 
     @classmethod
-    def _iter_text_files(cls, root):
+    def _iter_text_files(cls, root, cancel=None):
         try:
             from core.ignore_rules import walk_files
+            root = Path(root).resolve()
             # Pruned walk so a search never descends into node_modules/.git.
             scan = walk_files(root, extensions=None,
-                              max_files=None, max_bytes=cls.MAX_FILE_BYTES)
+                              max_files=None, max_bytes=cls.MAX_FILE_BYTES,
+                              cancelled=cancel.is_set if cancel is not None else None)
             for path in scan.files:
+                if cancel is not None and cancel.is_set():
+                    return
                 if path.suffix.lower() in cls.BINARY_SUFFIXES:
                     continue
                 try:
-                    data = path.read_bytes()
-                    if b'\x00' in data[:8192]:
+                    if path.is_symlink() or not path.resolve().is_relative_to(root):
                         continue
+                    data = path.read_bytes()
                     # Remember the real encoding so ``replace_all`` can write the
                     # file back without corrupting non-UTF-8 sources.
                     bom = b''
                     encoding = 'utf-8'
-                    if data.startswith(b'\xef\xbb\xbf'):
+                    if data.startswith((b'\xff\xfe', b'\xfe\xff')):
+                        bom = data[:2]
+                        encoding = 'utf-16-le' if bom == b'\xff\xfe' else 'utf-16-be'
+                        text = data[2:].decode(encoding)
+                    elif b'\x00' in data[:8192]:
+                        continue
+                    elif data.startswith(b'\xef\xbb\xbf'):
                         text = data.decode('utf-8-sig')
                         bom = b'\xef\xbb\xbf'
                     else:
@@ -180,6 +209,8 @@ class SearchPanel(QtWidgets.QWidget):
             self._show_results(self.root_path, *result)
 
     def search(self):
+        if self._replacement is not None:
+            return
         self._search_cancel.set()
         self._last_request = self._request()
         self._pending_results = None
@@ -216,7 +247,7 @@ class SearchPanel(QtWidgets.QWidget):
     def _find_matches(cls, root, pattern, cancel):
         files = []
         total_matches = 0
-        for path, text, _encoding, _bom in cls._iter_text_files(root):
+        for path, text, _encoding, _bom in cls._iter_text_files(root, cancel):
             if cancel.is_set():
                 break
             rows = []
@@ -265,12 +296,14 @@ class SearchPanel(QtWidgets.QWidget):
         if callable(getter):
             try:
                 for p in getter() or []:
-                    open_paths.add(str(Path(p).resolve()).lower())
+                    open_paths.add(os.path.normcase(str(Path(p).resolve())))
             except Exception:
                 pass
         return open_paths
 
     def replace_all(self):
+        if self._replacement is not None:
+            return
         query = self.query.text()
         if not query.strip():
             return
@@ -280,34 +313,104 @@ class SearchPanel(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, 'Неверный шаблон поиска', str(exc))
             return
         replacement = self.replace.text()
+        substitute = replacement if self.regex.isChecked() else lambda _match: replacement
+        try:
+            pattern.sub(substitute, "")
+        except (re.error, IndexError) as exc:
+            QtWidgets.QMessageBox.warning(self, 'Неверная замена', str(exc))
+            return
+        from services.background import run_async
+
+        job = _ReplacementJob(self.root_path.resolve(), self._open_editor_paths())
+        self._replacement = job
+        self._search_cancel.set()
+        self._pending_results = None
+        self.replace_button.setEnabled(False)
+        self.cancel_replace_button.setEnabled(True)
+        self.cancel_replace_button.show()
+        self.result_count.setText("Замена по проекту…")
+        work = self._replace_in_files
+        run_async(lambda: work(job, pattern, substitute),
+                  on_done=lambda result: self._finish_replacement(job, result),
+                  on_error=lambda error: self._finish_replacement(job, (0, 0, [], [error])))
+
+    def stop_replace(self):
+        if self._replacement is not None:
+            self._replacement.cancel.set()
+            self.cancel_replace_button.setEnabled(False)
+            self.result_count.setText("Останавливаем замену…")
+
+    def cancel_background(self):
+        self._search_cancel.set()
+        if self._replacement is not None:
+            self._replacement.cancel.set()
+            self._replacement = None
+
+    def protect_open_files(self):
+        job = self._replacement
+        if job is not None:
+            paths = self._open_editor_paths()
+            with job.lock:
+                job.protected.update(paths)
+
+    @classmethod
+    def _replace_in_files(cls, job, pattern, substitute):
+        from core.file_snapshot import snapshot_bytes, write_if_unchanged
+
         changes = 0
+        written = 0
         skipped_open = []
-        for path, text, encoding, bom in self._iter_text_files(self.root_path):
-            new_text, count = pattern.subn(replacement, text)
+        failed_files = []
+        for path, text, encoding, bom in cls._iter_text_files(job.root, job.cancel):
+            if job.cancel.is_set():
+                break
+            new_text, count = pattern.subn(substitute, text)
             if not count:
                 continue
             try:
-                resolved = str(path.resolve()).lower()
-            except OSError:
-                resolved = str(path).lower()
-            if resolved in self._open_editor_paths():
-                # Не перезаписываем буфер открытого файла на диске — иначе
-                # последующее автосохранение затрёт замены.
-                skipped_open.append(path.name)
-                continue
-            try:
-                # Сохраняем исходную кодировку и BOM, чтобы не разрушить файл.
-                payload = new_text.encode(encoding, errors='replace')
-                path.write_bytes(bom + payload)
+                resolved = path.resolve()
+                if path.is_symlink() or not resolved.is_relative_to(job.root):
+                    continue
+                original = bom + text.encode(encoding)
+                payload = bom + new_text.encode(encoding)
+                with job.lock:
+                    if os.path.normcase(str(resolved)) in job.protected:
+                        skipped_open.append(resolved.relative_to(job.root).as_posix())
+                        continue
+                if job.cancel.is_set():
+                    break
+                write_if_unchanged(resolved, payload, snapshot_bytes(original))
                 changes += count
+                written += 1
+            except UnicodeEncodeError:
+                failed_files.append(f"{path.name} · замена не представима в {encoding}")
             except OSError as exc:
-                QtWidgets.QMessageBox.warning(self, 'Ошибка замены', f'{path}: {exc}')
+                failed_files.append(f"{path.name} · {exc}")
+        return changes, written, skipped_open, failed_files
+
+    def _finish_replacement(self, job, result):
+        if self._replacement is not job:
+            return
+        self._replacement = None
+        self.replace_button.setEnabled(True)
+        self.cancel_replace_button.hide()
+        changes, written, skipped_open, failed_files = result
+        if job.switched_workspace:
+            status = getattr(self.window(), "status_bar", None)
+            if status is not None:
+                status.showMessage(f"Замена в прежнем проекте остановлена · изменено совпадений: {changes}")
+            self.refresh_if_needed()
+            return
         self.search()
-        message = f'Заменено совпадений: {changes}.'
+        message = f"Заменено совпадений: {changes}. Изменено файлов: {written}."
+        if job.cancel.is_set():
+            message = "Замена остановлена. " + message
         if skipped_open:
             preview = ', '.join(sorted(set(skipped_open))[:5])
             message += (f'\n\nПропущено файлов, открытых в редакторе: {len(set(skipped_open))}'
                         f' ({preview}). Сохраните и закройте их, затем повторите замену.')
+        if failed_files:
+            message += f"\n\nПропущено из-за ошибок: {len(failed_files)}\n" + "\n".join(failed_files[:5])
         QtWidgets.QMessageBox.information(self, 'Заменить всё', message)
 
     def _open_item(self, item, column):

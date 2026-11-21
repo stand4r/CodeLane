@@ -57,30 +57,28 @@ TABLE_BORDER = "#303035"
 
 # Chat text follows the workbench font settings and UI scale. Fixed 13.5px
 # looked tiny next to the 110%-scaled chrome and was reported as unreadable.
-LINE_HEIGHT = 1.65
+LINE_HEIGHT = 1.40
 
 
-def _ui_scale_factor() -> float:
+def chat_editor_font() -> QtGui.QFont:
+    from app.ui_scale import scale_px
+    from utils.settings_manager import get_settings_manager
+
     try:
-        from utils.settings_manager import get_settings_manager
-        percent = float(get_settings_manager().get_setting("ui_scale_percent", 100) or 100)
-    except Exception:
-        percent = 100.0
-    return max(0.75, min(2.0, percent / 100.0))
+        settings = get_settings_manager()
+        family = str(settings.get_setting("editor_font", "Cascadia Code"))
+        points = int(settings.get_setting("editor_font_size", 13) or 13)
+    except RuntimeError:
+        family, points = "Cascadia Code", 13
+    return QtGui.QFont(family, scale_px(points))
 
 
 def chat_font_px() -> int:
-    """Body font size of the chat, in CSS pixels (comfortably ≥ chrome)."""
-    try:
-        from utils.settings_manager import get_settings_manager
-        base = float(get_settings_manager().get_setting("ui_font_size", 13) or 13)
-    except Exception:
-        base = 13.0
-    return max(16, int(round(base * _ui_scale_factor())) + 2)
+    return QtGui.QFontInfo(chat_editor_font()).pixelSize()
 
 
 def chat_code_font_px() -> int:
-    return max(15, chat_font_px() - 1)
+    return chat_font_px()
 
 
 def chat_small_px() -> int:
@@ -144,16 +142,16 @@ def _inline(value: str, chip: bool = True) -> str:
     if chip:
         safe = re.sub(
             r"`([^`]+)`",
-            r'<span style="background:%s; color:%s; font-family:\'Cascadia Mono\','
-            r'Consolas,monospace; font-size:%dpx;">&#8201;\1&#8201;</span>'
+            r'<span style="background:%s; color:%s; '
+            r'font-size:%dpx;">&#8201;\1&#8201;</span>'
             % (SENTINEL_BG, TEXT, chat_code_font_px()),
             safe)
     else:
         safe = re.sub(
             r"`([^`]+)`",
-            r'<span style="color:%s; font-family:\'Cascadia Mono\','
-            r'Consolas,monospace; font-size:%dpx;">\1</span>'
-            % (CODE_TEXT, chat_code_font_px() - 1),
+            r'<span style="color:%s; '
+            r'font-size:%dpx;">\1</span>'
+            % (CODE_TEXT, chat_code_font_px()),
             safe)
     safe = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)",
                   r'<a href="\2" style="color:#6FA8DC; text-decoration:none;">\1</a>',
@@ -182,9 +180,8 @@ def _list_row(marker: str, content_html: str, body_px: int,
 def markdown_to_html(text: str) -> str:
     """Convert prose markdown into safe rich text (no code fences here).
 
-    Every non-empty line becomes its own paragraph: models write one sentence
-    per line without blank lines between them, and joining those lines with a
-    plain ``<br>`` produced a dense, unreadable wall of text.
+    Consecutive text lines form a paragraph, while lists and headings remain
+    separate blocks.
     """
     lines = str(text or "").splitlines()
     blocks: List[str] = []
@@ -194,7 +191,7 @@ def markdown_to_html(text: str) -> str:
 
     def flush():
         if paragraph:
-            text = "<br>".join(paragraph)
+            text = " ".join(paragraph)
             # A line that is entirely bold is the model's sub-heading.
             if len(paragraph) == 1 and re.fullmatch(r"<b>.+</b>", text, flags=re.S):
                 blocks.append(
@@ -202,7 +199,7 @@ def markdown_to_html(text: str) -> str:
                     f' font-weight:600; line-height:1.35;">{text}</p>')
             else:
                 blocks.append(
-                    f'<p style="margin:0 0 12px 0; font-size:{body}px;'
+                    f'<p style="margin:0 0 8px 0; font-size:{body}px;'
                     f' line-height:{LINE_HEIGHT};">' + text + "</p>")
             paragraph.clear()
 
@@ -266,7 +263,7 @@ def markdown_to_html(text: str) -> str:
             items = []
             while index < len(lines) and re.match(r"^\s*([-*+])\s+", lines[index]):
                 content = re.sub(r"^\s*[-*+]\s+", "", lines[index])
-                items.append("<li>" + _inline(content) + "</li>")
+                items.append("<li>" + _inline(content, chip=False) + "</li>")
                 index += 1
             blocks.append('<ul style="margin:8px 0 12px 0;">' + "".join(items) + "</ul>")
             continue
@@ -282,7 +279,7 @@ def markdown_to_html(text: str) -> str:
                     break
                 content = re.sub(r"^\s*\d+[.)]\s+", "", lines[index])
                 number = f"{counter}."
-                items.append("<li>" + _inline(content) + "</li>")
+                items.append("<li>" + _inline(content, chip=False) + "</li>")
                 counter += 1
                 index += 1
             blocks.append(f'<ol start="{ordered.group(1)}" style="margin:8px 0 12px 0;">' + "".join(items) + "</ol>")
@@ -308,8 +305,12 @@ def markdown_to_html(text: str) -> str:
             index += 1
             continue
 
+        standalone_heading = re.fullmatch(r"\*\*.+?\*\*", stripped)
+        if standalone_heading:
+            flush()
         paragraph.append(_inline(stripped))
-        flush()
+        if standalone_heading or line.endswith("  "):
+            flush()
         index += 1
 
     flush()
@@ -359,6 +360,7 @@ class InlineCodeText(QtWidgets.QTextBrowser):
 
     # -- content -------------------------------------------------------
     def set_html(self, html_text: str):
+        self.document().setDefaultFont(chat_editor_font())
         body = (f'<div style="color:{TEXT}; font-size:{chat_font_px()}px;'
                 f' line-height:{LINE_HEIGHT};">{html_text or ""}</div>')
         self.setHtml(body)
@@ -572,22 +574,7 @@ class CodeSnippet(QtWidgets.QWidget):
         self._fit_height()
 
     def _apply_font(self):
-        try:
-            from utils.settings_manager import get_settings_manager
-            sm = get_settings_manager()
-            family = str(sm.get_setting("editor_font", "Cascadia Code")
-                         or "Cascadia Code")
-            size = int(sm.get_setting("editor_font_size", 13) or 13)
-        except Exception:
-            family, size = "Cascadia Code", 13
-        # Chat code must stay readable: the editor font may be configured very
-        # small (9pt), so the chat never goes below 11pt and follows UI scale.
-        points = max(11, size)
-        if _ui_scale_factor() > 1.05:
-            points = max(points, int(round(points * min(1.35, _ui_scale_factor()))))
-        font = QtGui.QFont(family, points)
-        font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
-        self.view.setFont(font)
+        self.view.setFont(chat_editor_font())
 
     def _install_highlighter(self):
         """Highlight with the code editor's own highlighter and rules."""
@@ -668,6 +655,7 @@ class AssistantMessage(QtWidgets.QWidget):
     # -- content -------------------------------------------------------
     def set_markdown(self, markdown: str):
         self._markdown = markdown or ""
+        self._content_font = chat_editor_font()
         for part in self._parts:
             try:
                 self._layout.removeWidget(part)
@@ -686,6 +674,10 @@ class AssistantMessage(QtWidgets.QWidget):
             self._layout.addWidget(widget)
             self._parts.append(widget)
         self.set_width(self._width)
+
+    def on_ui_scale_changed(self, scale):
+        if self._content_font != chat_editor_font():
+            self.set_markdown(self._markdown)
 
     def text(self) -> str:
         return self._markdown

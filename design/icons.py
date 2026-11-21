@@ -301,9 +301,10 @@ def _line_renderer(name, color):
             path = _LINE_PATHS.get("reload") or _LINE_PATHS.get("refresh")
         else:
             path = _LINE_PATHS.get("info", "M5 5l10 10 M15 5 5 15")
+    stroke_width = 1.9 if name in ("split-right", "split-down", "unsplit") else 1.55
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">'
-        f'<path d="{path}" fill="none" stroke="{color}" stroke-width="1.55" '
+        f'<path d="{path}" fill="none" stroke="{color}" stroke-width="{stroke_width}" '
         'stroke-linecap="round" stroke-linejoin="round"/></svg>'
     )
     return QtSvg.QSvgRenderer(QtCore.QByteArray(svg.encode("ascii")))

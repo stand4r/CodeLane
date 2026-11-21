@@ -44,12 +44,9 @@ QWidget#extensionsManager {
     background: #181818;
     color: #CCCCCC;
 }
-QFrame#workbenchTopBar { border-bottom: 1px solid #2B2B2B; }
 QFrame#activityBar { border-right: 1px solid #2B2B2B; }
 QFrame#explorerHeader {
     min-height: 35px;
-    max-height: 35px;
-    border-bottom: 1px solid #2B2B2B;
 }
 
 /* Text roles — only three sizes exist in the chrome. */
@@ -155,7 +152,9 @@ QListWidget#extensionsManagerList {
     outline: 0;
     font-size: 13px;
 }
-/* VS Code rows: 22px, full-width selection, 2px indent per level */
+QTreeView#fileExplorer { show-decoration-selected: 0; }
+
+/* Paint over the native row highlight in the indentation gutter. */
 QTreeView#fileExplorer::item {
     min-height: 22px;
     max-height: 22px;
@@ -167,7 +166,12 @@ QTreeView#fileExplorer::item {
 }
 QTreeView#fileExplorer::item:hover { background: #2A2D2E; }
 QTreeView#fileExplorer::item:selected { background: #04395E; color: #FFFFFF; }
-QTreeView#fileExplorer::branch { background: transparent; }
+QTreeView#fileExplorer::branch,
+QTreeView#fileExplorer::branch:hover,
+QTreeView#fileExplorer::branch:selected {
+    background: #181818;
+    border: 0;
+}
 
 QListWidget::item {
     min-height: 22px;
@@ -212,8 +216,16 @@ QComboBox:focus,
 QSpinBox:focus,
 QDoubleSpinBox:focus { border-color: #007FD4; }
 QLineEdit:disabled, QComboBox:disabled { color: #6E6E6E; }
-QComboBox::drop-down { border: 0; width: 20px; }
-QComboBox::down-arrow { image: none; width: 0; height: 0; }
+QComboBox::drop-down { border: none; background: transparent; width: 24px; }
+QComboBox::down-arrow { image: url(icons/chevron-down.png); width: 16px; height: 16px; }
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+    border: none;
+    background: transparent;
+    width: 20px;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow { image: url(icons/chevron-up.png); width: 12px; height: 12px; }
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { image: url(icons/chevron-down.png); width: 12px; height: 12px; }
 QComboBox QAbstractItemView {
     background: #252526;
     color: #CCCCCC;
@@ -254,8 +266,7 @@ QPushButton#gitCommitButton:pressed { background: #238636; }
 /* ---------- Editor tabs -------------------------------------------------- */
 QTabWidget::pane {
     background: #1E1E1E;
-    border: 1px solid #252526;
-    border-top: none;
+    border: none;
 }
 QTabBar {
     background: #181818;
@@ -263,26 +274,21 @@ QTabBar {
     border: none;
     padding: 0;
 }
-/* VS Code editor tabs: 35px, flat, active tab = tab bg + accent top border */
 QTabBar::tab {
-    background: #2D2D2D;
-    color: #9D9D9D;
+    background: transparent;
+    color: @muted_text@;
     border: none;
-    border-right: 1px solid #252526;
-    border-top: 1px solid #2D2D2D;
-    border-radius: 0;
-    min-height: 35px;
-    max-height: 35px;
-    padding: 0 10px;
-    margin: 0;
+    border-radius: 5px;
+    min-height: 29px;
+    padding: 1px 10px;
+    margin: 3px 2px;
     font-size: 13px;
     min-width: 80px;
 }
-QTabBar::tab:hover { background: #2D2D2D; color: #CCCCCC; }
+QTabBar::tab:hover { background: @glass_hover@; color: @glass_text@; }
 QTabBar::tab:selected {
-    background: #1E1E1E;
-    color: #FFFFFF;
-    border-top: 1px solid #0078D4;
+    background: #37373D;
+    color: @glass_text@;
 }
 QTabBar::close-button {
     image: url(icons/tab-close.svg);
@@ -295,6 +301,18 @@ QTabBar::close-button {
     background: transparent;
 }
 QTabBar::close-button:hover { background: #454545; border-radius: 6px; }
+QToolButton#editorTabAction,
+QToolButton#editorRunDropdown {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 0;
+    min-height: 0;
+}
+QToolButton#editorTabAction:hover,
+QToolButton#editorRunDropdown:hover,
+QToolButton#editorRunDropdown:pressed { background: @glass_hover@; }
+QToolButton#editorRunDropdown::menu-indicator { image: none; width: 0; }
 
 QFrame#editorGroupPrimary,
 QFrame#editorGroupSecondary,
@@ -318,13 +336,12 @@ QSplitter::handle:vertical { height: 1px; }
 QSplitter::handle:hover { background: #0078D4; }
 
 QLabel#editorStatusBar {
-    background: #181818;
+    background: transparent;
     color: #8C8C8C;
     font-size: 12px;
     min-height: 22px;
     max-height: 22px;
     padding: 0 8px;
-    border-top: 1px solid #2B2B2B;
 }
 QFrame#editorStatusBarFrame {
     background: #181818;
@@ -426,7 +443,6 @@ QWidget#consoleWidget,
 QTabWidget#consoleTabs,
 QTabWidget#consoleTabs::pane,
 QWidget#problemsPane,
-QWidget#outputPane,
 QWidget#problemsWidget,
 QFrame#panelToolbar {
     background: #181818;
@@ -602,8 +618,7 @@ QToolButton#consoleAction {
 QToolButton#consoleAction:hover { background: #2A2D2E; }
 QToolButton#consoleAction:pressed { background: #37373D; }
 
-QListWidget#problemsList,
-QTextEdit#outputText {
+QListWidget#problemsList {
     background: #1E1E1E;
     color: #CCCCCC;
     border: 0;
@@ -614,6 +629,13 @@ QListWidget#problemsList::item:selected { background: #04395E; color: #FFFFFF; }
 
 /* ---------- AI agent panel (DeepSeek Harness / opencode style) ----------- */
 QWidget#aiAgentPanel { background: #151517; border: none; }
+QLabel#aiActivityLine {
+    background: @glass_surface@;
+    border: 0;
+    border-left: 2px solid @glass_focus@;
+    border-radius: 5px;
+    padding: 5px 8px;
+}
 
 QLabel#aiHeaderTitle {
     color: @glass_text@;
@@ -695,7 +717,6 @@ QFrame#aiComposer {
     border-radius: 18px;
 }
 QFrame#aiComposer:hover { border-color: #404046; }
-QFrame#aiComposer:focus-within { border-color: #4C6FA8; }
 QPlainTextEdit#aiInput {
     background: transparent;
     color: #EDEDED;
@@ -737,7 +758,7 @@ QToolButton#aiStopButton:hover { background: #4A4A4C; }
 QLabel#aiStatusLine { color: #E2B86B; font-size: 11px; padding: 0 2px 2px 2px; }
 /* Session metrics under the composer (answers · steps · tok/s · tokens · cache) */
 QLabel#aiStatsLine {
-    color: #6E6E72;
+    color: #AAAAAD;
     font-size: 11px;
     background: transparent;
     padding: 0 4px 2px 4px;
@@ -923,7 +944,7 @@ QMenu {
     font-size: 13px;
 }
 QMenu::item {
-    min-height: 26px;
+    min-height: 18px;
     padding: 0 28px 0 26px;
     border-radius: 0;
     margin: 0;
@@ -1102,40 +1123,21 @@ QWidget#projectIntelligence QGroupBox#intelligenceActions QPushButton:hover {
 QWidget#projectIntelligence QFrame#intelligenceMetric { background: #252526; border-radius: 8px; }
 QWidget#projectIntelligence QFrame#intelligenceMetric QLabel { background: transparent; }
 
-QDialog QFrame#project-card QLabel#projectName,
-QDialog#projectManager QLabel#projectName { color: #CCCCCC; font-size: 14px; background: transparent; border: none; }
-QDialog QFrame#project-card QLabel#projectPath,
-QDialog QFrame#project-card QLabel#projectTime,
-QDialog#projectManager QLabel#projectPath,
-QDialog#projectManager QLabel#projectTime { color: #8C8C8C; font-size: 12px; background: transparent; border: none; }
-QDialog QFrame#projectCommand,
-QDialog#projectManager QFrame#projectCommand {
-    background: #1E1E1E;
-    border: 1px solid #2B2B2B;
-    border-radius: 8px;
+QDialog#projectManager QFrame#projectRow {
+    background: @glass_surface@;
+    border: 1px solid transparent;
+    border-radius: 7px;
 }
-QDialog QFrame#project-card QPushButton#open-button,
-QDialog QFrame#project-card QPushButton[primary="true"],
-QDialog#projectManager QPushButton#open-button,
-QDialog#projectManager QPushButton[primary="true"] {
-    background: #0E639C;
-    color: #FFFFFF;
-    border-color: #0E639C;
-    border-radius: 8px;
-    padding: 0 14px;
+QDialog#projectManager QFrame#projectRow:hover {
+    background: @glass_hover@;
 }
-QDialog QFrame#project-card QPushButton[danger="true"],
-QDialog#projectManager QPushButton[danger="true"] { color: #F14C4C; border-radius: 8px; }
-QDialog QFrame#project-card QPushButton[secondary="true"],
-QDialog#projectManager QPushButton[secondary="true"] { color: #9D9D9D; border-radius: 8px; }
-QDialog#projectManager QFrame#project-card {
-    background: #252526;
-    border: 1px solid #2B2B2B;
-    border-radius: 8px;
+QDialog#projectManager QFrame#projectRow[selected="true"] {
+    border-color: @glass_focus@;
 }
-QDialog#projectManager QFrame#project-card:hover { background: #2A2D2E; border-color: #007FD4; }
+QLabel#projectRowName, QLabel#projectRowPath { background: transparent; }
+QLabel#projectRowName { font-weight: 600; }
+QLabel#projectRowPath { color: #9D9D9D; font-size: 12px; }
 
-QFrame#project-card QLabel,
 QFrame#welcomeProject QLabel,
 QLabel#welcomeProjectName,
 QLabel#welcomeProjectPath,
@@ -1179,9 +1181,6 @@ QFrame#aiHeader {
     border: none;
     border-bottom: 1px solid @soft_border@;
 }
-QTabWidget#editorGroupPrimary::pane, QTabWidget#editorGroupSecondary::pane {
-    border: none;
-}
 QPushButton, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox {
     border-radius: 8px;
 }
@@ -1208,20 +1207,6 @@ QToolButton[class="lensActionBtn"], QToolButton[class="lensCrumbBtn"] {
     border-radius: 8px;
 }
 QToolButton#windowControl, QToolButton#windowClose { border-radius: 8px; }
-QTabBar::tab {
-    border: 1px solid transparent;
-    border-radius: 9px;
-    margin: 3px 2px;
-    min-height: 29px;
-    max-height: 29px;
-    background: transparent;
-}
-QTabBar::tab:selected {
-    background: @glass_surface@;
-    border: 1px solid @glass_border@;
-    color: @glass_text@;
-}
-QTabBar::tab:hover { background: @glass_hover@; }
 QMenu, QMenu#aiContextMenu, QMenu#aiAccessMenu {
     background: @glass_menu@;
     color: @glass_text@;
@@ -1235,8 +1220,39 @@ QMenu::separator { background: @glass_border@; margin: 5px 10px; }
 QFrame#aiComposer {
     background: @glass_surface@;
     border: 1px solid @glass_border@;
-    border-radius: 18px;
+    border-radius: 12px;
 }
+QWidget#agentWorkspacePanel { background: @glass_surface@; border: none; }
+QLabel#agentWorkspaceTitle { color: @glass_text@; font-size: 15px; font-weight: 600; }
+QLabel#agentPlannerTitle { color: @glass_text@; font-weight: 600; }
+QLineEdit#agentPlannerSearch {
+    background: @glass_surface@; color: @glass_text@; border: 1px solid @glass_border@;
+    border-radius: 6px; padding: 0 8px; min-height: 20px; max-height: 20px;
+}
+QLineEdit#agentPlannerSearch:focus { border-color: #438bd2; }
+QLabel#agentWorkspaceStats { color: @glass_text@; padding: 2px 4px; }
+QLabel#agentGraphEmpty { color: #90959e; background: transparent; border: none; }
+QGraphicsView#agentGraph { background: transparent; border: none; }
+QWidget#agentPlanner { background: transparent; border-top: 1px solid @glass_border@; padding-top: 8px; }
+QTreeWidget#agentPlannerTree { background: transparent; border: none; outline: none; }
+QListWidget#agentTaskQueue { background: @glass_surface@; border: 1px solid @glass_border@; border-radius: 6px; }
+QListWidget#agentTaskQueue::item { padding: 6px 8px; }
+QListWidget#agentTaskQueue::item:selected { background: @glass_hover@; color: @glass_text@; }
+QTreeWidget#agentPlannerTree::item { padding: 5px 6px; border-radius: 5px; }
+QTreeWidget#agentPlannerTree::item:hover, QTreeWidget#agentPlannerTree::item:selected {
+    background: @glass_hover@; color: @glass_text@;
+}
+QToolButton#agentPlannerButton, QToolButton#agentPlannerAdd,
+QPushButton#agentModeButton, QPushButton#agentStopButton, QPushButton#agentChangesButton {
+    background: @glass_surface@; color: @glass_text@; border: 1px solid @glass_border@;
+    border-radius: 6px; padding: 5px 9px; min-height: 18px;
+}
+QToolButton#agentPlannerButton:hover, QToolButton#agentPlannerAdd:hover,
+QPushButton#agentModeButton:hover, QPushButton#agentStopButton:hover, QPushButton#agentChangesButton:hover {
+    background: @glass_hover@;
+}
+QPushButton#agentModeButton:checked { border-color: #438bd2; color: #a9d4ff; }
+QPushButton#agentStopButton:disabled { color: #777a80; }
 QToolButton#aiScopeButton, QToolButton#aiModeButton, QToolButton#aiModelButton {
     background: @glass_surface@;
     border: 1px solid @glass_border@;
@@ -1633,7 +1649,7 @@ QToolButton#browserProfile:hover, QToolButton#browserProfile:open {
 QToolButton#browserProfile::menu-indicator { width: 9px; subcontrol-position: right center; }
 QMenu#browserProfileMenu { min-width: 178px; }
 
-/* Settings workbench: navigation and actions frame the scrolling section. */
+/* Settings workbench */
 QWidget#settingsWorkbench {
     background: #181818;
 }
@@ -1646,13 +1662,13 @@ QLabel#settingsTitle {
 QListWidget#settingsNavigation,
 QStackedWidget#settingsPages,
 QFrame#settingsFooter {
-    background: @glass_surface@;
-    border: 1px solid @glass_border@;
-    border-radius: 10px;
+    background: #181818;
+    border: none;
 }
 QListWidget#settingsNavigation {
     color: @glass_text@;
-    padding: 5px;
+    padding: 5px 8px 5px 0;
+    border-right: 1px solid @soft_border@;
     outline: 0;
 }
 QListWidget#settingsNavigation::item {
@@ -1672,7 +1688,7 @@ QListWidget#settingsNavigation::item:hover:enabled {
 }
 QScrollArea#settingsPageScroll,
 QWidget#settingsPageContent {
-    background: @glass_surface@;
+    background: #181818;
     border: none;
 }
 QLabel#settingsPageTitle {
@@ -1694,6 +1710,32 @@ QWidget#settingsWorkbench QLabel#settingsHint {
 QFrame#settingsFooter QPushButton {
     min-height: 30px;
     padding: 2px 16px;
+}
+QFrame#settingsFooter { border-top: 1px solid @soft_border@; }
+
+/* Database tabs share the editor surface. The splitter and header own the separators. */
+QWidget#databaseWorkbench QTableView {
+    background: #1E1E1E;
+    border: none;
+    selection-background-color: #264F78;
+}
+QWidget#databaseWorkbench QHeaderView {
+    background: #181818;
+}
+QWidget#databaseWorkbench QHeaderView::section {
+    background: #181818;
+    color: @glass_text@;
+    padding: 4px 8px;
+    border: none;
+    border-bottom: 1px solid @soft_border@;
+}
+QWidget#databaseWorkbench QHeaderView::section:vertical {
+    border-bottom: none;
+    border-right: 1px solid @soft_border@;
+}
+QWidget#databaseWorkbench QTableCornerButton::section {
+    background: #181818;
+    border: none;
 }
 
 QWidget#workbenchMenuStrip { background: transparent; }
@@ -1727,7 +1769,7 @@ QLabel#workbenchMenuSection {
 }
 
 /* Refined workbench surfaces and interaction states. */
-QFrame#workbenchTopBar { border-bottom: 1px solid @soft_border@; }
+QFrame#workbenchSeparator { background: @glass_border@; border: none; }
 QFrame#activityBar { border-right: 1px solid @soft_border@; }
 QFrame#explorerHeader { border-bottom: 1px solid @soft_border@; }
 QLabel#sideTitle, QLabel#explorerSectionTitle {
@@ -1756,6 +1798,7 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
     border-color: @glass_focus@;
 }
+QComboBox { padding-right: 26px; }
 QGroupBox {
     border: 1px solid @soft_border@;
     border-radius: 10px;
@@ -1771,7 +1814,8 @@ QGroupBox::title {
 QTreeView, QListView { outline: 0; border: none; }
 QTreeView::item, QListView::item { border-radius: 5px; padding: 2px 4px; }
 QTreeView::item:hover, QListView::item:hover { background: @glass_surface@; }
-QMenu { border: 1px solid @soft_border@; border-radius: 9px; padding: 5px; }
+QMenu { border: 1px solid @glass_border@; border-radius: 7px; padding: 5px 5px 7px; }
+QMenu#workbenchPopup { border: 1px solid @glass_border@; border-radius: 6px; padding: 5px 5px 7px; }
 QMenu::item { border-radius: 5px; padding: 6px 18px; }
 QMenu::separator { height: 1px; background: @soft_border@; margin: 5px 8px; }
 QToolTip {

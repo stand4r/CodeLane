@@ -7,6 +7,7 @@ import unicodedata
 from design.icons import set_line_icon
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+HTML_SUFFIXES = {".html", ".htm"}
 
 class _ReadingBrowser(QtWidgets.QTextBrowser):
     def loadResource(self, resource_type, url):
@@ -75,7 +76,7 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
         menu_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QtWidgets.QMenu(menu_btn)
         menu.addAction("Обновить", self.reload)
-        menu.addAction("Копировать исходный Markdown", self._copy_markdown)
+        menu.addAction("Копировать исходный текст", self._copy_markdown)
         edit = menu.addAction("Открыть в редакторе", self._request_editor)
         edit.setEnabled(bool(self.file_path))
         menu_btn.setMenu(menu)
@@ -210,7 +211,10 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
         doc.setDocumentMargin(22)
         features = (QtGui.QTextDocument.MarkdownFeature.MarkdownDialectGitHub
                     | QtGui.QTextDocument.MarkdownFeature.MarkdownNoHTML)
-        doc.setMarkdown(markdown_text, features)
+        if Path(self.file_path).suffix.lower() in HTML_SUFFIXES:
+            doc.setHtml(markdown_text)
+        else:
+            doc.setMarkdown(markdown_text, features)
         self._headings.clear()
         self._positions.clear()
         self._anchors.clear()
@@ -340,7 +344,7 @@ class MarkdownViewerWidget(QtWidgets.QWidget):
             target = self.browser.document().baseUrl().resolved(url)
             if target.isLocalFile():
                 path = Path(target.toLocalFile())
-                if path.suffix.lower() in {".md", ".markdown"} and path.is_file():
+                if path.suffix.lower() in {".md", ".markdown"} | HTML_SUFFIXES and path.is_file():
                     self.open_preview_requested.emit(str(path))
 
     def _copy_markdown(self):

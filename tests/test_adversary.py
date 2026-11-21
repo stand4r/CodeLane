@@ -234,6 +234,36 @@ def test_report_survives_unreadable_file():
     assert report.findings == []
 
 
+def test_dashboard_can_repeat_adversary_run_and_clear_old_report(tmp_path, monkeypatch):
+    from PyQt6 import QtCore, QtTest, QtWidgets
+    from core.adversary import AdversaryReport
+    from widgets.ProjectIntelligenceDashboard import ProjectIntelligenceDashboard
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    panel = ProjectIntelligenceDashboard()
+    path = str(tmp_path / "original.py")
+    monkeypatch.setattr(panel, "_current_editor_path", lambda: path)
+    monkeypatch.setattr(AdversaryRunner, "run_file", lambda _, source: AdversaryReport(module_path=source))
+    try:
+        for _ in range(2):
+            panel._run_adversary()
+            thread = panel._adversary_thread
+            finished = QtTest.QSignalSpy(thread.finished)
+            panel.set_adversary_file(str(tmp_path / "other.py"))
+            if not len(finished):
+                assert finished.wait(3000)
+            app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents)
+            assert panel._adversary_thread is None
+            assert panel._adversary_report.module_path == path
+            assert panel.adversary_export_btn.isEnabled()
+        panel.set_adversary_file(None)
+        assert panel._adversary_report is None
+        assert not panel.adversary_export_btn.isEnabled()
+    finally:
+        panel.shutdown()
+
+
 if __name__ == "__main__":
     tests = [
         ("test_discovery_finds_functions_and_signatures",

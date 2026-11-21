@@ -1,4 +1,4 @@
-"""Bottom Workbench panel: integrated terminal, file-scoped Problems and Output."""
+"""Bottom workbench panel with terminal, problems and project tasks."""
 from pathlib import Path
 from design.icons import line_icon, set_line_icon
 from PyQt6 import QtWidgets, QtCore, QtGui
@@ -40,8 +40,6 @@ class ConsoleWidget(QtWidgets.QWidget):
         self.tab_widget.addTab(self.terminal_widget, "Терминал")
         self.problems_widget = self._create_problems()
         self.tab_widget.addTab(self.problems_widget, "Проблемы")
-        self.output_widget = self._create_output()
-        self.tab_widget.addTab(self.output_widget, "Вывод")
         from .ProjectTaskManager import ProjectTaskManager
         self.task_manager = ProjectTaskManager(self.terminal_widget, self)
         self.tab_widget.addTab(self.task_manager, "Диспетчер задач")
@@ -53,7 +51,7 @@ class ConsoleWidget(QtWidgets.QWidget):
         corner_layout = QtWidgets.QHBoxLayout(corner)
         # Vertically centred, with the same 4px breathing room as the tabs.
         corner_layout.setContentsMargins(4, 2, 8, 2)
-        corner_layout.setSpacing(2)
+        corner_layout.setSpacing(5)
 
         self._toolbar_buttons = {}
         for key, icon_name, tip, slot in (
@@ -311,16 +309,6 @@ class ConsoleWidget(QtWidgets.QWidget):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Ошибка сохранения", f"Не удалось сохранить отчёт: {exc}")
 
-    def _create_output(self):
-        widget = QtWidgets.QWidget(); widget.setObjectName("outputPane")
-        layout = QtWidgets.QVBoxLayout(widget); layout.setContentsMargins(0,0,0,0); layout.setSpacing(0)
-        toolbar, self.output_context = self._toolbar("Вывод", self.clear_output)
-        layout.addWidget(toolbar)
-        self.output_text = QtWidgets.QTextEdit(); self.output_text.setObjectName("outputText"); self.output_text.setReadOnly(True)
-        self.output_text.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.NoWrap)
-        layout.addWidget(self.output_text)
-        return widget
-
     def _open_problem(self, item):
         path = item.data(QtCore.Qt.ItemDataRole.UserRole)
         line = item.data(QtCore.Qt.ItemDataRole.UserRole + 1) or 1
@@ -371,19 +359,9 @@ class ConsoleWidget(QtWidgets.QWidget):
             )
         self._update_problem_badge()
 
-    def append_output(self, text, is_error=False):
-        if not text: return
-        cursor = self.output_text.textCursor(); cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
-        cursor.setCharFormat(QtGui.QTextCharFormat())
-        fmt = QtGui.QTextCharFormat(); fmt.setForeground(QtGui.QColor("#F14C4C" if is_error else "#D4D4D4")); cursor.setCharFormat(fmt)
-        cursor.insertText(str(text)); self.output_text.setTextCursor(cursor); self.output_text.ensureCursorVisible()
-
     def clear_problems(self):
         self.problems_list.clear()
         self._update_problem_badge()
-
-    def clear_output(self):
-        self.output_text.clear()
 
     def apply_terminal_settings(self):
         if hasattr(self, 'terminal_widget') and hasattr(self.terminal_widget, 'apply_terminal_settings'):
@@ -409,19 +387,19 @@ class ConsoleWidget(QtWidgets.QWidget):
         return (fingerprint, analyzers, str(getattr(engine, "root", "") or ""))
 
     def set_file_context(self, file_path, file_info=None, engine=None, content=None, *, background=False):
-        """Show only diagnostics/metrics belonging to the active editor file."""
+        """Show diagnostics belonging to the active editor file."""
         self._analysis_request += 1
         self._current_file = str(file_path) if file_path else None
         name = Path(file_path).name if file_path else "Нет открытого файла"
-        self.problems_context.setText(name); self.output_context.setText(name)
-        self.problems_list.clear(); self.output_text.clear()
+        self.problems_context.setText(name)
+        self.problems_context.setToolTip("")
+        self.problems_list.clear()
         self._update_problem_badge()
         if not file_path:
-            self.output_text.setPlainText("Откройте файл, чтобы увидеть его диагностику и вывод.")
             return
         info = file_info
         if info is None and engine is not None and not getattr(engine, "enabled_analyzers", set()):
-            self.output_text.setPlainText("Анализ отключен для этого проекта.")
+            self._render_file_context(file_path, None)
             return
         if info is None and engine is not None:
             signature = self._analysis_signature(file_path, content, engine)
@@ -432,7 +410,6 @@ class ConsoleWidget(QtWidgets.QWidget):
                 from services.background import run_async
                 request = self._analysis_request
                 self._render_file_context(file_path, None)
-                self.output_text.setPlainText("Анализ файла…")
 
                 def done(info):
                     if request != self._analysis_request:
@@ -444,7 +421,7 @@ class ConsoleWidget(QtWidgets.QWidget):
 
                 def failed(message):
                     if request == self._analysis_request:
-                        self.output_text.setPlainText(f"Ошибка анализа файла: {message}")
+                        self.problems_context.setToolTip(message)
 
                 run_async(lambda: engine.analyze_file(str(file_path), content),
                           on_done=done, on_error=failed)
@@ -452,7 +429,8 @@ class ConsoleWidget(QtWidgets.QWidget):
             else:
                 try: info = engine.analyze_file(str(file_path), content)
                 except Exception as exc:
-                    self.output_text.setPlainText(f"Ошибка анализа файла: {exc}"); return
+                    self.problems_context.setToolTip(str(exc))
+                    return
                 self._cache_file_analysis(file_path, signature, info)
         self._render_file_context(file_path, info)
 
@@ -465,26 +443,8 @@ class ConsoleWidget(QtWidgets.QWidget):
         # Always sync LSP diagnostics for active file
         self._sync_lsp_problems(str(Path(file_path).resolve()))
 
-        if info is None:
-            if not self.problems_list.count():
-                self.output_text.setPlainText("Для этого файла нет активного анализатора.")
-            else:
-                self.output_text.setPlainText("Диагностика предоставлена языковым сервером LSP.")
-            return
-        for issue in getattr(info, "issues", []):
+        for issue in getattr(info, "issues", ()):
             self.add_problem(issue.severity, issue.file, issue.line, f"{issue.code}: {issue.message}")
-        metrics = getattr(info, "metrics", {}) or {}
-        lines = [f"Файл: {file_path}", f"Язык: {getattr(info, 'language', 'unknown')}", f"Строк: {getattr(info, 'lines', 0)}", f"Функций: {getattr(info, 'functions', 0)}", f"Классов: {getattr(info, 'classes', 0)}", f"Сложность: {getattr(info, 'complexity', 0)}"]
-        if metrics:
-            lines.append("\nМетрики:")
-            for key, value in metrics.items():
-                lines.append(f"  {key}: {value}")
-        self.output_text.setPlainText("\n".join(lines))
-        self._update_problem_badge()
-        # Do not steal focus from the terminal when switching files.
-        if self.problems_list.count() and self.tab_widget.currentIndex() == 2:
-            self.tab_widget.setCurrentIndex(1)
-
     def set_analysis(self, analysis, engine=None):
         """Compatibility wrapper; display the currently active file only."""
         if self._current_file:
@@ -495,8 +455,8 @@ class ConsoleWidget(QtWidgets.QWidget):
 
     def set_current_tab(self, tab_name):
         mapping = {
-            "Terminal": 0, "Problems": 1, "Output": 2,
-            "Терминал": 0, "Проблемы": 1, "Вывод": 2,
+            "Terminal": 0, "Problems": 1,
+            "Терминал": 0, "Проблемы": 1,
         }
         index = mapping.get(tab_name)
         if index is not None: self.tab_widget.setCurrentIndex(index)

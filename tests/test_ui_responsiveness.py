@@ -30,6 +30,64 @@ def _pump(ms: int):
         time.sleep(0.005)
 
 
+def test_project_replace_runs_in_background_and_stops_between_files(tmp_path, monkeypatch):
+    from threading import Event, current_thread
+    from widgets.SearchPanel import SearchPanel
+
+    first, second = (tmp_path / name for name in ("first.txt", "second.txt"))
+    for path in (first, second):
+        path.write_text("before")
+    gui_thread = current_thread()
+    ready, resume = Event(), Event()
+    messages = []
+
+    def files(cls, root, cancel):
+        assert current_thread() is not gui_thread
+        yield first, "before", "utf-8", b""
+        ready.set()
+        assert resume.wait(3)
+        yield second, "before", "utf-8", b""
+
+    monkeypatch.setattr(SearchPanel, "_iter_text_files", classmethod(files))
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *args: messages.append(args[-1]))
+    panel = SearchPanel()
+    panel.set_root(tmp_path)
+    panel.query.setText("before")
+    panel.replace.setText("after")
+    panel.search = lambda: None
+    try:
+        panel.replace_all()
+        assert ready.wait(3)
+        assert not panel.replace_button.isEnabled()
+        assert first.read_text() == "after"
+        panel.stop_replace()
+        resume.set()
+        deadline = time.monotonic() + 3
+        while panel._replacement is not None and time.monotonic() < deadline:
+            _pump(20)
+        assert panel.replace_button.isEnabled()
+        assert second.read_text() == "before"
+        assert "Замена остановлена" in messages[0]
+        assert "Изменено файлов: 1" in messages[0]
+    finally:
+        resume.set()
+        panel.cancel_background()
+        panel.deleteLater()
+
+
+def test_project_replace_preserves_utf16_bom_and_line_endings(tmp_path):
+    import re
+    from widgets.SearchPanel import SearchPanel, _ReplacementJob
+
+    path = tmp_path / "source.txt"
+    path.write_bytes(b"\xfe\xff" + "before\r\nkeep\r\n".encode("utf-16-be"))
+    result = SearchPanel._replace_in_files(
+        _ReplacementJob(tmp_path.resolve(), set()), re.compile("before"), "after"
+    )
+    assert result == (1, 1, [], [])
+    assert path.read_bytes() == b"\xfe\xff" + "after\r\nkeep\r\n".encode("utf-16-be")
+
+
 def _make_project(root: Path, lines: int = 40):
     (root / "src").mkdir(parents=True, exist_ok=True)
     body = "\n".join(f"def function_{i}():\n    value_{i} = {i}\n    return value_{i}"

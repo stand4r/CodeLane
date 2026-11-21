@@ -20,7 +20,6 @@ from __future__ import annotations
 import html
 import json
 import re
-import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -91,10 +90,8 @@ class _RequestStopped(Exception):
 def _dispatch_tool(local_tools, mcp_clients, name: str, args) -> str:
     """Route one tool call to the local project tools or to an MCP server."""
     if local_tools is not None:
-        try:
-            return local_tools.run(name, json.dumps(args or {}, ensure_ascii=False))
-        except Exception as exc:  # ToolError, or a rejected confirmation
-            return f"Ошибка: {exc}"
+        from services.ide_mcp import IDEMCP
+        return IDEMCP(local_tools).call(name, args)
     if mcp_clients:
         try:
             return run_tool(mcp_clients, name, args)
@@ -136,6 +133,7 @@ class AIWorker(QtCore.QThread):
         self.mcp_servers = mcp_servers or []
         self.mcp_clients: dict = dict(mcp_clients or {})
         self.mcp_errors: List[str] = []
+        self.mcp_refreshed = False
         # File / terminal / application tools confined to the open project.
         self.local_tools = local_tools
         # True when the provider stopped because the output budget ran out.
@@ -175,7 +173,12 @@ class AIWorker(QtCore.QThread):
         return enforce_teaching_rules(retry or answer, self.service)
 
     def _connect_mcp(self) -> List[dict]:
+        self.mcp_refreshed = True
         tools: List[dict] = []
+        configured = {config.name for config in self.mcp_servers}
+        for name in tuple(self.mcp_clients):
+            if name not in configured:
+                self.mcp_clients.pop(name).close()
         for config in self.mcp_servers:
             client = self.mcp_clients.get(config.name)
             if client is not None and client.config != config:
@@ -227,7 +230,7 @@ class AIWorker(QtCore.QThread):
                 tools = []
             tool_runner = self.tool_runner
             mcp_tools: List[dict] = []
-            if self.mcp_servers and not restricted:
+            if not restricted and (self.mcp_servers or self.mcp_clients):
                 mcp_tools = self._connect_mcp()
 
             local_names = set()
@@ -240,10 +243,43 @@ class AIWorker(QtCore.QThread):
                 local_names = {item["function"]["name"] for item in local_defs}
             tools = tools + mcp_tools
 
-            if restricted or local_names or self.mcp_clients:
-                tool_runner = lambda name, args: _dispatch_tool(
-                    self.local_tools if name in local_names else None,
-                    {} if restricted else self.mcp_clients, name, args)
+            from services.agent_delegation import DELEGATE_TOOL, delegate
+            from services.mcp_client import resource_tools, run_resource_tool
+
+            resource_defs = [] if restricted else resource_tools(self.mcp_clients)
+            resource_names = {item["function"]["name"] for item in resource_defs}
+            tools.extend(resource_defs)
+            can_delegate = bool(getattr(self.local_tools, "root", None)) and (
+                self.local_tools.access_mode != "write_only" and "read_file" in local_names)
+            if can_delegate:
+                tools.append(DELEGATE_TOOL)
+            remaining_delegations = 3
+            from services.agent_harness import AgentUsage
+            usage = AgentUsage()
+            fallback = tool_runner
+
+            def route(name, args):
+                nonlocal remaining_delegations
+                if self._stop:
+                    return "Ошибка: запрос остановлен."
+                try:
+                    if name == "delegate_task" and can_delegate:
+                        if remaining_delegations <= 0:
+                            return "Ошибка: лимит подзадач на запрос исчерпан."
+                        remaining_delegations -= 1
+                        return delegate(self.service, self.local_tools, local_defs, args or {},
+                                        lambda: self._stop, on_usage=usage.add)
+                    if name in resource_names:
+                        return run_resource_tool(self.mcp_clients, name, args or {})
+                    if not restricted and name not in local_names and fallback is not None and not self.mcp_clients:
+                        return fallback(name, args)
+                    return _dispatch_tool(self.local_tools if name in local_names else None,
+                                          {} if restricted else self.mcp_clients, name, args)
+                except Exception as exc:
+                    return f"Ошибка: {exc}"
+
+            if restricted or local_names or self.mcp_clients or can_delegate:
+                tool_runner = route
 
             def on_tool_started(name, args):
                 self.tool_started.emit(name, args)
@@ -276,7 +312,8 @@ class AIWorker(QtCore.QThread):
             if self.service.is_teaching and not self._stop:
                 answer = self._enforce_teaching(answer)
             self.truncated = bool(getattr(self.service, "truncated", False))
-            self.usage = dict(getattr(self.service, "last_usage", {}) or {})
+            usage.add(getattr(self.service, "last_usage", {}))
+            self.usage = usage.as_dict()
             self.stop_reason = str(getattr(self.service, "last_stop_reason", "") or "")
             self.tool_runs = list(getattr(self.service, "last_tool_runs", []) or [])
             self.reasoning_text = "".join(reasoning_parts)
@@ -456,7 +493,11 @@ class _ComposerInput(QtWidgets.QPlainTextEdit):
         self.textChanged.connect(self._autosize)
 
     def _autosize(self):
-        doc_height = self.document().size().height()
+        block = self.document().begin()
+        doc_height = 2 * self.document().documentMargin()
+        while block.isValid() and doc_height < self._max_height:
+            doc_height += max(1, block.layout().lineCount()) * self.fontMetrics().lineSpacing()
+            block = block.next()
         margins = self.contentsMargins()
         wanted = int(doc_height) + margins.top() + margins.bottom() + 6
         wanted = max(self._min_height, min(self._max_height, wanted))
@@ -563,18 +604,19 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._last_request = None
         self._history_before_request = 0
         self._reasoning_chars = 0
-        self._tool_counters: dict = {}
         self._session_root = None
         self._active_session_id = None
         self._session_records: List[dict] = []
         self._loaded_session_preferences = False
         self._session_stats: Optional[dict] = None
-        self._request_started: Optional[float] = None
         self._activity_label: Optional[QtWidgets.QLabel] = None
         self._tool_called.connect(self._on_tool_called)
         self._approval_requested.connect(self._on_approval_requested)
         self._ui_tool_requested.connect(self._on_ui_tool_requested)
         self._build()
+        self._planner_timer = QtCore.QTimer(self)
+        self._planner_timer.timeout.connect(self._wake_planner)
+        self._planner_timer.start(15000)
 
     def _on_tool_called(self, name: str, arguments: str):
         """MCP tool trace — one transient line while the request runs."""
@@ -583,13 +625,16 @@ class AIAgentPanel(QtWidgets.QWidget):
     def _on_tool_started(self, name: str, args) -> None:
         """Show the tool currently running in one mutable activity line."""
         self._show_activity(self._tool_line(name, args), "›")
-        counters = getattr(self, "_tool_counters", None)
-        if counters is not None:
-            counters[str(name)] = counters.get(str(name), 0) + 1
 
     @staticmethod
     def _tool_line(name: str, args) -> str:
         """``read_file · lib/parser.py`` — the target, never the whole JSON."""
+        if name == "delegate_task" and isinstance(args, dict):
+            from services.agent_delegation import ROLES
+
+            label = ROLES.get(str(args.get("role")), ("Подзадача", ()))[0]
+            task = " ".join(str(args.get("task") or "").split())[:70]
+            return f"Субагент: {label}" + (f" · {task}" if task else "")
         target = ""
         if isinstance(args, dict):
             for key in ("path", "file", "query", "command", "program"):
@@ -629,6 +674,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         elif name == "run_terminal_command":
             first = output.strip().splitlines()[0][:80] if output.strip() else "готово"
             self._show_activity(first, "✓")
+        elif name == "delegate_task":
+            self._show_activity(self._tool_line(name, arguments), "✓")
         else:
             self._show_activity(f"Готово · {name}" + (f" · {target}" if target else ""), "✓")
         duration = int(getattr(run, "duration_ms", 0) or 0)
@@ -904,12 +951,11 @@ class AIAgentPanel(QtWidgets.QWidget):
         self.composer = QtWidgets.QFrame()
         self.composer.setObjectName("aiComposer")
         box = QtWidgets.QVBoxLayout(self.composer)
-        box.setContentsMargins(12, 10, 10, 8)
-        box.setSpacing(8)
+        box.setContentsMargins(12, 8, 10, 8)
+        box.setSpacing(4)
 
         self.input = _ComposerInput(self.composer)
         self.input.setPlaceholderText("Сообщение")
-        self.input.setMinimumHeight(44)
         self.input.submitted.connect(self.send_message)
         self.input.textChanged.connect(self._on_composer_text_changed)
         self.input.installEventFilter(self)
@@ -986,11 +1032,10 @@ class AIAgentPanel(QtWidgets.QWidget):
         wrap_layout.addStretch(1)
         outer_layout.addWidget(card_row)
 
-        # Session metrics under the composer, mirroring the harness status line:
-        # answers · steps · tok/s · tokens · cache hit rate.
         self.stats_label = QtWidgets.QLabel("")
         self.stats_label.setObjectName("aiStatsLine")
         self.stats_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
+        self.stats_label.setWordWrap(True)
         self.stats_label.setVisible(False)
         outer_layout.addWidget(self.stats_label)
         return wrapper
@@ -998,6 +1043,69 @@ class AIAgentPanel(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Status / configuration
     # ------------------------------------------------------------------
+    def _wake_planner(self):
+        from widgets.AgentPlanner import AgentPlanner
+        from services.team_cache import TeamCache
+        import time
+
+        window = self.main_window
+        find = getattr(window, "_find_special_tab", None)
+        if not callable(find) or self._worker or find("agentTeam") or not window.extension_enabled("ai"):
+            return
+        project = self._project_root()
+        directory = AgentPlanner.cache_dir()
+        if not project or not (directory / "team.sqlite3").is_file():
+            return
+        cache = getattr(self, "_scheduled_cache", None)
+        if cache is None:
+            self._scheduled_cache = cache = TeamCache(directory)
+        for job in cache.jobs(project):
+            if job["state"] == "queued" and job["due"] <= time.time() and (
+                not job["required_file"] or (Path(project) / job["required_file"]).is_file()
+            ):
+                self._open_agent_team(background=True)
+                return
+
+    def _open_agent_team(self, *, background=False):
+        from widgets.AgentTeamTab import AgentTeamTab
+
+        window = self.main_window
+        if window is None:
+            return
+        editor = window.get_current_editor()
+        if getattr(editor, "file_path", None):
+            self._workspace_source_editor = editor
+        existing = window._find_special_tab("agentTeam")
+        if existing is not None:
+            group, index = existing
+        else:
+            group = window.active_tab_widget
+            tab = AgentTeamTab(self, group)
+            index = group.addTab(tab, "ИИ-агент")
+        if background:
+            return
+        window._set_active_group(group)
+        group.setCurrentIndex(index)
+        group.widget(index).idea.setFocus()
+        QtCore.QTimer.singleShot(0, self.refresh_status)
+
+    def _record_team_message(self, role, text):
+        self._clear_welcome()
+        self._history.append(AIMessage(role, text))
+        if role == "user":
+            self._append_user(text)
+        else:
+            self._append_assistant(text, mark_thinking=False)
+        self.save_chat_session()
+
+    def _stop_agent_team(self):
+        window = self.window()
+        find_tab = getattr(window, "_find_special_tab", None)
+        existing = find_tab("agentTeam") if find_tab is not None else None
+        if existing is not None:
+            group, index = existing
+            group.widget(index).stop()
+
     def _service(self) -> AIService:
         from utils.settings_manager import get_settings_manager
         settings = get_settings_manager().get_all_settings()
@@ -1050,22 +1158,26 @@ class AIAgentPanel(QtWidgets.QWidget):
         sm.save_settings()
         self._sync_access_button()
 
-    def _build_local_tools(self, should_stop=None):
+    def _build_local_tools(self, should_stop=None, *, full_access=False):
         """Project tools (files, terminal, apps) for the agent."""
         from services.agent_tools import LocalToolbox
         from utils.settings_manager import get_settings_manager
         sm = get_settings_manager()
-        return LocalToolbox(
+        toolbox = LocalToolbox(
             self._project_root(),
             confirm=self._request_tool_approval,
-            allow_write=bool(sm.get_setting("ai_allow_file_edits", True)),
-            allow_commands=bool(sm.get_setting("ai_allow_commands", True)),
-            access_mode=self._access_mode(),
-            ui_action=self._request_ui_tool,
+            allow_write=full_access or bool(sm.get_setting("ai_allow_file_edits", True)),
+            allow_commands=full_access or bool(sm.get_setting("ai_allow_commands", True)),
+            access_mode="full" if full_access else self._access_mode(),
+            ui_action=lambda kind, payload: self._request_ui_tool(
+                kind, {**payload, **({"_background": True} if full_access and kind.startswith("browser_") else {})},
+                should_stop),
             should_stop=should_stop,
         )
+        toolbox.background = full_access
+        return toolbox
 
-    def _request_ui_tool(self, kind: str, payload: dict) -> str:
+    def _request_ui_tool(self, kind: str, payload: dict, should_stop=None) -> str:
         """Run editor and tab operations on Qt's UI thread."""
         import threading
         event = threading.Event()
@@ -1074,8 +1186,16 @@ class AIAgentPanel(QtWidgets.QWidget):
             self._ui_tool_requested.emit(kind, payload, event, result)
         except RuntimeError:
             raise RuntimeError("Окно редактора уже закрыто.") from None
-        if not event.wait(180):
-            raise RuntimeError("Редактор не ответил на запрос агента вовремя.")
+        from time import monotonic
+
+        deadline = monotonic() + 180
+        while not event.wait(0.15):
+            if should_stop and should_stop():
+                result["cancelled"] = True
+                raise RuntimeError("Запрос остановлен.")
+            if monotonic() >= deadline:
+                result["cancelled"] = True
+                raise RuntimeError("Редактор не ответил на запрос агента вовремя.")
         if result.get("error"):
             raise RuntimeError(result["error"])
         return str(result.get("value") or "Готово.")
@@ -1090,17 +1210,33 @@ class AIAgentPanel(QtWidgets.QWidget):
             except (OSError, TypeError, ValueError):
                 return str(left) == str(right)
 
+        pending = False
+
+        def complete(value=None, *, error=""):
+            try:
+                if error:
+                    result["error"] = error
+                else:
+                    result["value"] = json.dumps(value, ensure_ascii=False, default=str)
+            finally:
+                event.set()
+
         try:
+            if result.get("cancelled"):
+                return
             window = self.main_window
             if window is None:
                 raise RuntimeError("Окно редактора недоступно.")
+            if kind.startswith("browser_") and payload.pop("_background", False):
+                from app.agent_workbench import background_browser_window
+                window = background_browser_window(window)
             path = str((payload or {}).get("path") or "")
             if kind == "workspace_state":
                 from dataclasses import asdict
                 explorer = getattr(window, "file_explorer", None)
                 explorer_state = {}
                 if explorer is not None:
-                    model = explorer.model()
+                    model = explorer.model
                     explorer_state["root"] = model.filePath(explorer.rootIndex())
                     explorer_state["selected"] = [
                         model.filePath(index) for index in explorer.selectedIndexes()
@@ -1110,21 +1246,22 @@ class AIAgentPanel(QtWidgets.QWidget):
                 for group in window.editor_groups():
                     for index in range(group.count()):
                         widget = group.widget(index)
-                        if widget.__class__.__name__ == "WebBrowserWidget":
+                        if widget.property("pyscribeSpecial") == "browser":
                             for tab_index in range(widget.tabs.count()):
                                 tab = widget.tabs.tabData(tab_index)
                                 view = getattr(tab, "view", None)
                                 browsers.append({
+                                    "tab": tab_index + 1,
                                     "title": widget.tabs.tabText(tab_index),
-                                    "url": view.url().toString(QtCore.QUrl.UrlFormattingOption.RemovePassword) if view else "",
+                                    "url": view.url().toString(QtCore.QUrl.UrlFormattingOption.RemoveUserInfo) if view else "",
                                     "active": tab_index == widget.tabs.currentIndex(),
-                                    "loading": view.isLoading() if view else False,
+                                    "loading": view.page().isLoading() if view else False,
                                 })
                 panel = getattr(window, "intelligence_panel", None)
                 analysis = getattr(panel, "analysis", None)
                 analysis_state = {"available": analysis is not None}
                 if analysis is not None:
-                    analysis_state["issues"] = [asdict(issue) for issue in analysis.issues[:100]]
+                    analysis_state["issues"] = [asdict(issue) for issue in analysis.issues[:10]]
                     analysis_state["files_count"] = len(analysis.files)
                     analysis_state["issues_count"] = len(analysis.issues)
                 result["value"] = json.dumps({
@@ -1134,18 +1271,30 @@ class AIAgentPanel(QtWidgets.QWidget):
                 }, ensure_ascii=False, default=str)
             elif kind == "browser_navigate":
                 url = QtCore.QUrl.fromUserInput(str(payload.get("url") or ""))
-                if url.scheme() not in ("http", "https"):
+                if url.scheme() not in ("http", "https") or not url.host() or url.userInfo():
                     raise RuntimeError("Укажи адрес http:// или https://.")
-                window.action_open_browser()
-                browser = window.get_current_editor()
-                if browser is None or browser.__class__.__name__ != "WebBrowserWidget":
+                location = window._find_special_tab("browser")
+                if location is None:
+                    previous_group = getattr(window, "active_tab_widget", None)
+                    previous = previous_group.currentWidget() if previous_group is not None else None
+                    window.action_open_browser()
+                    if previous is not None and previous.property("pyscribeSpecial") == "agentTeam":
+                        window._set_active_group(previous_group)
+                        previous_group.setCurrentWidget(previous)
+                    location = window._find_special_tab("browser")
+                if location is None:
                     raise RuntimeError("Браузер недоступен. Проверь расширение браузера.")
-                browser.navigate(url.toString())
+                group, index = location
+                browser = group.widget(index)
+                browser.navigate(url)
                 result["value"] = "Навигация запущена. Проверь workspace_state после загрузки."
             elif kind == "analysis_refresh":
                 panel = getattr(window, "intelligence_panel", None)
-                if panel is None or getattr(panel, "engine", None) is None:
+                engine = getattr(panel, "engine", None)
+                if engine is None or not window.extension_enabled("intelligence"):
                     raise RuntimeError("Анализатор проекта недоступен.")
+                if window._analysis_disabled(engine):
+                    raise RuntimeError("Анализаторы отключены в настройках проекта.")
                 panel.refresh()
                 result["value"] = "Обновление анализа запущено."
             elif kind == "editor_state":
@@ -1154,7 +1303,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                     for index in range(group.count()):
                         candidate = group.widget(index)
                         tabs.append(str(getattr(candidate, "file_path", "") or ""))
-                active = window.get_current_editor()
+                active = AIAgentPanel._editor_for_chat(self)
                 text_editor = getattr(active, "editor", None)
                 state = {"open_files": tabs, "active_file": str(getattr(active, "file_path", "") or "")}
                 if text_editor is not None:
@@ -1164,7 +1313,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                                  selection=cursor.selectedText().replace("\u2029", "\n"))
                 result["value"] = json.dumps(state, ensure_ascii=False)
             elif kind == "editor_cursor":
-                active = window.get_current_editor()
+                active = AIAgentPanel._editor_for_chat(self)
                 text_editor = getattr(active, "editor", None)
                 if text_editor is None:
                     raise RuntimeError("Активная вкладка не является редактором.")
@@ -1221,13 +1370,16 @@ class AIAgentPanel(QtWidgets.QWidget):
                     raise RuntimeError("Файл не открылся как редактируемая вкладка.")
                 result["value"] = f"Открыт в редакторе: {Path(path).name}"
             elif kind == "edit_file":
+                requested_root = payload.get("_project_root")
+                if requested_root is not None and not same_path(requested_root, self._project_root() or ""):
+                    raise RuntimeError("Активный проект сменился. Правка отменена.")
                 # If the file is open, update its unsaved editor buffer so the
                 # visible tab never goes stale behind a disk write.
                 editor = None
                 for group in window.editor_groups():
                     for index in range(group.count()):
                         candidate = group.widget(index)
-                        if same_path(getattr(candidate, "file_path", ""), path):
+                        if same_path(getattr(candidate, "file_path", ""), path) and hasattr(candidate, "get_code"):
                             editor = candidate
                             break
                     if editor is not None:
@@ -1244,26 +1396,38 @@ class AIAgentPanel(QtWidgets.QWidget):
                     raise RuntimeError("Содержимое вкладки изменилось после чтения. Перечитай файл.")
                 if current.count(old_text) != 1:
                     raise RuntimeError("Фрагмент больше не уникален. Перечитай файл.")
-                updated = current.replace(old_text, str(payload.get("new_text") or ""), 1)
+                replacement = str(payload.get("new_text") or "")
                 text_editor = getattr(editor, "editor", None)
                 if text_editor is not None:
-                    cursor = text_editor.textCursor()
+                    if text_editor.toPlainText() != current:
+                        raise RuntimeError("Содержимое редактора изменилось. Перечитай файл.")
+                    start = current.index(old_text)
+                    # Qt cursor offsets count UTF-16 code units.
+                    first = len(current[:start].encode("utf-16-le")) // 2
+                    last = first + len(old_text.encode("utf-16-le")) // 2
+                    cursor = QtGui.QTextCursor(text_editor.document())
+                    cursor.setPosition(first)
+                    cursor.setPosition(last, QtGui.QTextCursor.MoveMode.KeepAnchor)
                     cursor.beginEditBlock()
-                    cursor.select(QtGui.QTextCursor.SelectionType.Document)
-                    cursor.insertText(updated)
+                    cursor.insertText(replacement)
                     cursor.endEditBlock()
-                    text_editor.setTextCursor(cursor)
                 else:
-                    editor.set_code(updated)
+                    editor.set_code(current.replace(old_text, replacement, 1))
                 if hasattr(window, "save_current_session"):
                     window.save_current_session()
                 result["value"] = f"Правка применена во вкладке {Path(path).name}; файл отмечен как изменённый."
             else:
-                raise RuntimeError(f"Неизвестная операция редактора: {kind}")
+                from app.agent_workbench import PENDING, run_workbench
+
+                value = run_workbench(window, kind, payload, complete)
+                pending = value is PENDING
+                if not pending:
+                    result["value"] = json.dumps(value, ensure_ascii=False, default=str)
         except Exception as exc:  # noqa: BLE001 - returned as a tool result
             result["error"] = str(exc)
         finally:
-            event.set()
+            if not pending:
+                event.set()
 
     def _request_tool_approval(self, kind: str, title: str, details: str) -> bool:
         """Ask the user to allow a mutating tool call (called from the worker)."""
@@ -2113,6 +2277,7 @@ class AIAgentPanel(QtWidgets.QWidget):
             active["messages"] = [message.as_dict() for message in self._history]
             active["updated_at"] = self._now_iso()
             active["preferences"] = self._session_preferences()
+            active["token_stats"] = self._session_stats
             first_user = next((message.content.strip().splitlines()[0]
                                for message in self._history if message.role == "user"
                                and message.content.strip()), None)
@@ -2174,6 +2339,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         if preferences:
             self._apply_session_preferences(preferences)
             self._loaded_session_preferences = True
+        self._restore_session_stats(active.get("token_stats"))
         messages = active.get("messages") or []
         restored = [AIMessage(str(item.get("role") or "user"), str(item.get("content") or ""))
                     for item in messages if isinstance(item, dict)
@@ -2239,7 +2405,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         preferences = target.get("preferences") or {}
         self._apply_session_preferences(preferences)
         self._refresh_menus()
-        self._reset_session_stats()
+        self._restore_session_stats(target.get("token_stats"))
         self.save_chat_session()
         return True
 
@@ -2299,6 +2465,8 @@ class AIAgentPanel(QtWidgets.QWidget):
             worker.deleteLater()
 
     def shutdown(self):
+        self._planner_timer.stop()
+        self._stop_agent_team()
         """Stop the worker and terminate every MCP server this panel started."""
         self.stop_request()
         self._discard_worker()
@@ -2361,12 +2529,22 @@ class AIAgentPanel(QtWidgets.QWidget):
             problems=problems,
         )
 
+    def _editor_for_chat(self):
+        window = self.main_window
+        if window is None:
+            return None
+        editor = window.get_current_editor() if hasattr(window, "get_current_editor") else None
+        if not getattr(editor, "file_path", None):
+            previous = getattr(self, "_workspace_source_editor", None)
+            find = getattr(window, "find_tab_for_widget", None)
+            if previous is not None and callable(find) and find(previous)[0] is not None:
+                editor = previous
+        return editor
+
     def _collect_file_context(self) -> str:
         """Context for the ``file`` scope: the editor contents (+ selection)."""
         window = self.main_window
-        if window is None:
-            return ""
-        editor = window.get_current_editor() if hasattr(window, "get_current_editor") else None
+        editor = self._editor_for_chat()
         if editor is None:
             return ""
         file_path = getattr(editor, "file_path", None)
@@ -2491,6 +2669,26 @@ class AIAgentPanel(QtWidgets.QWidget):
         sm.save_settings()
         self._refresh_menus()
 
+    def close_project_context(self):
+        self._stop_agent_team()
+        self._discard_worker()
+        self._restore_composer_after_request()
+        self._queue.clear()
+        self._render_queue_chip()
+        self._history.clear()
+        self._reset_session_stats()
+        self._clear_transcript_widgets()
+        self._active_session_id = None
+        self._session_records = []
+        for client in self._mcp_clients.values():
+            try:
+                client.close()
+            except Exception:
+                logger.debug("Ошибка закрытия MCP-клиента", exc_info=True)
+        self._mcp_clients.clear()
+        self.sync_scope_with_project()
+        self._append_welcome()
+
     def _collect_project_context(self, mentions=None) -> str:
         """Attach @-mentioned files, or a compact project map.
 
@@ -2528,6 +2726,20 @@ class AIAgentPanel(QtWidgets.QWidget):
         if parsed.is_command and self._run_command(parsed):
             self.input.clear()
             return
+        find = getattr(self.main_window, "_find_special_tab", None)
+        host = find("agentTeam") if callable(find) else None
+        if host is not None:
+            group, index = host
+            team = group.widget(index)
+            if team.team_mode.isChecked() or team.busy:
+                if self._worker is not None:
+                    self._append_notice("Дождитесь завершения текущего ответа.", "warn")
+                elif team.busy:
+                    if team.enqueue(raw):
+                        self.input.clear()
+                elif team.submit(raw):
+                    self.input.clear()
+                return
         mentions = parsed.mentions
         text = parsed.text or raw
         self.input.clear()
@@ -2726,25 +2938,44 @@ class AIAgentPanel(QtWidgets.QWidget):
                                mark_thinking=False)
 
     def _show_mcp(self):
-        servers = getattr(self, "_mcp_clients", {}) or {}
-        configs = self._mcp_server_configs()
-        if not configs:
-            self._append_assistant(
-                "MCP-серверы не настроены. Их можно добавить в **Настройки → ИИ-агент → MCP**.\n\n"
-                "Встроенные инструменты CodeLane уже умеют читать и открывать файлы проекта, "
-                "применять точечные правки в редакторе, запускать приложения и команды.",
-                mark_thinking=False)
-            return
-        lines = []
-        for config in configs:
+        from services.ide_mcp import IDEMCP
+
+        servers = getattr(self, "_mcp_clients", {})
+        menu = QtWidgets.QMenu(self)
+        menu.setObjectName("aiContextMenu")
+        menu.setToolTipsVisible(True)
+        built_in = IDEMCP(self._build_local_tools()).list_tools()
+        ide = menu.addMenu(f"CodeLane · {len(built_in)}")
+        ide.setToolTipsVisible(True)
+        for tool in built_in:
+            row = ide.addAction(tool["name"])
+            row.setToolTip(tool["description"])
+            row.setEnabled(False)
+        for config in self._mcp_server_configs():
             client = servers.get(config.name)
             if client is None:
-                state = "подключится при следующем запросе"
-            else:
-                names = ", ".join(tool.name for tool in client.tools) or "инструментов нет"
-                state = "подключён · " + names
-            lines.append(f"- **{config.label}** ({config.transport}) — {state}")
-        self._append_assistant("MCP-серверы:\n\n" + "\n".join(lines), mark_thinking=False)
+                row = menu.addAction(f"{config.label} · ожидает подключения")
+                row.setEnabled(False)
+                continue
+            entries = menu.addMenu(f"{config.label} · {len(client.tools)}")
+            for tool in client.tools:
+                row = entries.addAction(tool.name)
+                row.setToolTip(tool.description)
+                row.setEnabled(False)
+            if "resources" in getattr(client, "capabilities", {}):
+                entries.addAction("Ресурсы MCP").setEnabled(False)
+            if entries.isEmpty():
+                entries.addAction("Нет инструментов").setEnabled(False)
+        mode = self._access_mode()
+        if mode != "full":
+            menu.addSeparator()
+            menu.addAction("Внешние MCP-серверы доступны в режиме «Полный»").setEnabled(False)
+        if self.main_window is not None:
+            menu.addSeparator()
+            menu.addAction("Настройки…", self.main_window.action_open_settings)
+        anchor = self.more_btn
+        menu.exec(anchor.mapToGlobal(QtCore.QPoint(0, anchor.height())))
+        menu.deleteLater()
 
     def _set_model(self, model: str):
         from utils.settings_manager import get_settings_manager
@@ -2789,7 +3020,6 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._clear_activity()
         self._current_answer.clear()
         self._stream_open = False
-        self._tool_counters = {}
         self.send_btn.setEnabled(False)
         self.send_btn.setVisible(False)
         self.stop_btn.setVisible(True)
@@ -2818,7 +3048,6 @@ class AIAgentPanel(QtWidgets.QWidget):
         saved_context = (context, project_context) if project_context is not None else context
         self._last_request = (prompt, saved_context, mentions)
         self._history_before_request = len(self._history)
-        self._request_started = time.monotonic()
         self._worker = worker
         worker.start()
 
@@ -2968,13 +3197,15 @@ class AIAgentPanel(QtWidgets.QWidget):
         usage = dict(getattr(self._worker, "usage", {}) or {})
         # Keep the servers this request connected so the next one reuses them.
         clients = dict(getattr(self._worker, "mcp_clients", {}) or {})
-        if clients:
+        if clients or getattr(self._worker, "mcp_refreshed", False):
             self._mcp_clients = clients
         for error in list(getattr(self._worker, "mcp_errors", []) or []):
             self._append_notice(f"MCP недоступен — {error}", "warn")
         self._clear_activity()
         self._drop_thinking()
         self._reasoning_chars = 0
+        if answer or usage:
+            self._record_session_stats(usage)
         if answer:
             self._append_assistant(answer, mark_thinking=False)
             if getattr(self, "_answer_truncated", False):
@@ -2983,77 +3214,80 @@ class AIAgentPanel(QtWidgets.QWidget):
                 self._append_notice(
                     "⚠ Провайдер оборвал ответ на своём лимите вывода. "
                     "Напишите «продолжи» или смените модель на более мощную.", "warn")
-            self._record_session_stats(usage)
             self._history.append(AIMessage("user", prompt))
             self._history.append(AIMessage("assistant", answer))
             self.save_chat_session()
         else:
+            if usage:
+                self.save_chat_session()
             self._append_notice("Запрос остановлен.")
         self._last_author = "assistant"
         QtCore.QTimer.singleShot(0, self._scroll_to_latest)
         self.refresh_status()
 
     def _record_session_stats(self, usage: dict) -> None:
-        """Accumulate session metrics and refresh the footer under the composer."""
-        stats = getattr(self, "_session_stats", None)
-        if stats is None:
-            stats = self._session_stats = {
-                "answers": 0, "steps": 0, "tokens": 0, "prompt": 0, "seconds": 0.0,
-            }
-        started = getattr(self, "_request_started", None)
-        elapsed = max(0.05, time.monotonic() - started) if started else 0.0
-        self._request_started = None
-        prompt_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
-        completion_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
-        stats["answers"] += 1
-        stats["steps"] += sum((getattr(self, "_tool_counters", {}) or {}).values())
-        if isinstance(completion_tokens, int):
-            stats["tokens"] += completion_tokens
-        if isinstance(prompt_tokens, int):
-            stats["prompt"] += prompt_tokens
-        stats["seconds"] += elapsed
+        def tokens(key):
+            value = usage.get(key)
+            return value if type(value) is int and value >= 0 else None
+
+        prompt = tokens("prompt_tokens")
+        if prompt is None:
+            prompt = tokens("input_tokens")
+            if prompt is not None:
+                prompt += (tokens("cache_creation_input_tokens") or 0) + (tokens("cache_read_input_tokens") or 0)
+        output = tokens("completion_tokens")
+        if output is None:
+            output = tokens("output_tokens")
+        total = tokens("total_tokens")
+        if total is None and prompt is not None and output is not None:
+            total = prompt + output
+
+        if self._session_stats is None:
+            self._session_stats = {"total": 0, "measured": 0, "unreported": 0}
+        stats = self._session_stats
+        stats["last"] = {"total": total, "input": prompt, "output": output}
+        if total is None:
+            stats["unreported"] += 1
+        else:
+            stats["total"] += total
+            stats["measured"] += 1
         self._update_stats_line()
 
     def _update_stats_line(self) -> None:
         label = getattr(self, "stats_label", None)
-        stats = getattr(self, "_session_stats", None)
+        stats = self._session_stats
         if label is None:
             return
-        if not stats or not stats.get("answers"):
-            label.setVisible(False)
+        label.setVisible(bool(stats))
+        if not stats:
+            label.clear()
+            label.setToolTip("")
             return
-        tokens = int(stats.get("tokens", 0))
-        seconds = max(0.1, float(stats.get("seconds", 0.0)))
-        speed = int(tokens / seconds) if tokens else 0
-        try:
-            from services.ai_context import context_cache_stats
-            cache = context_cache_stats()
-            total = int(cache.get("hits", 0)) + int(cache.get("misses", 0))
-            hit = int(round(100.0 * cache.get("hits", 0) / total)) if total else 0
-        except Exception:
-            hit = 0
-        parts = [f"{stats['answers']} отв."]
-        if stats.get("steps"):
-            parts.append(f"{stats['steps']} шагов")
-        if speed:
-            parts.append(f"{speed} tok/s")
-        prompt = int(stats.get("prompt", 0))
-        if tokens or prompt:
-            parts.append(f"Токены {prompt + tokens} · вход {prompt} · выход {tokens}")
-        else:
-            parts.append("Расход токенов не передан провайдером")
-        if hit:
-            parts.append(f"кэш {hit}%")
-        label.setText(" · ".join(parts))
-        label.setVisible(True)
+
+        def number(value):
+            return "—" if value is None else f"{value:,}".replace(",", "\u202f")
+
+        last = stats["last"]
+        known = stats["total"] if stats["measured"] else None
+        suffix = "+" if known is not None and stats["unreported"] else ""
+        label.setText(f"Токены · запрос {number(last['total'])} · диалог {number(known)}{suffix}")
+        detail = f"Последний запрос · вход {number(last['input'])} · выход {number(last['output'])}"
+        if stats["unreported"]:
+            detail += f"\nЗапросов без полного отчёта провайдера: {stats['unreported']}"
+        label.setToolTip(detail)
+
+    def _restore_session_stats(self, value) -> None:
+        self._session_stats = None
+        if isinstance(value, dict) and isinstance(value.get("last"), dict):
+            counts = {key: value.get(key) for key in ("total", "measured", "unreported")}
+            last = {key: value["last"].get(key) for key in ("total", "input", "output")}
+            if (all(type(n) is int and n >= 0 for n in counts.values())
+                    and all(n is None or type(n) is int and n >= 0 for n in last.values())):
+                self._session_stats = {**counts, "last": last}
+        self._update_stats_line()
 
     def _reset_session_stats(self) -> None:
-        self._session_stats = None
-        self._request_started = None
-        label = getattr(self, "stats_label", None)
-        if label is not None:
-            label.setText("")
-            label.setVisible(False)
+        self._restore_session_stats(None)
 
     def regenerate_last(self) -> bool:
         """Re-send the most recent user message, replacing its answer."""
@@ -3088,7 +3322,9 @@ class AIAgentPanel(QtWidgets.QWidget):
             # returns a final answer. Keep those clients reachable for cleanup
             # and reuse on the next turn instead of orphaning their processes.
             clients = dict(getattr(worker, "mcp_clients", {}) or {})
-            if clients:
+            if getattr(worker, "mcp_refreshed", False):
+                self._mcp_clients = clients
+            elif clients:
                 self._mcp_clients.update(clients)
             worker.deleteLater()
         self._worker = None
@@ -3454,6 +3690,10 @@ class _UserBubble(QtWidgets.QWidget):
     def apply_width(self, width: int):
         """Constrain the bubble to ``width`` and re-measure it."""
         body = getattr(self, "label", None)
+        layout_key = (width, body.font().key(), body.text() if isinstance(body, QtWidgets.QLabel) else id(body))
+        if getattr(self, "_width_layout_key", None) == layout_key:
+            return
+        self._width_layout_key = layout_key
         if isinstance(body, QtWidgets.QWidget) and hasattr(body, "set_width"):
             available = max(220, width - 44)
             body.set_width(available)

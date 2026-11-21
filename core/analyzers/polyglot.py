@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.code_analysis.treesitter_pack import pack_language, parse_pack_root
+from core.code_analysis.treesitter_pack import pack_has_language, pack_language, parse_pack_root
+from core.code_analysis.registry import get_language_registry
 from core.project_intelligence import Issue, StructureEdge, StructureNode, SymbolInfo
 
 
@@ -27,6 +28,11 @@ LANGUAGE_NAMES = {
     "php": "PHP", "ruby": "Ruby", "swift": "Swift", "kotlin": "Kotlin", "scala": "Scala",
     "dart": "Dart", "lua": "Lua", "bash": "Bash", "sql": "SQL", "r": "R", "fsharp": "F#", "elixir": "Elixir", "erlang": "Erlang", "haskell": "Haskell", "julia": "Julia", "objective-c": "Objective-C", "objective-cpp": "Objective-C++", "zig": "Zig", "verilog": "Verilog", "solidity": "Solidity", "asm": "Assembly",
 }
+
+for _id in ("lua", "perl", "ocaml", "nim", "clojure", "bash", "ruby", "php"):
+    _spec = get_language_registry().get(_id)
+    LANGUAGE_BY_EXT.update(dict.fromkeys(_spec.extensions, _id))
+    LANGUAGE_NAMES[_id] = _spec.display_name
 
 
 def language_for_path(path: Path) -> Optional[str]:
@@ -197,12 +203,12 @@ class PolyglotSourceAnalyzer:
                      for name, line, _ in labels]
             return GenericResult(language, symbols, imports, [], nodes, [],
                                  {"parser": "assembly-outline", "complexity": 1})
-        if self._pack:
+        if self._pack and (language in self._parsers or pack_has_language(language)):
             try:
                 return self._tree_sitter(path, text, language)
             except Exception as exc:
                 return self._fallback(path, text, language, f"Tree-sitter backend: {exc}")
-        return self._fallback(path, text, language, "Install tree-sitter-language-pack for full parsing.")
+        return self._fallback(path, text, language, "Tree-sitter grammar is unavailable locally.")
 
     def _python(self, path: Path, text: str) -> GenericResult:
         symbols: List[SymbolInfo] = []
@@ -320,7 +326,8 @@ class PolyglotSourceAnalyzer:
             "go": r"(?:type\s+([A-Za-z_]\w*)\s+struct|func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*))",
             "rust": r"(?:struct|enum|trait)\s+([A-Za-z_]\w*)|fn\s+([A-Za-z_]\w*)",
         }
-        pat = patterns.get(language)
+        spec = get_language_registry().get(language)
+        pat = patterns.get(language) or (spec.fallback_symbols[0][0] if spec and spec.fallback_symbols else None)
         if pat:
             for m in re.finditer(pat, text, re.M):
                 name = next((x for x in m.groups() if x), "")

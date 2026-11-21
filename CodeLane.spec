@@ -4,7 +4,7 @@
 
 from pathlib import Path
 import sys
-from PyInstaller.utils.hooks import collect_data_files, collect_delvewheel_libs_directory
+from PyInstaller.utils.hooks import collect_data_files, collect_delvewheel_libs_directory, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH)
 
@@ -20,6 +20,7 @@ datas = [
     (str(ROOT / "third_party" / "assembly" / "fasm"), "third_party/assembly/fasm"),
 ]
 datas += collect_data_files("jedi") + collect_data_files("parso")
+datas += copy_metadata("bandit")
 datas, database_binaries = collect_delvewheel_libs_directory("psycopg_binary", datas=datas)
 
 hiddenimports = [
@@ -89,7 +90,7 @@ hiddenimports = [
     "widgets.AnalysisProfilesDialog",
     "widgets.ProjectManager",
     "widgets.ProjectDialog",
-    "widgets.RunDebugPanel",
+    "widgets.EditorRunControls",
     "widgets.SearchPanel",
     "widgets.TabWidget",
     "widgets.WelcomeWidget",
@@ -105,7 +106,9 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=database_binaries,
     datas=datas,
-    hiddenimports=hiddenimports,
+    hiddenimports=hiddenimports + [module
+        for package in ("bandit.plugins", "bandit.blacklists", "bandit.formatters")
+        for module in collect_submodules(package)],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

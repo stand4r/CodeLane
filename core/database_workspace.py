@@ -513,7 +513,8 @@ class DatabaseSession:
                 if plan and kind == "mssql":
                     connection.exec_driver_sql("SET SHOWPLAN_XML ON")
                 for number, statement in enumerate(statements, 1):
-                    if not plan and re.match(r"(?is)^\s*(?:CREATE|ALTER|DROP|RENAME)\b", statement):
+                    if not plan and re.match(r"(?is)^\s*(?:CREATE|ALTER|DROP|RENAME)\b",
+                                             sqlparse.format(statement, strip_comments=True)):
                         result.objects_changed = True
                     if plan and kind != "mssql":
                         statement = ("EXPLAIN QUERY PLAN " if kind == "sqlite" else "EXPLAIN ") + statement

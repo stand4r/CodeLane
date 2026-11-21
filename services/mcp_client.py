@@ -183,6 +183,7 @@ class MCPClient:
         self._stderr: List[str] = []
         self.tools: List[MCPTool] = []
         self.server_info: Dict[str, Any] = {}
+        self.capabilities: Dict[str, Any] = {}
         self.initialized = False
         self._session_id: Optional[str] = None
         self._protocol_version = PROTOCOL_VERSION
@@ -386,6 +387,8 @@ class MCPClient:
             "clientInfo": CLIENT_INFO,
         })
         self.server_info = result.get("serverInfo") or {}
+        capabilities = result.get("capabilities", {"tools": {}})
+        self.capabilities = capabilities if isinstance(capabilities, dict) else {}
         self.initialized = True
         # The spec requires a notification after initialize (no id, no reply).
         self._protocol_version = str(result.get("protocolVersion") or PROTOCOL_VERSION)
@@ -396,14 +399,51 @@ class MCPClient:
                 pass
         else:
             self._post_http({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
-        self.tools = self.list_tools()
+        self.tools = self.list_tools() if "tools" in self.capabilities else []
         return self.tools
+
+    def list_resources(self, cursor="", *, templates=False, offset=0):
+        method = "resources/templates/list" if templates else "resources/list"
+        key = "resourceTemplates" if templates else "resources"
+        result = self.request(method, {"cursor": cursor} if cursor else {})
+        entries = result.get(key) or []
+        fields = ("uri", "uriTemplate", "name", "description", "mimeType")
+        end = offset + 50
+        same_page = len(entries) > end
+        return {key: [{field: str(item[field])[:4000] for field in fields if field in item}
+                      for item in entries[offset:end] if isinstance(item, dict)],
+                "nextOffset": end if same_page else None,
+                "nextCursor": (cursor or None) if same_page else result.get("nextCursor"),
+                "truncated": same_page}
+
+    def read_resource(self, uri):
+        result = self.request("resources/read", {"uri": uri})
+        items = []
+        remaining = 24000
+        truncated = False
+        for item in result.get("contents") or []:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            entry = {"uri": str(item.get("uri", uri)), "mimeType": item.get("mimeType")}
+            if isinstance(text, str):
+                entry["text"] = text[:remaining]
+                truncated |= len(text) > remaining
+                remaining -= len(entry["text"])
+            else:
+                entry["binary"] = "blob" in item
+            items.append(entry)
+            if len(items) == 50:
+                truncated = True
+                break
+        return {"contents": items, "truncated": truncated}
 
     def list_tools(self) -> List[MCPTool]:
         result = self.request("tools/list", {})
         tools = []
         seen = set()
-        while True:
+        cursors = set()
+        for page in range(100):
             for item in result.get("tools") or []:
                 if not isinstance(item, dict) or not item.get("name"):
                     continue
@@ -418,8 +458,9 @@ class MCPClient:
                     schema=item.get("inputSchema") or {},
                 ))
             cursor = result.get("nextCursor")
-            if not cursor or len(seen) >= 5000:
+            if page == 99 or not isinstance(cursor, str) or not cursor or cursor in cursors or len(seen) >= 5000:
                 break
+            cursors.add(cursor)
             result = self.request("tools/list", {"cursor": cursor})
         return tools
 
@@ -496,6 +537,47 @@ class MCPClient:
 # ----------------------------------------------------------------------
 # Helpers used by the agent loop
 # ----------------------------------------------------------------------
+def resource_tools(servers):
+    names = [name for name, client in servers.items() if "resources" in getattr(client, "capabilities", {})]
+    if not names:
+        return []
+    server = {"type": "string", "enum": names}
+    return [
+        {"type": "function", "function": {
+            "name": "mcp_list_resources",
+            "description": "Перечислить ресурсы или шаблоны MCP. Продолжай с nextCursor и nextOffset, если они заданы.",
+            "parameters": {"type": "object", "required": ["server"], "properties": {
+                "server": server, "cursor": {"type": "string"}, "templates": {"type": "boolean"},
+                "offset": {"type": "integer", "minimum": 0}}},
+        }},
+        {"type": "function", "function": {
+            "name": "mcp_read_resource", "description": "Прочитать текст ресурса MCP по URI.",
+            "parameters": {"type": "object", "required": ["server", "uri"], "properties": {
+                "server": server, "uri": {"type": "string"}}},
+        }},
+    ]
+
+
+def run_resource_tool(servers, name, payload):
+    key = payload.get("server")
+    client = servers.get(key) if isinstance(key, str) else None
+    if client is None or "resources" not in getattr(client, "capabilities", {}):
+        raise MCPError("Сервер не подключён или не объявил поддержку ресурсов.")
+    if name == "mcp_list_resources":
+        cursor = payload.get("cursor", "")
+        templates = payload.get("templates", False)
+        offset = payload.get("offset", 0)
+        if not isinstance(cursor, str) or not isinstance(templates, bool) or type(offset) is not int or offset < 0:
+            raise MCPError("Некорректные параметры списка ресурсов.")
+        value = client.list_resources(cursor, templates=templates, offset=offset)
+    else:
+        uri = payload.get("uri")
+        if not isinstance(uri, str) or not uri.strip() or len(uri) > 4000:
+            raise MCPError("Укажи URI ресурса.")
+        value = client.read_resource(uri)
+    return json.dumps(value, ensure_ascii=False)
+
+
 def run_tool(servers: Dict[str, MCPClient], tool_name: str,
              arguments: Dict[str, Any]) -> str:
     """Execute ``server__tool`` through the matching live client."""
@@ -503,10 +585,4 @@ def run_tool(servers: Dict[str, MCPClient], tool_name: str,
         for tool in client.tools:
             if tool.full_name == tool_name:
                 return client.call_tool(tool.name, arguments)
-    if "__" not in tool_name:
-        return f"Неизвестный инструмент: {tool_name}"
-    server_key, name = tool_name.split("__", 1)
-    client = servers.get(server_key)
-    if client is None:
-        return f"Сервер MCP «{server_key}» не подключён."
-    return client.call_tool(name, arguments)
+    return f"Ошибка: MCP-инструмент {tool_name} не объявлен сервером."

@@ -2,6 +2,14 @@
 from contextlib import contextmanager
 
 from PyQt6 import QtCore, QtGui, QtWidgets
+from design.icons import set_line_icon
+
+
+_ROUND_BUTTON_STYLE = (
+    "QToolButton { border-radius: %dpx; border: 0; padding: 0; min-height: 0; "
+    "background: palette(mid); color: palette(text); }"
+    "QToolButton:hover, QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); }"
+)
 
 
 class TerminalOutputControls(QtWidgets.QWidget):
@@ -16,16 +24,43 @@ class TerminalOutputControls(QtWidgets.QWidget):
         self.updating = False
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
-        self.resume = QtWidgets.QPushButton()
+        self.resume = QtWidgets.QToolButton(self)
+        self.resume.setAccessibleName("К новым строкам")
+        self.resume.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.resume.clicked.connect(self.follow)
-        layout.addWidget(self.resume)
-        self.expand = QtWidgets.QPushButton()
+        layout.addWidget(self.resume, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
+        self.expand = QtWidgets.QToolButton(screen.viewport())
+        self.expand.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.expand.setAccessibleName("Показать или скрыть повторяющиеся строки")
         self.expand.setCheckable(True)
         self.expand.toggled.connect(self.set_expanded)
-        layout.addWidget(self.expand)
         self.resume.hide()
         self.expand.hide()
         screen.verticalScrollBar().valueChanged.connect(self.scrolled)
+        screen.viewport().installEventFilter(self)
+        self.on_ui_scale_changed()
+
+    def on_ui_scale_changed(self, scale=None):
+        from app.ui_scale import scale_px
+
+        diameter = scale_px(30)
+        for button in (self.resume, self.expand):
+            button.setFixedSize(diameter, diameter)
+            button.setStyleSheet(_ROUND_BUTTON_STYLE % (diameter // 2))
+        set_line_icon(self.resume, "chevron-down", scale_px(16))
+        self._position_expand()
+
+    def _position_expand(self):
+        from app.ui_scale import scale_px
+
+        inset = scale_px(8)
+        viewport = self.screen.viewport()
+        self.expand.move(max(0, viewport.width() - self.expand.width() - inset), inset)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QtCore.QEvent.Type.Resize:
+            self._position_expand()
+        return super().eventFilter(watched, event)
 
     def scrolled(self):
         bar = self.screen.verticalScrollBar()
@@ -53,7 +88,7 @@ class TerminalOutputControls(QtWidgets.QWidget):
                 bar.setValue(position)
                 self.unread += text.count("\n")
                 self.errors += int(error)
-                self.resume.setText(f"К новым строкам · {self.unread} · ошибок {self.errors}")
+                self.resume.setToolTip(f"К новым строкам ({self.unread})")
                 self.resume.setVisible(bool(self.unread))
             self.updating = False
 
@@ -73,7 +108,11 @@ class TerminalOutputControls(QtWidgets.QWidget):
             self.next_block = block.next().position()
             block = block.next()
         if len(self.groups) != before:
-            self.expand.setText(f"Повторы · {len(self.groups)}")
+            count = len(self.groups)
+            self.expand.setText(str(count) if count < 100 else "99+")
+            self.expand.setToolTip(f"Показать или скрыть повторы ({count})")
+            self._position_expand()
+            self.expand.raise_()
             self.expand.show()
             document.markContentsDirty(start_position, document.characterCount() - start_position)
             self.screen.viewport().update()
@@ -94,3 +133,4 @@ class TerminalOutputControls(QtWidgets.QWidget):
         self.unread = self.errors = 0
         self.resume.hide()
         self.expand.hide()
+        self.expand.setChecked(False)

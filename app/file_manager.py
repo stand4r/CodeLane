@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Optional
 from utils.programs import saveRecent, backup
 from core.activity_log import record_action
 from core.database_workspace import CONNECTION_SUFFIX, FILE_SUFFIXES as DATABASE_FILE_SUFFIXES
+from core.file_snapshot import snapshot_bytes
+from core.text_file import BYTE_MARKS, TextFileFormat, decode_text_file
 from widgets.Dialog import CustomDialog
 from widgets.DocumentViewerWidget import DOCUMENT_EXTENSIONS, DocumentViewerWidget
 from widgets.HexViewer import HexViewer
@@ -66,10 +68,10 @@ class FileManager:
                 self.open_binary_file(path_str)
                 return
 
-            content = self._read_text(file_path_obj)
+            content, snapshot, text_format = self._read_text(file_path_obj)
             backup(path_str)
             self.main_window.close_special_tab("welcome")
-            self.main_window.create_editor_tab(content, path_str)
+            self.main_window.create_editor_tab(content, path_str, snapshot=snapshot, text_format=text_format)
             if not self._find_and_focus_open_tab(path_str):
                 # create_editor_tab failed (it reports the reason itself);
                 # opening the raw text keeps the file reachable.
@@ -104,7 +106,8 @@ class FileManager:
 
     def _find_in_group(self, group, path_str: str):
         for i in range(group.count()):
-            if self._match_tab_path(group.widget(i), path_str):
+            widget = group.widget(i)
+            if not widget.property("pyscribeHtmlPreview") and self._match_tab_path(widget, path_str):
                 return i
         return None
 
@@ -125,6 +128,8 @@ class FileManager:
         try:
             with file_path_obj.open("rb") as source:
                 sample = source.read(8192)
+            if any(sample.startswith(marker) for marker, _ in BYTE_MARKS):
+                return False
             return b"\x00" in sample
         except OSError:
             return False
@@ -144,16 +149,11 @@ class FileManager:
             self.main_window._welcome_tab.set_recent_files(self.app_manager.recent_files)
 
     @staticmethod
-    def _read_text(file_path: Path) -> str:
+    def _read_text(file_path: Path) -> tuple[str, bytes, TextFileFormat]:
         """Decode source/text files without crashing on BOM or non-UTF-8 files."""
         data = file_path.read_bytes()
-        encodings = ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "cp1251", "latin-1")
-        for enc in encodings:
-            try:
-                return data.decode(enc)
-            except UnicodeDecodeError:
-                continue
-        return data.decode("utf-8", errors="replace")
+        text, text_format = decode_text_file(data)
+        return text, snapshot_bytes(data), text_format
 
     def open_table_file(self, file_path: str):
         """Open CSV/TSV/XLSX in a high-performance table viewer."""
@@ -277,15 +277,24 @@ class FileManager:
         self._register_file_open(path_str)
 
     def open_markdown_file(self, file_path: str, source=None):
-        """Открыть Markdown файл в rich-режиме предпросмотра."""
+        """Open Markdown or static HTML with live editor updates."""
         try:
-            from widgets.MarkdownViewerWidget import MarkdownViewerWidget
+            from widgets.MarkdownViewerWidget import HTML_SUFFIXES, MarkdownViewerWidget
             path_str = str(Path(file_path).resolve())
+            is_html = Path(path_str).suffix.lower() in HTML_SUFFIXES
+            if source is None and is_html:
+                for group in self.main_window.editor_groups():
+                    index = self._find_text_in_group(group, path_str)
+                    if index is not None:
+                        source = getattr(group.widget(index), "editor", None)
+                        break
 
             if self._find_and_focus_markdown_tab(path_str, source):
                 return
 
             viewer = MarkdownViewerWidget(file_path=path_str, parent=self.main_window)
+            if is_html:
+                viewer.setProperty("pyscribeHtmlPreview", True)
             if source is not None:
                 viewer.bind_source(source)
             viewer.open_editor_requested.connect(self.open_text_editor)
@@ -297,7 +306,7 @@ class FileManager:
             self._register_file_open(path_str)
 
         except Exception as e:
-            CustomDialog(f"Ошибка открытия Markdown: {str(e)}").exec()
+            CustomDialog(f"Ошибка предпросмотра: {e}").exec()
 
     def _find_markdown_in_group(self, group, path_str: str, cls):
         for i in range(group.count()):
@@ -328,9 +337,9 @@ class FileManager:
             if self._find_and_focus_text_tab(path_str):
                 return
 
-            content = self._read_text(Path(file_path))
+            content, snapshot, text_format = self._read_text(Path(file_path))
             self.main_window.close_special_tab("welcome")
-            self.main_window.create_editor_tab(content, path_str)
+            self.main_window.create_editor_tab(content, path_str, snapshot=snapshot, text_format=text_format)
         except Exception as e:
             CustomDialog(f"Ошибка открытия в редакторе: {str(e)}").exec()
 
@@ -339,7 +348,7 @@ class FileManager:
             w = group.widget(i)
             if isinstance(w, (HexViewer, DiagramViewerWidget)) or hasattr(w, "browser"):
                 continue
-            if getattr(w, "file_path", None) == path_str:
+            if callable(getattr(w, "get_code", None)) and self._match_tab_path(w, path_str):
                 return i
         return None
 

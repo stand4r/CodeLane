@@ -321,28 +321,37 @@ class ModernSyntaxHighlighter(QSyntaxHighlighter):
     - Надежная защита от ложного распознавания кода внутри комментариев и строк
     """
     STATE_NORMAL = 0
-    STATE_C_COMMENT = 1          # /* ... */
-    STATE_PY_TRIPLE_DOUBLE = 2   # """ ... """
-    STATE_PY_TRIPLE_SINGLE = 3   # ''' ... '''
-    STATE_HTML_COMMENT = 4       # <!-- ... -->
-    STATE_LUA_COMMENT = 5        # --[[ ... --]]
-
     _format_cache = {}
 
     def __init__(self, document, language_config: LanguageConfig):
         super().__init__(document)
         self.language_config = language_config
-        self.lang_name = (getattr(language_config, "name", "") or "").lower()
-
-        # Check supported multiline types for this language
-        self._is_python = self.lang_name in ("python", "py")
-        self._supports_c_comments = self.lang_name in (
-            "c", "cpp", "csharp", "cs", "java", "javascript", "js", "typescript", "ts",
-            "tsx", "jsx", "go", "rust", "php", "css", "sql", "dart", "kotlin", "kt",
-            "swift", "scala", "solidity"
-        ) or getattr(language_config, "block_comment_start", "") == "/*"
-        self._supports_html_comments = self.lang_name in ("html", "xml", "htm") or getattr(language_config, "block_comment_start", "") == "<!--"
-        self._supports_lua_comments = self.lang_name in ("lua",)
+        self.lang_name = language_config.name.lower()
+        opening, closing = language_config.block_comment_start, language_config.block_comment_end
+        line_marks = [language_config.line_comment] if language_config.line_comment else []
+        if self.lang_name in {"html", "htm", "xml"}:
+            opening, closing, line_marks = "<!--", "-->", []
+        elif self.lang_name in {"css", "json"}:
+            line_marks = []
+        elif self.lang_name == "php":
+            line_marks.append("#")
+        self._block_tokens = [(opening, closing)] if opening and closing else []
+        if self.lang_name in {"python", "py"}:
+            self._block_tokens = [(chr(34) * 3, chr(34) * 3), (chr(39) * 3, chr(39) * 3)]
+        alternatives = [f"(?P<block{index}>{re.escape(begin)})"
+                        for index, (begin, _end) in enumerate(self._block_tokens, 1)]
+        if line_marks:
+            alternatives.append("(?P<comment>" + "|".join(map(re.escape, line_marks)) + ")")
+        quotes = list(language_config.string_delimiters)
+        if self.lang_name in {"javascript", "js", "jsx", "ts", "tsx", "sh", "md"}:
+            quotes.append(chr(96))
+        if self.lang_name in {"clj", "ml", "json"}:
+            quotes = [chr(34)]
+        if quotes:
+            alternatives.append("(?P<string>" + "|".join(
+                re.escape(q) + r"(?:\\.|[^" + re.escape(q) + r"\\])*" + re.escape(q) for q in quotes
+            ) + ")")
+        self._tokens = re.compile("|".join(alternatives)) if alternatives else None
 
         # Formats
         self._comment_format = self._get_cached_format("#6A9955", QFont.Weight.Normal, True)
@@ -384,15 +393,17 @@ class ModernSyntaxHighlighter(QSyntaxHighlighter):
             "continue", "switch", "case", "default", "goto", "with", "async", "await", "assert"
         }
         cf_matches = sorted(kw_list.intersection(flow_keywords), key=len, reverse=True)
+        keyword_flags = re.IGNORECASE if self.lang_name in {"sql", "dockerfile"} else 0
         if cf_matches:
             p = r"\b(?:" + "|".join(re.escape(k) for k in cf_matches) + r")\b"
-            rules.append((re.compile(p), self._get_cached_format("#C586C0", QFont.Weight.Normal, False)))
+            rules.append((re.compile(p, keyword_flags), self._get_cached_format("#C586C0", QFont.Weight.Normal, False)))
 
         # 2. Other keywords (VS Code blue #569CD6)
         other_keywords = sorted(kw_list - flow_keywords, key=len, reverse=True)
         if other_keywords:
             p = r"\b(?:" + "|".join(re.escape(k) for k in other_keywords) + r")\b"
-            rules.append((re.compile(p), self._get_cached_format("#569CD6", QFont.Weight.Normal, False)))
+            rules.append((re.compile(p, keyword_flags), self._get_cached_format("#569CD6", QFont.Weight.Normal, False)))
+        keyword_count = len(rules)
 
         # 3. Built-in types & constants (teal #4EC9B0)
         builtins = [
@@ -417,252 +428,57 @@ class ModernSyntaxHighlighter(QSyntaxHighlighter):
         # 7. Numbers (light green #B5CEA8)
         rules.append((re.compile(r"\b(?:0[xX][0-9a-fA-F]+|0[bB][01]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b"), self._get_cached_format("#B5CEA8", QFont.Weight.Normal, False)))
 
-        # 8. Single-line strings (VS Code orange #CE9178)
-        rules.append((re.compile(r'(?<!")"(?:\\.|[^"\\])*"(?!")'), self._string_format))
-        rules.append((re.compile(r"(?<!')'(?:\\.|[^'\\])*'(?!')"), self._string_format))
-        rules.append((re.compile(r"`(?:\\.|[^`\\])*`"), self._string_format))
-
-        # 9. Single-line comments (green #6A9955)
-        if self._is_python or self.lang_name in ("sh", "bash", "yaml", "yml", "r"):
-            rules.append((re.compile(r"#.*$"), self._comment_format))
-        elif self._supports_c_comments:
-            rules.append((re.compile(r"//.*$"), self._comment_format))
-        elif self.lang_name in ("sql", "lua"):
-            rules.append((re.compile(r"--.*$"), self._comment_format))
-
-        return rules
+        if self.lang_name in {"html", "xml", "css", "md", "yaml"}:
+            rules.extend((re.compile(rule.pattern), self._get_cached_format(rule.color, rule.weight, rule.italic))
+                         for rule in self.language_config.syntax_rules)
+        # Keyword rules take precedence over generic type and function patterns.
+        return rules[keyword_count:] + rules[:keyword_count]
 
     def highlightBlock(self, text: str):
-        if self.lang_name == "asm":
-            for pattern, style in self._rules:
-                for match in pattern.finditer(text):
-                    self.setFormat(match.start(), len(match[0]), style)
-            for match in re.finditer(r''' "[^"]*" | '[^']*' | ;.*$ ''', text, re.X):
-                style = self._comment_format if match[0].startswith(";") else self._string_format
-                self.setFormat(match.start(), len(match[0]), style)
-            return
-        if not text:
-            prev = self.previousBlockState()
-            self.setCurrentBlockState(prev if prev > 0 else self.STATE_NORMAL)
-            return
-
-        prev_state = self.previousBlockState()
+        previous = self.previousBlockState()
         self.setCurrentBlockState(self.STATE_NORMAL)
-        code_start = 0
+        offsets = None
+        if not text.isascii() and any(ord(character) > 0xFFFF for character in text):
+            offsets = [0]
+            for character in text:
+                offsets.append(offsets[-1] + (2 if ord(character) > 0xFFFF else 1))
 
-        # Handle line starting inside an open multiline comment or docstring
-        if prev_state == self.STATE_C_COMMENT and self._supports_c_comments:
-            end_idx = text.find("*/")
-            if end_idx == -1:
-                self.setFormat(0, len(text), self._comment_format)
-                self.setCurrentBlockState(self.STATE_C_COMMENT)
-                return
+        def paint(start, end, fmt):
+            if offsets is not None:
+                start, end = offsets[start], offsets[end]
+            self.setFormat(start, end - start, fmt)
+
+        def close_block(state, start, content):
+            closing = self._block_tokens[state - 1][1]
+            finish = text.find(closing, content)
+            if finish < 0:
+                self.setCurrentBlockState(state)
+                finish = len(text)
             else:
-                end_idx += 2
-                self.setFormat(0, end_idx, self._comment_format)
-                code_start = end_idx
+                finish += len(closing)
+            paint(start, finish, self._comment_format)
+            return finish
 
-        elif prev_state == self.STATE_PY_TRIPLE_DOUBLE and self._is_python:
-            end_idx = text.find('"""')
-            if end_idx == -1:
-                self.setFormat(0, len(text), self._docstring_format)
-                self.setCurrentBlockState(self.STATE_PY_TRIPLE_DOUBLE)
-                return
-            else:
-                end_idx += 3
-                self.setFormat(0, end_idx, self._docstring_format)
-                code_start = end_idx
-
-        elif prev_state == self.STATE_PY_TRIPLE_SINGLE and self._is_python:
-            end_idx = text.find("'''")
-            if end_idx == -1:
-                self.setFormat(0, len(text), self._docstring_format)
-                self.setCurrentBlockState(self.STATE_PY_TRIPLE_SINGLE)
-                return
-            else:
-                end_idx += 3
-                self.setFormat(0, end_idx, self._docstring_format)
-                code_start = end_idx
-
-        elif prev_state == self.STATE_HTML_COMMENT and self._supports_html_comments:
-            end_idx = text.find("-->")
-            if end_idx == -1:
-                self.setFormat(0, len(text), self._comment_format)
-                self.setCurrentBlockState(self.STATE_HTML_COMMENT)
-                return
-            else:
-                end_idx += 3
-                self.setFormat(0, end_idx, self._comment_format)
-                code_start = end_idx
-
-        elif prev_state == self.STATE_LUA_COMMENT and self._supports_lua_comments:
-            end_idx = text.find("--]]")
-            if end_idx == -1:
-                self.setFormat(0, len(text), self._comment_format)
-                self.setCurrentBlockState(self.STATE_LUA_COMMENT)
-                return
-            else:
-                end_idx += 4
-                self.setFormat(0, end_idx, self._comment_format)
-                code_start = end_idx
-
-        # Highlight code on the remainder of the line
+        position = close_block(previous, 0, 0) if 0 < previous <= len(self._block_tokens) else 0
         for pattern, fmt in self._rules:
-            for m in pattern.finditer(text, code_start):
-                self.setFormat(m.start(), m.end() - m.start(), fmt)
+            for match in pattern.finditer(text, position):
+                paint(*match.span(), fmt)
+        if self._tokens is None:
+            return
+        while match := self._tokens.search(text, position):
+            kind = match.lastgroup
+            if kind == "comment":
+                paint(match.start(), len(text), self._comment_format)
+                break
+            if kind == "string":
+                fmt = self._string_format
+                if self.lang_name == "json" and text[match.end():].lstrip().startswith(":"):
+                    fmt = self._get_cached_format("#9CDCFE")
+                paint(*match.span(), fmt)
+                position = match.end()
+            else:
+                position = close_block(int(kind[5:]), match.start(), match.end())
 
-        # Check for new multiline comments or docstrings opening on this line
-        self._check_multiline_delimiters(text, code_start)
-
-    def _check_multiline_delimiters(self, text: str, start_pos: int):
-        i = start_pos
-        n = len(text)
-
-        if self._is_python:
-            # Ordinary code lines have neither comment nor string delimiters;
-            # scanning every character of them cost more than all regex rules
-            # together when a big file was opened.
-            if ('#' not in text and '"' not in text
-                    and "'" not in text and '`' not in text):
-                return
-            while i < n:
-                # Line comment '#' outside strings/docstrings
-                if text[i] == '#':
-                    break
-
-                # Triple quote docstrings/multiline strings
-                if i + 3 <= n and text[i:i+3] in ('"""', "'''"):
-                    delim = text[i:i+3]
-                    target_state = self.STATE_PY_TRIPLE_DOUBLE if delim == '"""' else self.STATE_PY_TRIPLE_SINGLE
-                    close_pos = text.find(delim, i + 3)
-                    if close_pos != -1:
-                        self.setFormat(i, close_pos + 3 - i, self._docstring_format)
-                        i = close_pos + 3
-                        continue
-                    else:
-                        self.setFormat(i, n - i, self._docstring_format)
-                        self.setCurrentBlockState(target_state)
-                        break
-
-                # Single-line string literals: skip content without triggering comments
-                if text[i] in ('"', "'"):
-                    q = text[i]
-                    j = i + 1
-                    while j < n:
-                        if text[j] == '\\':
-                            j += 2
-                            continue
-                        if text[j] == q:
-                            j += 1
-                            break
-                        j += 1
-                    i = j
-                    continue
-
-                i += 1
-
-        elif self._supports_c_comments:
-            if ('/' not in text and '"' not in text
-                    and "'" not in text and '`' not in text):
-                return
-            while i < n:
-                # Line comment '//' outside strings
-                if i + 2 <= n and text[i:i+2] == '//':
-                    break
-
-                # Block comment '/*'
-                if i + 2 <= n and text[i:i+2] == '/*':
-                    close_pos = text.find("*/", i + 2)
-                    if close_pos != -1:
-                        self.setFormat(i, close_pos + 2 - i, self._comment_format)
-                        i = close_pos + 2
-                        continue
-                    else:
-                        self.setFormat(i, n - i, self._comment_format)
-                        self.setCurrentBlockState(self.STATE_C_COMMENT)
-                        break
-
-                # String or character literals
-                if text[i] in ('"', "'", '`'):
-                    q = text[i]
-                    j = i + 1
-                    while j < n:
-                        if text[j] == '\\':
-                            j += 2
-                            continue
-                        if text[j] == q:
-                            j += 1
-                            break
-                        j += 1
-                    i = j
-                    continue
-
-                i += 1
-
-        elif self._supports_html_comments:
-            if '<' not in text and '"' not in text and "'" not in text:
-                return
-            while i < n:
-                if i + 4 <= n and text[i:i+4] == '<!--':
-                    close_pos = text.find("-->", i + 4)
-                    if close_pos != -1:
-                        self.setFormat(i, close_pos + 3 - i, self._comment_format)
-                        i = close_pos + 3
-                        continue
-                    else:
-                        self.setFormat(i, n - i, self._comment_format)
-                        self.setCurrentBlockState(self.STATE_HTML_COMMENT)
-                        break
-
-                if text[i] in ('"', "'"):
-                    q = text[i]
-                    j = i + 1
-                    while j < n:
-                        if text[j] == '\\':
-                            j += 2
-                            continue
-                        if text[j] == q:
-                            j += 1
-                            break
-                        j += 1
-                    i = j
-                    continue
-
-                i += 1
-
-        elif self._supports_lua_comments:
-            if '-' not in text and '[' not in text and '"' not in text and "'" not in text:
-                return
-            while i < n:
-                if i + 4 <= n and text[i:i+4] == '--[[':
-                    close_pos = text.find("--]]", i + 4)
-                    if close_pos != -1:
-                        self.setFormat(i, close_pos + 4 - i, self._comment_format)
-                        i = close_pos + 4
-                        continue
-                    else:
-                        self.setFormat(i, n - i, self._comment_format)
-                        self.setCurrentBlockState(self.STATE_LUA_COMMENT)
-                        break
-
-                if i + 2 <= n and text[i:i+2] == '--':
-                    break
-
-                if text[i] in ('"', "'"):
-                    q = text[i]
-                    j = i + 1
-                    while j < n:
-                        if text[j] == '\\':
-                            j += 2
-                            continue
-                        if text[j] == q:
-                            j += 1
-                            break
-                        j += 1
-                    i = j
-                    continue
-
-                i += 1
 
 
 class CompletionDelegate(QtWidgets.QStyledItemDelegate):
@@ -919,8 +735,8 @@ class CodeEditor(EnhancedTextEdit):
         self.current_font_size = size
         font_family = str(self.settings.get("editor_font", "Cascadia Code")) or self.font().family()
         new_font = QFont(font_family, size)
-        new_font.setPointSize(size)
         new_font.setStyleHint(QFont.StyleHint.Monospace)
+        new_font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
         
         self.setFont(new_font)
         
@@ -1042,19 +858,16 @@ class CodeEditor(EnhancedTextEdit):
             act_run.triggered.connect(self.run_selected_code)
             menu.addSeparator()
 
-        # 2. Clean Code submenu
-        clean_menu = menu.addMenu("✨ Чистый код")
+        clean_menu = menu.addMenu("Форматирование")
         if has_selection:
-            act_clean_sel = clean_menu.addAction("Рефакторинг выделенного фрагмента (Clean Code)")
+            act_clean_sel = clean_menu.addAction("Форматировать выделение")
             act_clean_sel.triggered.connect(self._format_selection_clean_code)
-        act_clean_all = clean_menu.addAction("Форматировать весь файл (Clean Code + PEP-8)")
+        act_clean_all = clean_menu.addAction("Форматировать весь файл")
         act_clean_all.triggered.connect(self._format_entire_file_clean_code)
 
-        # 3. Documentation submenu
-        doc_menu = menu.addMenu("📝 Документация")
-        if has_selection:
-            act_doc_sel = doc_menu.addAction("Документировать выделенный код")
-            act_doc_sel.triggered.connect(self._generate_docstring_selection)
+        doc_menu = menu.addMenu("Docstrings")
+        act_doc_sel = doc_menu.addAction("Для функции или класса")
+        act_doc_sel.triggered.connect(self._generate_docstring_selection)
         act_doc_all = doc_menu.addAction("Документировать весь файл")
         act_doc_all.triggered.connect(self._generate_docstrings_entire_file)
 
@@ -2301,9 +2114,8 @@ class ModernCodeEditor(QWidget):
         self.clean_code_btn.setText("Форматировать")
         set_line_icon(self.clean_code_btn, "code")
         self.clean_code_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.clean_code_btn.setToolTip("Форматирование по принципам Clean Code и PEP-8")
+        self.clean_code_btn.setToolTip("Форматировать Python (Shift+Alt+F)")
         clean_menu = QtWidgets.QMenu(self.clean_code_btn)
-        clean_menu.setStyleSheet("QMenu { background: #121822; border: 1px solid #1C2533; color: #E6EDF3;  font-size: 12px; border-radius: 6px; padding: 4px; } QMenu::item { padding: 4px 12px; border-radius: 4px; } QMenu::item:selected { background: #1A3650; color: #00F2FE; }")
 
         act_clean_all = clean_menu.addAction("Форматировать весь файл")
         act_clean_all.triggered.connect(self.format_entire_file)
@@ -2320,11 +2132,10 @@ class ModernCodeEditor(QWidget):
         self.docstring_btn.setText("Docstrings")
         set_line_icon(self.docstring_btn, "document")
         self.docstring_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.docstring_btn.setToolTip("Генерация структурированных описаний и комментариев для функций, классов и всего файла")
+        self.docstring_btn.setToolTip("Добавить docstrings")
         doc_menu = QtWidgets.QMenu(self.docstring_btn)
-        doc_menu.setStyleSheet("QMenu { background: #121822; border: 1px solid #1C2533; color: #E6EDF3;  font-size: 12px; border-radius: 6px; padding: 4px; } QMenu::item { padding: 4px 12px; border-radius: 4px; } QMenu::item:selected { background: #1A3650; color: #00F2FE; }")
 
-        act_doc_curr = doc_menu.addAction("Документировать текущий блок / функцию / класс")
+        act_doc_curr = doc_menu.addAction("Для функции или класса")
         act_doc_curr.triggered.connect(self.generate_docstring_current)
 
         act_doc_all = doc_menu.addAction("Документировать весь файл")
@@ -2396,6 +2207,7 @@ class ModernCodeEditor(QWidget):
             "Ctrl+Return": self._run_current_block_shortcut,
             "Ctrl+Enter": self._run_current_block_shortcut,
             "Alt+Z": self.toggle_word_wrap,
+            "Shift+Alt+F": self.format_entire_file,
             "Escape": self._on_escape_pressed,
             "Alt+C": self._copy_rectangle,
             "Alt+X": self._cut_rectangle,
@@ -2667,16 +2479,27 @@ class ModernCodeEditor(QWidget):
         """Удаление прямоугольного выделения"""
         self.editor.delete_rectangle_selection()
     
-    def set_file_path(self, file_path: str):
+    def set_file_path(self, file_path: str, *, snapshot=..., text_format=None):
         """Установка пути к файлу и автоматическое определение языка"""
         self.file_path = Path(file_path)
+        if snapshot is ...:
+            from core.file_snapshot import snapshot_bytes
+            from core.text_file import decode_text_file
+
+            try:
+                data = self.file_path.read_bytes()
+            except FileNotFoundError:
+                snapshot = None
+            else:
+                snapshot = snapshot_bytes(data)
+                if text_format is None:
+                    _, text_format = decode_text_file(data)
+        self._disk_snapshot = snapshot
+        self._text_file_format = text_format
         
-        file_extension = self.file_path.suffix.lower()
-        if file_extension:
-            file_extension = file_extension[1:]
-            
-        if file_extension and file_extension != self.language:
-            self.set_language_by_extension(file_extension)
+        language = LanguageProviderFactory.language_for_path(self.file_path)
+        if language and language != self.language:
+            self.set_language(language)
 
         try:
             from core.code_analysis.service import UnifiedCodeAnalysisService
@@ -2701,7 +2524,11 @@ class ModernCodeEditor(QWidget):
     def get_file_name(self) -> str:
         return self.file_path.name if self.file_path else "Untitled"
 
-    def save_file(self) -> bool:
+    def save_file(self, *, notify_lsp=True) -> bool:
+        from core.file_snapshot import snapshot_bytes, snapshot_file
+        from core.text_file import TextFileFormat
+
+        self.last_save_error = ""
         try:
             if not self.file_path:
                 return False
@@ -2710,25 +2537,86 @@ class ModernCodeEditor(QWidget):
             if suffix in {".bin", ".exe", ".out", ".dll", ".so", ".dylib",
                           ".elf", ".hex", ".rom", ".img", ".iso", ".dat"}:
                 return False
-            self.file_path.write_text(self.get_code(), encoding="utf-8", newline="")
+            expected = getattr(self, "_disk_snapshot", None)
+            if snapshot_file(self.file_path) != expected:
+                self.last_save_error = "Файл изменён на диске. Сохраните правки через «Сохранить как»."
+                return False
+            if suffix in {".py", ".pyw", ".pyi"} and getattr(self, "code_lens", None):
+                from utils.settings_manager import get_settings_manager
+
+                try:
+                    format_on_save = get_settings_manager().get_setting("format_on_save", False)
+                except RuntimeError:
+                    format_on_save = False
+                if format_on_save:
+                    self.code_lens.format_entire_file(quiet=True)
+            text_format = getattr(self, "_text_file_format", None) or TextFileFormat()
+            text = self.editor.document().toRawText().replace("\u2029", "\n")
+            try:
+                payload = text_format.encode(text)
+            except UnicodeEncodeError:
+                self.last_save_error = f"Кодировка {text_format.encoding} не поддерживает некоторые символы. Используйте «Сохранить как UTF-8…»."
+                return False
+            target = QtCore.QSaveFile(str(self.file_path))
+            if not target.open(QtCore.QIODevice.OpenModeFlag.WriteOnly):
+                self.last_save_error = target.errorString()
+                return False
+            if target.write(payload) != len(payload):
+                self.last_save_error = target.errorString()
+                target.cancelWriting()
+                return False
+            if snapshot_file(self.file_path) != expected:
+                target.cancelWriting()
+                self.last_save_error = "Файл изменился во время записи. Сохраните правки через «Сохранить как»."
+                return False
+            if not target.commit():
+                self.last_save_error = target.errorString()
+                return False
+            self._disk_snapshot = snapshot_bytes(payload)
+            self._text_file_format = text_format.after_save(payload)
             record_action("file_saved")
             if hasattr(self.editor, "document") and self.editor.document():
                 self.editor.document().setModified(False)
-            try:
-                from core.code_analysis.service import UnifiedCodeAnalysisService
-                UnifiedCodeAnalysisService.get_instance().on_document_saved(str(self.file_path))
-            except Exception:
-                pass
+            if notify_lsp:
+                try:
+                    from core.code_analysis.service import UnifiedCodeAnalysisService
+                    UnifiedCodeAnalysisService.get_instance().on_document_saved(str(self.file_path))
+                except Exception:
+                    pass
             return True
         except Exception as e:
+            self.last_save_error = str(e)
             logger.exception("Save error")
             return False
 
-    def save_file_as(self, file_path: str) -> bool:
+    def save_file_as(self, file_path: str, *, utf8=False) -> bool:
+        from core.file_snapshot import snapshot_file
+        from core.text_file import TextFileFormat
+
+        original_path = self.file_path
+        original_snapshot = getattr(self, "_disk_snapshot", None)
+        original_format = getattr(self, "_text_file_format", None)
         try:
-            self.set_file_path(file_path)
-            return self.save_file()
+            destination = Path(file_path)
+            same_file = bool(original_path and destination.resolve() == original_path.resolve())
+            self.file_path = destination
+            if not same_file:
+                self._disk_snapshot = snapshot_file(destination)
+            if utf8:
+                self._text_file_format = (original_format or TextFileFormat()).as_utf8()
+            if not self.save_file(notify_lsp=same_file):
+                self.file_path = original_path
+                self._disk_snapshot = original_snapshot
+                self._text_file_format = original_format
+                return False
+            if not same_file:
+                self.set_file_path(file_path, snapshot=self._disk_snapshot, text_format=self._text_file_format)
+            return True
         except Exception as e:
+            self.file_path = original_path
+            self._disk_snapshot = original_snapshot
+            self._text_file_format = original_format
+            self.last_save_error = str(e)
             logger.exception("Save as error")
             return False
     

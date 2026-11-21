@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from core.code_analysis.treesitter_pack import pack_language, parse_pack_root
+from core.code_analysis.treesitter_pack import pack_has_language, pack_language, parse_pack_root
+from core.code_analysis.registry import get_language_registry
 
 logger = logging.getLogger(__name__)
 
@@ -146,10 +147,7 @@ class TreeSitterEngine:
                 for name, line, col in labels
             ], imports)
         parser = self._get_parser(lang_id)
-        if parser is None and lang_id not in {
-            "python", "javascript", "typescript", "tsx", "jsx", "c", "cpp",
-            "c_sharp", "csharp", "cs", "java", "go", "rust", "json",
-        }:
+        if parser is None and not pack_has_language(lang_id):
             return self._fallback_parse(code, lang_id, file_path)
         try:
             source_bytes = code.encode("utf-8", errors="replace")
@@ -158,6 +156,9 @@ class TreeSitterEngine:
 
             result = SyntaxParseResult(lang_id=lang_id, is_tree_sitter=True)
             self._walk_node(root, source_bytes, result, file_path=file_path, parent_name=None)
+            spec = get_language_registry().get(lang_id)
+            if spec and spec.fallback_symbols and not result.symbols:
+                result.symbols.extend(self._fallback_parse(code, lang_id, file_path).symbols)
             return result
         except Exception as exc:
             logger.warning("Tree-sitter parse error for %s (%s): %s", file_path, lang_id, exc)
@@ -308,6 +309,10 @@ class TreeSitterEngine:
             (r"\b(?:def|func|fn|function|fun)\s+([A-Za-z_]\w*)", "function"),
             (r"\b([A-Za-z_]\w*)\s*=\s*(?:function|\([^\n]*\)\s*=>)", "function"),
         ]
+        spec = get_language_registry().get(lang_id)
+        if spec:
+            patterns[:0] = spec.fallback_symbols
+        patterns = [(re.compile(pattern), kind) for pattern, kind in patterns]
 
         current_class = None
         for idx, line in enumerate(lines):
@@ -317,7 +322,7 @@ class TreeSitterEngine:
                 continue
 
             for pat, kind in patterns:
-                m = re.search(pat, line)
+                m = pat.search(line)
                 if m:
                     sym_name = m.group(1)
                     if kind in ("class", "struct", "interface", "enum"):

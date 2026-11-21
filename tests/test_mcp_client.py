@@ -5,6 +5,60 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from services.mcp_client import MCPClient, MCPError, MCPServerConfig, MCPTool, parse_servers, run_tool
 
 
+def test_tool_discovery_stops_on_a_repeated_cursor(monkeypatch):
+    client = MCPClient(MCPServerConfig(name="docs"))
+    calls = []
+
+    def request(method, params):
+        calls.append(params)
+        return {"tools": [], "nextCursor": "same"}
+
+    monkeypatch.setattr(client, "request", request)
+    assert client.list_tools() == []
+    assert calls == [{}, {"cursor": "same"}]
+
+
+def test_resource_page_can_be_consumed_in_chunks(monkeypatch):
+    client = MCPClient(MCPServerConfig(name="docs"))
+    monkeypatch.setattr(client, "request", lambda method, params: {
+        "resources": [{"uri": f"docs://{index}"} for index in range(55)], "nextCursor": "next",
+    })
+    first = client.list_resources("current")
+    assert (first["nextCursor"], first["nextOffset"]) == ("current", 50)
+    second = client.list_resources(first["nextCursor"], offset=first["nextOffset"])
+    assert [item["uri"] for item in second["resources"]] == [f"docs://{i}" for i in range(50, 55)]
+    assert (second["nextCursor"], second["nextOffset"]) == ("next", None)
+
+
+def test_resource_only_server_advertises_paginated_read_tools(monkeypatch):
+    from services.mcp_client import resource_tools, run_resource_tool
+    import json
+
+    client = MCPClient(MCPServerConfig(name="docs"))
+    calls = []
+
+    def request(method, params):
+        calls.append((method, params))
+        if method == "initialize":
+            return {"capabilities": {"resources": {}}}
+        if method == "resources/list":
+            return {"resources": [{"uri": "docs://guide"}], "nextCursor": "next"}
+        return {"contents": [{"text": "Guide"}, {"blob": "SENSITIVE_BINARY"}]}
+
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr(client, "_write", lambda _: None)
+    assert client.connect() == []
+    assert [item["function"]["name"] for item in resource_tools({"docs": client})] == [
+        "mcp_list_resources", "mcp_read_resource"]
+    listing = json.loads(run_resource_tool({"docs": client}, "mcp_list_resources",
+                                           {"server": "docs", "cursor": "first"}))
+    assert listing["nextCursor"] == "next"
+    assert ("resources/list", {"cursor": "first"}) in calls
+    result = run_resource_tool({"docs": client}, "mcp_read_resource",
+                               {"server": "docs", "uri": "docs://guide"})
+    assert "Guide" in result and "SENSITIVE_BINARY" not in result
+
+
 def test_parse_servers_validates_names_transports_and_duplicates():
     for payload in (
         '[{"name":"bad name","command":"node"}]',

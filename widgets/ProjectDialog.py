@@ -3,94 +3,42 @@ from core.logging_config import get_logger
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QFileDialog, QTextEdit,
                              QListWidget, QListWidgetItem, QMessageBox, QTabWidget,
-                             QWidget, QFormLayout, QComboBox, QFrame, QScrollArea, QMenu)
-from PyQt6.QtCore import Qt, QSize
+                             QWidget, QFormLayout, QComboBox, QFrame, QScrollArea, QMenu, QSizePolicy)
+from PyQt6.QtCore import QEvent, Qt, QSize
 from PyQt6.QtGui import QFont, QIcon, QPixmap, QPalette
 from pathlib import Path
 import json
 import os
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from typing import Dict, List, Optional
 import datetime
 from widgets.ProjectManager import ProjectConfig, project_manager
 
-# Стили для современного дизайна
-MODERN_STYLES = """
-QDialog#projectManager { background: #181818; color: #D4D4D4; border-radius: 10px; }
-QLabel { background: transparent; color: #D4D4D4; }
-QLineEdit, QTextEdit, QComboBox { background: #242424; color: #D4D4D4; border: 1px solid #2B2B2B; border-radius: 6px; padding: 5px 8px; min-height: 28px; }
-QLineEdit:focus, QTextEdit:focus, QComboBox:focus { border-color: #0078D4; }
-QPushButton { background: #2A2D2E; color: #D4D4D4; border: 1px solid #3A3A3A; border-radius: 6px; padding: 5px 12px; min-height: 28px; }
-QPushButton:hover, QPushButton:checked { background: #37373D; color: #FFFFFF; border-color: #0078D4; }
-QPushButton:pressed { background: #264F78; color: #FFFFFF; }
-QPushButton#open-button, QPushButton[primary="true"] {
-    background-color: #0078D4;
-    color: #FFFFFF !important;
-    font-weight: 600;
-    font-size: 13px;
-    border: 1px solid #0078D4;
-    border-radius: 6px;
-    padding: 6px 16px;
-}
-QPushButton#open-button:hover, QPushButton[primary="true"]:hover {
-    background-color: #1A8AD8;
-    color: #FFFFFF !important;
-    border-color: #1A8AD8;
-}
-QPushButton#open-button:pressed, QPushButton[primary="true"]:pressed {
-    background-color: #005A9E;
-    color: #FFFFFF !important;
-}
-QPushButton#new-project-btn {
-    background-color: #0078D4;
-    color: #FFFFFF !important;
-    font-weight: 600;
-    font-size: 13px;
-    border: 1px solid #0078D4;
-    border-radius: 6px;
-    padding: 6px 16px;
-}
-QPushButton#new-project-btn:hover {
-    background-color: #1A8AD8;
-    color: #FFFFFF !important;
-}
-QPushButton#configure-button, QPushButton[secondary="true"] {
-    background-color: #2A2D2E;
-    color: #E3ECF7;
-    border: 1px solid #3A3A3A;
-    border-radius: 6px;
-    padding: 6px 14px;
-}
-QPushButton#configure-button:hover {
-    background-color: #37373D;
-    color: #FFFFFF;
-    border-color: #0078D4;
-}
-QPushButton#delete-button, QPushButton[danger="true"] {
-    background-color: #2A2D2E;
-    color: #F87171;
-    border: 1px solid #4A2828;
-    border-radius: 6px;
-    padding: 6px 14px;
-}
-QPushButton#delete-button:hover {
-    background-color: #7F1D1D;
-    color: #FFFFFF;
-    border-color: #EF4444;
-}
-QTabBar::tab { background: #181818; color: #A8A8A8; padding: 8px 14px; min-height: 28px; border-top-left-radius: 6px; border-top-right-radius: 6px; }
-QTabBar::tab:hover { background: #2A2D2E; color: #D4D4D4; }
-QTabBar::tab:selected { background: #1E1E1E; color: #FFFFFF; border-bottom: 2px solid #0078D4; }
-QListWidget, QScrollArea { background: #181818; color: #D4D4D4; border: 1px solid #2B2B2B; border-radius: 8px; }
-QFrame#project-card { background: #1E1E1E; border: 1px solid #2B2B2B; border-radius: 8px; }
-QFrame#project-card:hover { background: #242424; border-color: #0078D4; }
-QFrame#project-card QLabel,
-QLabel#projectName,
-QLabel#projectPath,
-QLabel#projectTime,
-QLabel#projectCommandText { background: transparent; background-color: transparent; }
-"""
+class _ProjectLabel(QLabel):
+    def __init__(self, text, name):
+        super().__init__()
+        self._full_text = text
+        self.setObjectName(name)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setAccessibleName(text)
+        self.setToolTip(text)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setText(text)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_text()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.FontChange:
+            self._update_text()
+
+    def _update_text(self):
+        self.setText(self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, self.contentsRect().width()
+        ))
 
 
 class ModernProjectCard(QFrame):
@@ -104,108 +52,30 @@ class ModernProjectCard(QFrame):
         self.setup_ui()
     
     def setup_ui(self):
-        self.setObjectName("project-card")
+        self.setObjectName("projectRow")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.update_card_style()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 7, 10, 7)
         layout.setSpacing(8)
-        
-        # Заголовок проекта
-        title_layout = QHBoxLayout()
-        title_info_layout = QVBoxLayout()
-        title_info_layout.setSpacing(2)
-        name_label = QLabel(self.project.get_display_name())
-        name_label.setObjectName("projectName")
-        name_label.setStyleSheet("background: transparent; background-color: transparent; border: none; font-size: 14px; font-weight: 600; color: #E3ECF7;")
-        path_label = QLabel(self.project.root_path)
-        path_label.setObjectName("projectPath")
-        path_label.setStyleSheet("background: transparent; background-color: transparent; border: none; font-size: 12px; color: #858585;")
-        path_label.setWordWrap(False)
-        path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        title_info_layout.addWidget(name_label)
-        title_info_layout.addWidget(path_label)
-        title_layout.addLayout(title_info_layout, 1)
-        time_label = QLabel(self.project.get_last_opened_display())
-        time_label.setObjectName("projectTime")
-        time_label.setStyleSheet("background: transparent; background-color: transparent; border: none; font-size: 12px; color: #858585;")
-        title_layout.addWidget(time_label)
-        title_layout.addStretch()
-
-        layout.addLayout(title_layout)
-        
-        # Команда запуска (если есть)
-        if self.project.launch_command:
-            command_frame = QFrame()
-            command_frame.setObjectName("projectCommand")
-            command_frame.setStyleSheet("background: #181818; border: 1px solid #2B2B2B; border-radius: 4px;")
-            command_layout = QHBoxLayout(command_frame)
-            command_layout.setContentsMargins(8, 8, 8, 8)
-            
-            command_text = QLabel(self.project.launch_command)
-            command_text.setObjectName("projectCommandText")
-            command_text.setStyleSheet("background: transparent; background-color: transparent; color: #75BEFF;")
-            command_text.setWordWrap(True)
-            command_layout.addWidget(command_text, 1)
-            
-            layout.addWidget(command_frame)
-        
-        # Разделитель
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet("background-color: #2B2B2B; max-height: 1px;")
-        layout.addWidget(separator)
-        
-        # Кнопки действий
-        actions_layout = QHBoxLayout()
-        
+        info = QVBoxLayout()
+        info.setSpacing(2)
+        name = _ProjectLabel(self.project.get_display_name(), "projectRowName")
+        path = _ProjectLabel(self.project.root_path, "projectRowPath")
+        info.addWidget(name)
+        info.addWidget(path)
+        layout.addLayout(info, 1)
         self.open_button = QPushButton("Открыть")
-        self.open_button.setObjectName("open-button")
-        self.open_button.setProperty("primary", True)
-        self.open_button.setStyleSheet(
-            "QPushButton#open-button { background-color: #0078D4; color: #FFFFFF; font-weight: 600; font-size: 13px; border: 1px solid #0078D4; border-radius: 6px; padding: 6px 16px; min-height: 28px; }"
-            "QPushButton#open-button:hover { background-color: #1A8AD8; color: #FFFFFF; border-color: #1A8AD8; }"
-            "QPushButton#open-button:pressed { background-color: #005A9E; color: #FFFFFF; }"
-        )
-        
-        self.configure_button = QPushButton("Настроить")
-        self.configure_button.setObjectName("configure-button")
-        self.configure_button.setProperty("secondary", True)
-        
-        self.delete_button = QPushButton("Удалить")
-        self.delete_button.setObjectName("delete-button")
-        self.delete_button.setProperty("danger", True)
-        self.delete_button.setStyleSheet(
-            "QPushButton#delete-button { background-color: #3A2326; color: #F87171; border: 1px solid #5C2B2E; border-radius: 6px; padding: 6px 14px; min-height: 28px; }"
-            "QPushButton#delete-button:hover { background-color: #E81123; color: #FFFFFF; border-color: #E81123; }"
-        )
-        
-        actions_layout.addWidget(self.open_button)
-        actions_layout.addWidget(self.configure_button)
-        actions_layout.addWidget(self.delete_button)
-        actions_layout.addStretch()
-        
-        layout.addLayout(actions_layout)
         self.open_button.clicked.connect(self.on_open_clicked)
+        self.configure_button = QPushButton("Настроить")
         self.configure_button.clicked.connect(self.on_configure_clicked)
-        self.delete_button.clicked.connect(self.on_delete_clicked)
+        layout.addWidget(self.open_button)
+        layout.addWidget(self.configure_button)
 
     def set_selected(self, selected: bool):
         self.is_selected = selected
-        self.update_card_style()
-
-    def update_card_style(self):
-        if self.is_selected:
-            self.setStyleSheet("""
-                QFrame#project-card { background: #1F2836; border: 2px solid #0078D4; border-radius: 8px; }
-                QLabel { background: transparent; background-color: transparent; border: none; }
-            """)
-        else:
-            self.setStyleSheet("""
-                QFrame#project-card { background: #1E1E1E; border: 1px solid #2B2B2B; border-radius: 8px; }
-                QFrame#project-card:hover { background: #242424; border-color: #0078D4; }
-                QLabel { background: transparent; background-color: transparent; border: none; }
-            """)
+        self.setProperty("selected", selected)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -257,12 +127,7 @@ class ModernProjectCard(QFrame):
                     if getattr(self.parent_dialog, 'selected_card', None) == self:
                         self.parent_dialog.selected_card = None
                         self.parent_dialog.selected_project = None
-                    if hasattr(self.parent_dialog, 'load_recent_projects') and getattr(self.parent_dialog, 'recent_layout', None) is not None:
-                        self.parent_dialog.load_recent_projects()
-                    if hasattr(self.parent_dialog, 'load_all_projects'):
-                        self.parent_dialog.load_all_projects()
-                    if hasattr(self.parent_dialog, 'status_bar') and self.parent_dialog.status_bar:
-                        self.parent_dialog.status_bar.setText(f"Проект «{self.project.name}» удален из списка")
+                    self.parent_dialog.load_all_projects()
                 else:
                     self.deleteLater()
             else:
@@ -283,167 +148,50 @@ class ProjectDialog(QDialog):
         self._owner = parent
         self.selected_project = None
         self.selected_card = None
-        self.recent_layout = None
-        self.setWindowTitle("Управление проектами")
+        self.setWindowTitle("Открыть проект")
         self.setObjectName("projectManager")
-        self.setMinimumSize(700, 600)
+        self.setMinimumSize(590, 340)
+        self.resize(720, 460)
         self.setup_ui()
 
     
     def setup_ui(self):
-        self.setStyleSheet(MODERN_STYLES)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
 
-        #Empty Label
-        self.recent_empty_label = QLabel("Недавние проекты не найдены.\nСоздайте новый проект или откройте существующую папку.")
-
-        # Заголовок
-        header_layout = QHBoxLayout()
-        title_label = QLabel("Управление проектами")
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #E3ECF7;")
-        header_layout.addWidget(title_label)
-        header_layout.addStretch()
-        
-        # Кнопка создания нового проекта
-        new_project_btn = QPushButton("＋ Новый проект")
-        new_project_btn.setObjectName("new-project-btn")
-        new_project_btn.clicked.connect(self.show_new_project_dialog)
-        header_layout.addWidget(new_project_btn)
-        
-        layout.addLayout(header_layout)
-        
-        # Вкладки проекта: без отдельного списка недавно открытых проектов.
-        self.tabs = QTabWidget()
-        self.all_tab = self.create_all_tab()
-        self.tabs.addTab(self.all_tab, "Проекты")
-        self.quick_tab = self.create_quick_tab()
-        self.tabs.addTab(self.quick_tab, "Открыть папку")
-        
-        layout.addWidget(self.tabs)
-        
-        # Статус бар
-        self.status_bar = QLabel("Готово")
-        layout.addWidget(self.status_bar)
-
-    
-    def create_recent_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-        
-        # Заголовок
-        recent_label = QLabel("Недавние проекты")
-        layout.addWidget(recent_label)
-        
-        # Область прокрутки для карточек
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        
-        scroll_widget = QWidget()
-        self.recent_layout = QVBoxLayout(scroll_widget)
-        self.recent_layout.setSpacing(10)
-        
-        self.load_recent_projects()
-        
-        scroll_area.setWidget(scroll_widget)
-        layout.addWidget(scroll_area)
-        
-        # Сообщение если нет проектов
-        
-        self.recent_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.recent_empty_label)
-        
-        self.update_empty_state()
-        
-        return widget
-    
-    def create_all_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-        
-        # Поиск
-        search_layout = QHBoxLayout()
-        search_label = QLabel("Поиск:")
-        search_label.setStyleSheet("color: #CCCCCC;")
-        
+        header = QHBoxLayout()
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Поиск проекта по названию…")
+        self.search_edit.setPlaceholderText("Поиск по названию или пути")
         self.search_edit.textChanged.connect(self.filter_projects)
-        
-        search_layout.addWidget(search_label)
-        search_layout.addWidget(self.search_edit, 1)
-        
-        layout.addLayout(search_layout)
-        
-        # Область прокрутки
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        
-        self.all_scroll_widget = QWidget()
-        self.all_layout = QVBoxLayout(self.all_scroll_widget)
-        self.all_layout.setSpacing(10)
-        
+        header.addWidget(self.search_edit, 1)
+        folder = QPushButton("Открыть папку…")
+        folder.clicked.connect(self.quick_open_folder)
+        header.addWidget(folder)
+        create = QPushButton("Новый проект")
+        create.clicked.connect(self.show_new_project_dialog)
+        header.addWidget(create)
+        layout.addLayout(header)
+
+        self.project_area = QScrollArea()
+        self.project_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.project_area.setWidgetResizable(True)
+        content = QWidget()
+        self.all_layout = QVBoxLayout(content)
+        self.all_layout.setContentsMargins(0, 0, 0, 0)
+        self.all_layout.setSpacing(5)
+        self.all_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.project_area.setWidget(content)
+        layout.addWidget(self.project_area, 1)
+        self.cards = []
+        self.empty_projects = QLabel()
+        self.empty_projects.setObjectName("projectRowPath")
+        self.empty_projects.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.all_layout.addWidget(self.empty_projects)
         self.load_all_projects()
-        
-        scroll_area.setWidget(self.all_scroll_widget)
-        layout.addWidget(scroll_area)
-        
-        return widget
-    
-    def create_quick_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(20)
-        
-        # Быстрое открытие папки
-        quick_folder_frame = QFrame()
-        quick_folder_frame.setStyleSheet("""
-            QFrame {
-                background-color: #3E3E42;
-                border: 2px dashed #555555;
-                border-radius: 8px;
-                padding: 25px;
-            }
-        """)
-        quick_folder_layout = QVBoxLayout(quick_folder_frame)
-        
-        folder_icon = QLabel("📂")
-        folder_icon.setStyleSheet("font-size: 48px; text-align: center;")
-        folder_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        folder_title = QLabel("Открыть папку как проект")
-        folder_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #FFFFFF; text-align: center;")
-        
-        folder_desc = QLabel("Быстро откройте любую папку и начните разработку.\nPyScribe автоматически определит структуру проекта.")
-        folder_desc.setStyleSheet("color: #CCCCCC; text-align: center; line-height: 1.4;")
-        folder_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        folder_desc.setWordWrap(True)
-        
-        open_folder_btn = QPushButton("Выбрать папку…")
-        open_folder_btn.setStyleSheet(
-            "QPushButton { background-color: #0078D4; color: #FFFFFF; font-weight: 600; font-size: 13px; border: 1px solid #0078D4; border-radius: 6px; padding: 8px 20px; }"
-            "QPushButton:hover { background-color: #1A8AD8; color: #FFFFFF; }"
-        )
-        open_folder_btn.clicked.connect(self.quick_open_folder)
-        
-        quick_folder_layout.addWidget(folder_icon)
-        quick_folder_layout.addWidget(folder_title)
-        quick_folder_layout.addSpacing(10)
-        quick_folder_layout.addWidget(folder_desc)
-        quick_folder_layout.addSpacing(15)
-        quick_folder_layout.addWidget(open_folder_btn)
-        
-        layout.addWidget(quick_folder_frame)
-        layout.addStretch()
-        
-        return widget
-    
+        self.search_edit.installEventFilter(self)
+        self.search_edit.setFocus()
+
     def select_card(self, card):
         """Выбор карточки проекта"""
         if hasattr(self, 'selected_card') and self.selected_card and self.selected_card != card:
@@ -452,72 +200,67 @@ class ProjectDialog(QDialog):
             except Exception:
                 pass
         self.selected_card = card
+        self.selected_project = card.project if card is not None else None
         if card:
             card.set_selected(True)
-            self.selected_project = card.project
-            if hasattr(self, 'status_bar') and self.status_bar:
-                self.status_bar.setText(f"Выбран проект: {card.project.get_display_name()} ({card.project.root_path})")
 
     def keyPressEvent(self, event):
         """Удаление выбранного проекта по клавише Delete/Backspace"""
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and getattr(self, 'selected_card', None):
+        if event.key() == Qt.Key.Key_Delete and self.selected_card and not self.search_edit.hasFocus():
             self.selected_card.on_delete_clicked()
             return
         super().keyPressEvent(event)
 
-    def load_recent_projects(self):
-        """Загрузка недавних проектов"""
-        if not getattr(self, 'recent_layout', None):
-            return
-        # Очищаем layout
-        for i in reversed(range(self.recent_layout.count())):
-            widget = self.recent_layout.itemAt(i).widget()
-            if widget:
-                widget.deleteLater()
-        
-        recent_projects = project_manager.get_recent_projects(5)
-        
-        for project in recent_projects:
-            card = ModernProjectCard(project, self)
-            self.recent_layout.addWidget(card)
-        
-        self.update_empty_state()
+    def eventFilter(self, watched, event):
+        if watched is self.search_edit and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                visible = [card for card in self.cards if not card.isHidden()]
+                if visible:
+                    if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                        card = self.selected_card if self.selected_card in visible else visible[0]
+                        self.open_project(card.project)
+                    else:
+                        if self.selected_card in visible:
+                            step = 1 if key == Qt.Key.Key_Down else -1
+                            index = max(0, min(visible.index(self.selected_card) + step, len(visible) - 1))
+                        else:
+                            index = 0 if key == Qt.Key.Key_Down else -1
+                        card = visible[index]
+                        self.select_card(card)
+                        self.project_area.ensureWidgetVisible(card, 0, 8)
+                return True
+        return super().eventFilter(watched, event)
 
     def load_all_projects(self):
         """Загрузка всех проектов"""
-        for i in reversed(range(self.all_layout.count())):
-            widget = self.all_layout.itemAt(i).widget()
-            if widget:
-                widget.deleteLater()
-        
-        all_projects = project_manager.get_sorted_projects()
-        
-        for project in all_projects:
-            card = ModernProjectCard(project, self)
-            self.all_layout.addWidget(card)
-        
-        if not all_projects:
-            empty_label = QLabel("Проекты не найдены.\nСоздайте новый проект, чтобы начать работу.")
-            empty_label.setStyleSheet("color: #666666; font-size: 14px; text-align: center; padding: 40px;")
-            empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.all_layout.addWidget(empty_label)
-    
-    def update_empty_state(self):
-        """Обновление состояния пустого списка"""
-        if not getattr(self, 'recent_layout', None) or not getattr(self, 'recent_empty_label', None):
-            return
-        has_recent = self.recent_layout.count() > 0
-        self.recent_empty_label.setVisible(not has_recent)
+        self.select_card(None)
+        for card in self.cards:
+            self.all_layout.removeWidget(card)
+            card.hide()
+            card.deleteLater()
+        self.cards.clear()
 
+        for project in project_manager.get_sorted_projects():
+            card = ModernProjectCard(project, self)
+            self.all_layout.insertWidget(len(self.cards), card)
+            self.cards.append(card)
+
+        self.empty_projects.setText("Нет совпадений" if self.cards else "Нет сохранённых проектов")
+        self.filter_projects(self.search_edit.text())
     
     def filter_projects(self, text):
         """Фильтрация проектов по поисковому запросу"""
-        for i in range(self.all_layout.count()):
-            widget = self.all_layout.itemAt(i).widget()
-            if isinstance(widget, ModernProjectCard):
-                project_name = widget.project.get_display_name().lower()
-                matches = text.lower() in project_name
-                widget.setVisible(matches)
+        query = text.strip().casefold()
+        has_matches = False
+        for card in self.cards:
+            project_name = f"{card.project.get_display_name()} {card.project.root_path}".casefold()
+            matches = query in project_name
+            card.setVisible(matches)
+            has_matches = has_matches or matches
+            if not matches and card is self.selected_card:
+                self.select_card(None)
+        self.empty_projects.setVisible(not has_matches)
     
     def show_new_project_dialog(self):
         """Показать диалог создания нового проекта"""
@@ -527,18 +270,20 @@ class ProjectDialog(QDialog):
                 self.selected_project = dialog.created_project
                 self.accept()
                 return
-            self.load_recent_projects()
             self.load_all_projects()
     
     def quick_open_folder(self):
         """Быстрое открытие папки"""
-        folder = QFileDialog.getExistingDirectory(
-            self, 
-            "Выберите папку проекта",
-            "",
-            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontResolveSymlinks
-        )
-        
+        picker = QFileDialog(self, "Открыть папку")
+        picker.setOption(QFileDialog.Option.DontUseNativeDialog)
+        picker.setOption(QFileDialog.Option.ShowDirsOnly)
+        picker.setDirectory(str(Path(self.selected_project.root_path) if self.selected_project else Path.home()))
+        picker.setFileMode(QFileDialog.FileMode.Directory)
+        picker.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        picker.setLabelText(QFileDialog.DialogLabel.Accept, "Открыть")
+        picker.resize(740, 480)
+        folder = picker.selectedFiles()[0] if picker.exec() else ""
+
         if folder:
             folder = str(Path(folder).resolve())
             project = project_manager.open_project(folder)
@@ -571,8 +316,11 @@ class ProjectDialog(QDialog):
         dialog = ProjectConfigDialog(project, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             from widgets.ProjectManager import project_manager
-            project_manager.update_project_config(dialog.get_config())
-            self.load_recent_projects()
+            try:
+                project_manager.update_project_config(dialog.get_config())
+            except OSError as exc:
+                QMessageBox.warning(self, "Не удалось сохранить проект", str(exc))
+                return
             self.load_all_projects()
 
 class NewProjectDialog(QDialog):
@@ -973,11 +721,9 @@ class ProjectConfigDialog(QDialog):
             return self.command_combo.currentText()
     
     def get_config(self):
-        """Получение конфигурации проекта"""
-        self.project_config.name = self.name_edit.text().strip()
-        self.project_config.launch_command = self.get_launch_command()
-        self.project_config.description = self.description_edit.toPlainText().strip()
-        return self.project_config
+        return replace(self.project_config, name=self.name_edit.text().strip(),
+                       launch_command=self.get_launch_command(),
+                       description=self.description_edit.toPlainText().strip())
     
     def save_config(self):
         """Сохранение конфигурации"""

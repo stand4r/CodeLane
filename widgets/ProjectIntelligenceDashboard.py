@@ -1438,18 +1438,16 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         has_report = self._adversary_report is not None and bool(
             getattr(self._adversary_report, "failures", []))
         self.adversary_test_btn.setEnabled(bool(enabled and has_report))
-        self.adversary_export_btn.setEnabled(bool(enabled and has_report))
+        self.adversary_export_btn.setEnabled(enabled and self._adversary_report is not None)
         self.adversary_ai_btn.setEnabled(bool(enabled and has_report))
 
     def set_adversary_file(self, path: Optional[str]):
         """Point the «Испытания» tab at the file opened in the editor."""
-        self._adversary_path = str(path) if path else None
+        if self._adversary_thread is not None:
+            return
+        self._set_adversary_path(str(path) if path else None)
         if path:
-            self.adversary_file_label.setText(Path(str(path)).name)
-            self.adversary_file_label.setToolTip(str(path))
             self.tabs.setCurrentWidget(self.adversary_scroll)
-        else:
-            self.adversary_file_label.setText('Файл не выбран')
 
     def _current_editor_path(self) -> Optional[str]:
         """Path of the file open in the editor, if any."""
@@ -1471,25 +1469,24 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         pressing «Испытать» only produced a "open a file first" warning even
         with a file open right next to it.
         """
-        if self._adversary_thread is not None and self._adversary_thread.isRunning():
-            return self._adversary_path
-        current = self._current_editor_path()
-        if not current:
-            return self._adversary_path
-        if current != self._adversary_path:
-            self._adversary_path = current
+        if self._adversary_thread is None:
+            self._set_adversary_path(self._current_editor_path())
+        return self._adversary_path
+
+    def _set_adversary_path(self, path):
+        if path != self._adversary_path:
+            self._adversary_path = path
             # Results belong to the previous file: drop them instead of
             # showing them next to a different file name.
             self._adversary_report = None
             self.adversary_tree.clear()
             self._set_adversary_buttons(False)
             self.adversary_summary.setText(
-                'Нажмите «Испытать», чтобы проверить этот файл.')
+                'Нажмите «Испытать», чтобы проверить этот файл.' if path else '')
             self.adversary_summary.setStyleSheet(
                 f'color: {Palette.TEXT_MUTED}; font-size: 12px;')
-        self.adversary_file_label.setText(Path(current).name)
-        self.adversary_file_label.setToolTip(current)
-        return self._adversary_path
+        self.adversary_file_label.setText(Path(path).name if path else 'Файл не выбран')
+        self.adversary_file_label.setToolTip(path or '')
 
     def _on_tab_changed(self, index: int):
         page = self.tabs.widget(index)
@@ -1497,7 +1494,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             self._sync_adversary_file()
 
     def _run_adversary(self):
-        if self._adversary_thread is not None and self._adversary_thread.isRunning():
+        if self._adversary_thread is not None:
             return
         if not self._sync_adversary_file():
             CustomDialog("Сначала откройте файл, который нужно испытать.").exec()
@@ -1521,14 +1518,22 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         thread.started.connect(worker.run)
         worker.finished.connect(self._on_adversary_finished)
         worker.finished.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._on_adversary_thread_finished)
         thread.finished.connect(thread.deleteLater)
         self._adversary_thread = thread
         self._adversary_worker = worker
         thread.start()
 
+    @QtCore.pyqtSlot()
+    def _on_adversary_thread_finished(self):
+        self._adversary_thread = None
+        self._adversary_worker = None
+        self.adversary_btn.setEnabled(True)
+
+    @QtCore.pyqtSlot(object)
     def _on_adversary_finished(self, report):
         self.adversary_progress.hide()
-        self.adversary_btn.setEnabled(True)
         self._adversary_report = report
         if report is None:
             self.adversary_summary.setText('Испытание не удалось.')
@@ -1617,6 +1622,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             return
         prompt = (
             "«Адвокат дьявола» нашёл падение:\n"
+            f"Файл: {self._adversary_report.module_path}:{finding.line or 1}\n"
             f"Функция: {finding.function}({finding.args_literal})\n"
             f"Ошибка: {finding.summary}\n\n"
             "Объясни причину и предложи минимальное исправление.")
@@ -1694,6 +1700,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         # Invalidate any analysis still running for the previous project: its
         # result must never be painted for the newly opened one.
         self._analysis_generation += 1
+        self._refresh_pending = False
         self._relative_root = None
         self.engine = ProjectIntelligenceEngine(root, self.enabled_analyzers) if root else None
         self._worker_engine = None
@@ -1724,7 +1731,10 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
                 pass
         else:
             self.status.setText(f'Анализ: {Path(root).name}…')
-            self.refresh()
+            if self._thread is not None:
+                self._refresh_pending = True
+            else:
+                self.refresh()
 
     def _clear_views(self):
         for label in self.metric_widgets.values():
@@ -1757,11 +1767,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
                 self.set_project(None)
                 return
 
-        if self._thread is not None and self._thread.isRunning():
-            # A different project was opened while the previous analysis was
-            # still running: remember the request and start it once the
-            # current thread finishes instead of silently showing stale data.
-            self._refresh_pending = True
+        if self._thread is not None or not self.enabled_analyzers:
             return
 
         root = str(self.engine.root)
@@ -1793,8 +1799,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
         thread.finished.connect(self._analysis_thread_finished)
+        thread.finished.connect(thread.deleteLater)
         thread.start()
 
     def _is_stale(self, generation) -> bool:
@@ -1823,7 +1829,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             if getattr(self, "_refresh_pending", False) and self.engine:
                 # A newer project was requested while this analysis was running.
                 self._refresh_pending = False
-                QtCore.QTimer.singleShot(0, self.refresh)
+                generation = self._analysis_generation
+                QtCore.QTimer.singleShot(0, lambda: None if self._is_stale(generation) else self.refresh())
 
     def shutdown(self):
         """Stop background threads before the window is destroyed.

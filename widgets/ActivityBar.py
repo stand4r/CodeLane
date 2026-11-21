@@ -71,7 +71,6 @@ class ActivityBar(QtWidgets.QFrame):
         ("search", "search", "Поиск (Ctrl+Shift+F)"),
         ("git", "source-control", "Управление версиями"),
         ("todo", "circle-check", "Задачи проекта (Ctrl+Shift+T)"),
-        ("run", "run", "Запуск и отладка"),
         ("intelligence", "intelligence", "Анализ проекта"),
         ("ai", "ai-agent", "ИИ-агент (Ctrl+Shift+I)"),
     ]
@@ -274,6 +273,9 @@ class ActivityBar(QtWidgets.QFrame):
             self.terminal_requested.emit()
 
     def _activate_or_toggle(self, key):
+        if key == "ai":
+            self.activity_changed.emit(key)
+            return
         if self.active_sidebar_key == key:
             self.set_sidebar_active(None)
             self.activity_changed.emit("toggle_sidebar")
@@ -298,7 +300,9 @@ class ActivityBar(QtWidgets.QFrame):
     def set_activity(self, key):
         if key in self.buttons and self.buttons[key].isHidden():
             return
-        if key == "settings":
+        if key == "ai":
+            self.activity_changed.emit(key)
+        elif key == "settings":
             self._activate_special("settings")
         elif key == "terminal":
             self._activate_special("terminal")

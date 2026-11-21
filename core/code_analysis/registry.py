@@ -39,6 +39,15 @@ class LanguageSpec:
     install_hint: str = ""
     shebang_patterns: Tuple[str, ...] = ()
     filename_patterns: Tuple[str, ...] = ()
+    lsp_document_id: str = ""
+    fallback_symbols: Tuple[Tuple[str, str], ...] = ()
+
+    def document_id(self, path: str) -> str:
+        aliases = {"javascript": {".jsx": "javascriptreact"},
+                   "typescript": {".tsx": "typescriptreact"},
+                   "ocaml": {".mli": "ocaml.interface"},
+                   "json": {".jsonc": "jsonc"}}
+        return aliases.get(self.id, {}).get(Path(path).suffix.lower(), self.lsp_document_id or self.id)
 
 
 class LanguageRegistry:
@@ -108,19 +117,19 @@ class LanguageRegistry:
         if configured_path and str(configured_path).strip():
             candidate = Path(str(configured_path).strip().strip('"')).expanduser()
             if candidate.is_file():
-                return str(candidate.resolve()), list(spec.lsp_args)
+                return str(candidate.resolve()), self._server_args(spec, candidate.name)
             which_p = shutil.which(str(candidate))
             if which_p:
-                return str(Path(which_p).resolve()), list(spec.lsp_args)
+                return str(Path(which_p).resolve()), self._server_args(spec, Path(which_p).name)
             # Explicit path from settings has highest priority
-            return str(candidate), list(spec.lsp_args)
+            return str(candidate), self._server_args(spec, candidate.name)
 
         # 2. Candidate commands across PATH and common environments
         for cmd in spec.lsp_candidates:
             # Check PATH
             which_p = shutil.which(cmd)
             if which_p:
-                return str(Path(which_p).resolve()), list(spec.lsp_args)
+                return str(Path(which_p).resolve()), self._server_args(spec, cmd)
 
             # On Windows check npm roaming, local python scripts, go bin, cargo bin
             home = Path.home()
@@ -131,7 +140,7 @@ class LanguageRegistry:
                 # Python scripts
                 Path(sys.executable).parent / "Scripts" / f"{cmd}.exe",
                 Path(sys.executable).parent / "Scripts" / cmd,
-                Path(local_app) / "Python" / "pythoncore-3.14-64" / "Scripts" / f"{cmd}.exe",
+                Path(local_app) / "Python" / f"pythoncore-{sys.version_info.major}.{sys.version_info.minor}-64" / "Scripts" / f"{cmd}.exe",
                 # Node / npm global
                 Path(roaming) / "npm" / f"{cmd}.cmd",
                 Path(roaming) / "npm" / f"{cmd}.ps1",
@@ -149,9 +158,15 @@ class LanguageRegistry:
 
             for p in possible_paths:
                 if p.is_file():
-                    return str(p.resolve()), list(spec.lsp_args)
+                    return str(p.resolve()), self._server_args(spec, cmd)
 
         return None, []
+
+    @staticmethod
+    def _server_args(spec, name):
+        command = Path(name).stem.lower()
+        overrides = {"pyright-langserver": ["--stdio"], "deno": ["lsp"]}
+        return list(overrides.get(command, spec.lsp_args))
 
     def all_specs(self) -> List[LanguageSpec]:
         return list(self._specs.values())
@@ -172,7 +187,7 @@ class LanguageRegistry:
                 "import_from_statement": "import",
                 "call": "call",
             },
-            lsp_candidates=["pylsp", "pyright-langserver", "pyright", "jedi-language-server"],
+            lsp_candidates=["pylsp", "pyright-langserver", "jedi-language-server"],
             lsp_args=[],
             toolchain_key="python",
             install_hint="Установите python-lsp-server (`pip install python-lsp-server`) или pyright (`npm i -g pyright`).",
@@ -287,6 +302,7 @@ class LanguageRegistry:
             lsp_candidates=["csharp-ls", "OmniSharp", "omnisharp"],
             lsp_args=[],
             toolchain_key="csharp",
+            lsp_document_id="csharp",
             install_hint="Установите csharp-ls (`dotnet tool install -g csharp-ls`) или OmniSharp.",
         ))
 
@@ -365,6 +381,37 @@ class LanguageRegistry:
             toolchain_key="json",
             install_hint="",
         ))
+        profiles = (
+            ("lua", "Lua", (".lua",), "lua-language-server", (), "LuaLS", ("lua",), (),
+             r"\bfunction\s+([A-Za-z_]\w*(?:[.:]\w+)*)"),
+            ("perl", "Perl", (".pl", ".pm", ".t"), "perlnavigator", ("--stdio",), "Perl Navigator", ("perl",), (),
+             r"^\s*sub\s+([A-Za-z_]\w*)"),
+            ("ocaml", "OCaml", (".ml", ".mli"), "ocamllsp", (), "OCaml LSP Server", (), (),
+             r"^\s*(?:let\s+(?:rec\s+)?|val\s+)([a-z_]\w*)"),
+            ("nim", "Nim", (".nim", ".nims", ".nimble"), "nimlangserver", (), "Nim Language Server", (), (),
+             r"^\s*(?:proc|func|iterator|template|macro)\s+([A-Za-z_]\w*)"),
+            ("clojure", "Clojure", (".clj", ".cljs", ".cljc", ".edn"), "clojure-lsp", ("listen",), "Clojure LSP", (), (),
+             r"\(\s*(?:defn-?|defmacro)\s+([^\s\[\](){}]+)"),
+            ("bash", "Bash", (".sh", ".bash", ".zsh"), "bash-language-server", ("start",), "Bash Language Server",
+             ("bash", "zsh"), (".bashrc", ".bash_profile", ".zshrc"), r"^\s*(?:function\s+)?([A-Za-z_]\w*)\s*\(\s*\)"),
+            ("ruby", "Ruby", (".rb", ".rake", ".gemspec"), "ruby-lsp", (), "Ruby LSP",
+             ("ruby",), ("Gemfile", "Rakefile"), r"^\s*def\s+([A-Za-z_]\w*[!?=]?)"),
+            ("php", "PHP", (".php",), "phpactor", ("language-server",), "Phpactor", ("php",), (), ""),
+            ("html", "HTML", (".html", ".htm"), "vscode-html-language-server", ("--stdio",),
+             "vscode-langservers-extracted", (), (), ""),
+            ("css", "CSS", (".css",), "vscode-css-language-server", ("--stdio",),
+             "vscode-langservers-extracted", (), (), ""),
+            ("yaml", "YAML", (".yaml", ".yml"), "yaml-language-server", ("--stdio",),
+             "Red Hat YAML Language Server", (), (), ""),
+        )
+        for lang, label, extensions, executable, args, install, shebang, filenames, fallback in profiles:
+            self.register(LanguageSpec(
+                lang, label, extensions, f"tree_sitter_{lang}",
+                lsp_candidates=[executable], lsp_args=list(args), install_hint=f"Установите {install}.",
+                shebang_patterns=shebang, filename_patterns=filenames,
+                lsp_document_id="shellscript" if lang == "bash" else "",
+                fallback_symbols=((fallback, "function"),) if fallback else (),
+            ))
 
 
 _GLOBAL_REGISTRY: Optional[LanguageRegistry] = None

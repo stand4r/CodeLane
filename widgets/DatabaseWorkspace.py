@@ -10,6 +10,7 @@ from core.database_workspace import (
     project_connection_password, read_binding, read_connection_file, read_profiles,
     save_binding, save_profiles, write_connection_file,
 )
+from core.file_snapshot import snapshot_bytes, snapshot_file, write_if_unchanged
 from services.background import run_async
 
 
@@ -321,7 +322,7 @@ class DatabaseManager(QtCore.QObject):
             if widget.working and widget.session is not None:
                 widget.status.setText("Операция уже выполняется…")
             else:
-                widget.load_sql(source)
+                widget.load_sql(source, source_path)
             return True
         tabs = [tab for tab in self._open_tabs() if tab[2].session is not None]
         if self.bound:
@@ -335,7 +336,7 @@ class DatabaseManager(QtCore.QObject):
         if widget.working:
             widget.status.setText("Операция уже выполняется…")
         else:
-            widget.load_sql(source)
+            widget.load_sql(source, source_path)
         return True
 
 
@@ -352,34 +353,46 @@ class DatabaseWorkbench(QtWidgets.QWidget):
         self.session = None
         self.profile = None
         self.working = False
+        self._sql_source_path = None
+        self._sql_path = None
+        self._sql_snapshot = None
         self.table = None
         self.offset = 0
         self.primary = ()
         self.more_rows = False
         self.setProperty("pyscribeSpecial", "database")
+        self.setObjectName("databaseWorkbench")
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(8)
         toolbar = QtWidgets.QHBoxLayout()
+        toolbar.setSpacing(8)
         self.connection = QtWidgets.QLabel("Database")
         self.connection.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.connection.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         toolbar.addWidget(self.connection, 1)
         if connection_path:
             button(toolbar, "Подключить", self.connect_server)
             button(toolbar, "Отключить", self.disconnect_server)
             button(toolbar, "Изменить", self.edit_server_profile)
-        button(toolbar, "Привязать к проекту", self.bind)
+        layout.addLayout(toolbar)
+        binding_tools = QtWidgets.QHBoxLayout()
+        binding_tools.setSpacing(8)
+        button(binding_tools, "Привязать к проекту", self.bind)
         self.runtime = QtWidgets.QCheckBox("DATABASE_URL при запуске")
         self.runtime.setToolTip("Передаёт параметры и пароль только запускаемому коду этого проекта")
         self.runtime.toggled.connect(self._set_runtime)
         self.panel.runtime_changed.connect(self._sync_runtime)
-        toolbar.addWidget(self.runtime)
-        layout.addLayout(toolbar)
+        binding_tools.addWidget(self.runtime)
+        binding_tools.addStretch(1)
+        layout.addLayout(binding_tools)
         body = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         layout.addWidget(body, 1)
         explorer = QtWidgets.QWidget()
         column = QtWidgets.QVBoxLayout(explorer)
         column.setContentsMargins(0, 0, 6, 0)
+        column.setSpacing(8)
         self.schemas = QtWidgets.QComboBox()
         self.schemas.currentIndexChanged.connect(self.refresh_tables)
         column.addWidget(self.schemas)
@@ -394,7 +407,10 @@ class DatabaseWorkbench(QtWidgets.QWidget):
         self.objects.customContextMenuRequested.connect(self._object_menu)
         column.addWidget(self.objects, 1)
         object_actions = QtWidgets.QHBoxLayout()
-        button(object_actions, "Обновить", self.refresh_catalog)
+        object_actions.setSpacing(6)
+        refresh = button(object_actions, "↻", self.refresh_catalog)
+        refresh.setToolTip("Обновить схемы и таблицы")
+        refresh.setAccessibleName("Обновить схемы и таблицы")
         button(object_actions, "+ Таблица", self.create_table)
         button(object_actions, "DDL…", self._templates)
         column.addLayout(object_actions)
@@ -403,18 +419,27 @@ class DatabaseWorkbench(QtWidgets.QWidget):
         self.pages = QtWidgets.QTabWidget()
         body.addWidget(self.pages)
         body.setStretchFactor(1, 1)
-        body.setSizes([230, 760])
+        body.setSizes([180, 760])
 
         page = QtWidgets.QWidget()
         sql_layout = QtWidgets.QVBoxLayout(page)
         tools = QtWidgets.QHBoxLayout()
+        tools.setSpacing(8)
         self.run_button = button(tools, "Выполнить", self.run_sql)
         self.run_button.setToolTip("Ctrl+Enter")
         button(tools, "EXPLAIN", lambda: self.run_sql(plan=True))
-        button(tools, "Сохранить SQL…", self.save_sql)
-        self.autocommit = QtWidgets.QCheckBox("Autocommit")
+        query_options = QtWidgets.QToolButton()
+        query_options.setText("…")
+        query_options.setAccessibleName("Параметры SQL")
+        query_options.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        options = QtWidgets.QMenu(query_options)
+        options.addAction("Сохранить SQL", self.save_sql)
+        options.addAction("Сохранить SQL как…", lambda: self.save_sql(choose_path=True))
+        self.autocommit = options.addAction("Autocommit")
+        self.autocommit.setCheckable(True)
         self.autocommit.setToolTip("Для команд вне транзакции, например CREATE DATABASE и VACUUM")
-        tools.addWidget(self.autocommit)
+        query_options.setMenu(options)
+        tools.addWidget(query_options)
         tools.addStretch(1)
         sql_layout.addLayout(tools)
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
@@ -437,6 +462,7 @@ class DatabaseWorkbench(QtWidgets.QWidget):
         self.result_selector.currentIndexChanged.connect(self._show_selected_result)
         self.result_selector.hide()
         result_tools = QtWidgets.QHBoxLayout()
+        result_tools.setSpacing(8)
         result_tools.addWidget(self.result_selector)
         result_tools.addStretch(1)
         self.csv_button = button(result_tools, "CSV…", self.export_csv)
@@ -456,13 +482,20 @@ class DatabaseWorkbench(QtWidgets.QWidget):
         page = QtWidgets.QWidget()
         data = QtWidgets.QVBoxLayout(page)
         row = QtWidgets.QHBoxLayout()
+        row.setSpacing(8)
         self.prev = button(row, "‹", lambda: self._page(-1))
         self.next = button(row, "›", lambda: self._page(1))
         self.page_label = QtWidgets.QLabel()
         row.addWidget(self.page_label, 1)
-        self.add_row = button(row, "+ Строка", lambda: self.change_row("insert"))
-        self.edit_cell = button(row, "Изменить ячейку", lambda: self.change_row("update"))
-        self.delete_row = button(row, "Удалить строку", lambda: self.change_row("delete"))
+        row_actions = QtWidgets.QToolButton()
+        row_actions.setText("Строка…")
+        row_actions.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        row_menu = QtWidgets.QMenu(row_actions)
+        self.add_row = row_menu.addAction("Добавить строку", lambda: self.change_row("insert"))
+        self.edit_cell = row_menu.addAction("Изменить ячейку", lambda: self.change_row("update"))
+        self.delete_row = row_menu.addAction("Удалить строку", lambda: self.change_row("delete"))
+        row_actions.setMenu(row_menu)
+        row.addWidget(row_actions)
         data.addLayout(row)
         self.records, self.record_model = self._grid()
         self.records.doubleClicked.connect(lambda _: self.change_row("update"))
@@ -483,6 +516,7 @@ class DatabaseWorkbench(QtWidgets.QWidget):
         model = ResultModel(view)
         view.setModel(model)
         view.setAlternatingRowColors(True)
+        view.setShowGrid(False)
         view.setSortingEnabled(False)
         view.horizontalHeader().setStretchLastSection(True)
         return view, model
@@ -889,16 +923,25 @@ class DatabaseWorkbench(QtWidgets.QWidget):
         with QtCore.QSignalBlocker(self.runtime):
             self.runtime.setChecked(self.profile is not None and self.panel.runtime_profile == self.profile)
 
-    def load_sql(self, source):
-        if source != self.sql.toPlainText() and not self.confirm_close():
-            return False
-        self.sql.setPlainText(source)
+    def load_sql(self, source, source_path=None):
+        source = source.replace("\r\n", "\n").replace("\r", "\n")
+        source_path = Path(source_path) if source_path else None
+        if source_path != self._sql_source_path or source != self.sql.toPlainText():
+            if self.sql.document().isModified() and not self.confirm_close():
+                return False
+            self.sql.setPlainText(source)
+            self._sql_source_path = source_path
+            self._sql_path = None
+            self._sql_snapshot = None
         self.pages.setCurrentIndex(0)
         self.sql.setFocus()
         return True
 
     def confirm_close(self):
-        if not self.sql.document().isModified() or not self.sql.toPlainText().strip():
+        if self.working:
+            self.status.setText("Дождитесь завершения операции перед закрытием вкладки.")
+            return False
+        if not self.sql.document().isModified():
             return True
         buttons = QtWidgets.QMessageBox.StandardButton
         answer = QtWidgets.QMessageBox.question(self, "SQL", "Сохранить изменения в SQL?",
@@ -907,16 +950,28 @@ class DatabaseWorkbench(QtWidgets.QWidget):
             return self.save_sql()
         return answer == buttons.No
 
-    def save_sql(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Сохранить SQL", str(self.panel.root or ""), "SQL (*.sql);;Все файлы (*)"
-        )
-        if not path:
+    def save_sql(self, *, choose_path=False):
+        path = self._sql_path
+        if choose_path or path is None:
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Сохранить SQL", str(path or self.panel.root or ""), "SQL (*.sql);;Все файлы (*)"
+            )
+            if not filename:
+                return False
+            path = Path(filename)
+        payload = self.sql.toPlainText().encode("utf-8")
+        try:
+            path = path.resolve()
+            expected = self._sql_snapshot if path == self._sql_path else snapshot_file(path)
+            write_if_unchanged(path, payload, expected)
+        except OSError as exc:
+            self.status.setText(f"{exc} Выберите «Сохранить SQL как…», чтобы записать черновик в другой файл.")
             return False
-        saved = self._save_bytes(path, self.sql.toPlainText().encode("utf-8"))
-        if saved:
-            self.sql.document().setModified(False)
-        return saved
+        self._sql_path = path
+        self._sql_snapshot = snapshot_bytes(payload)
+        self.status.setText(path.name)
+        self.sql.document().setModified(False)
+        return True
 
     def _save_bytes(self, path, payload):
         target = QtCore.QSaveFile(path)

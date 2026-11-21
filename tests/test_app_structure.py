@@ -127,6 +127,7 @@ def test_console_widget_problems_export():
     app = QApplication.instance() or QApplication([])
     from widgets.ConsoleWidget import ConsoleWidget
     cw = ConsoleWidget()
+    assert "Вывод" not in [cw.tab_widget.tabText(i) for i in range(cw.tab_widget.count())]
 
     # Add sample problems
     cw.add_problem("error", "main.py", 42, "SyntaxError: invalid syntax")
@@ -157,6 +158,59 @@ def test_project_intelligence_tips_export():
     assert hasattr(pid, "_collect_tips_data")
     assert hasattr(pid, "copy_tips_btn")
     assert hasattr(pid, "save_tips_btn")
+
+
+def test_autosave_and_cancelled_bulk_close_keep_all_tabs():
+    from types import SimpleNamespace
+    from app.main_window import ModernMainWindow
+
+    files = [SimpleNamespace(property=lambda _: None) for _ in range(3)]
+    group = SimpleNamespace(count=lambda: len(files), widget=files.__getitem__)
+    saved, removed, checked = [], [], []
+
+    def confirm(index, widget):
+        checked.append(index)
+        return index != 1
+
+    window = SimpleNamespace(
+        active_tab_widget=group, editor_groups=lambda: [group],
+        _save_modified_tab=lambda group, index: saved.append(index) or True,
+        recalculate_unsaved_count=lambda: None, _confirm_tab_close=confirm,
+        _remove_editor_tab=lambda index, editor: removed.append(index),
+    )
+    ModernMainWindow.auto_save(window)
+    assert saved == [0, 1, 2]
+    assert not ModernMainWindow.close_all_editor_tabs(window)
+    assert checked == [2, 1] and not removed
+
+
+def test_failed_save_keeps_editor_open():
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QMessageBox
+    from app.main_window import ModernMainWindow
+
+    messages = []
+    window = SimpleNamespace(
+        has_unsaved_changes=lambda _: True,
+        ask_save_before_close=lambda: QMessageBox.StandardButton.Yes,
+        status_bar=SimpleNamespace(showMessage=messages.append),
+    )
+    tab = SimpleNamespace(property=lambda _: None, save_file=lambda: False)
+    assert not ModernMainWindow._confirm_tab_close(window, 0, tab)
+    assert messages
+
+
+def test_file_manager_decodes_utf16_bom_and_legacy_cyrillic(tmp_path):
+    from app.file_manager import FileManager
+
+    text = "Тест"
+    utf16 = tmp_path / "utf16.txt"
+    utf16.write_bytes(text.encode("utf-16"))
+    assert not FileManager.__new__(FileManager)._is_binary_file(utf16, ".txt")
+    assert FileManager._read_text(utf16)[0] == text
+    legacy = tmp_path / "legacy.txt"
+    legacy.write_bytes(text.encode("cp1251"))
+    assert FileManager._read_text(legacy)[0] == text
 
 
 def test_project_handler_normalize_root():

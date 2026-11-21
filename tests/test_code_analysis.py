@@ -318,6 +318,36 @@ def test_language_registry_settings_override():
     assert exe_override == custom_path
 
 
+def test_new_language_servers_and_local_outline(monkeypatch, temp_project_dir):
+    from core.code_analysis.syntax_treesitter import TreeSitterEngine
+    from core.code_analysis import registry as registry_module
+
+    registry = LanguageRegistry()
+    expected = {
+        "main.lua": ("lua-language-server", [], "lua", "function demo() end"),
+        "main.pm": ("perlnavigator", ["--stdio"], "perl", "sub demo { 1; }"),
+        "main.mli": ("ocamllsp", [], "ocaml.interface", "val demo : int"),
+        "main.nim": ("nimlangserver", [], "nim", "proc demo(): int = 1"),
+        "main.cljs": ("clojure-lsp", ["listen"], "clojure", "(defn demo [] 1)"),
+        "main.sh": ("bash-language-server", ["start"], "shellscript", "demo() { :; }"),
+        "main.rb": ("ruby-lsp", [], "ruby", "def demo; end"),
+        "main.php": ("phpactor", ["language-server"], "php", "<?php function demo() {}"),
+        "main.htm": ("vscode-html-language-server", ["--stdio"], "html", None),
+        "main.css": ("vscode-css-language-server", ["--stdio"], "css", None),
+        "main.yml": ("yaml-language-server", ["--stdio"], "yaml", None),
+    }
+    engine = TreeSitterEngine()
+    for filename, (server, args, language_id, source) in expected.items():
+        path = str(temp_project_dir / filename)
+        spec = registry.get_by_path(path)
+        fake = str(temp_project_dir / f"{server}.exe")
+        monkeypatch.setattr(registry_module.shutil, "which", lambda name: fake if name == server else None)
+        assert registry.resolve_lsp_server(spec) == (fake, args)
+        assert spec.document_id(path) == language_id
+        if source:
+            assert any(symbol.name == "demo" for symbol in engine._fallback_parse(source, spec.id, path).symbols)
+
+
 def test_language_status_and_install_hints(temp_project_dir):
     service = UnifiedCodeAnalysisService(str(temp_project_dir))
     rs_file = str(temp_project_dir / "main.rs")

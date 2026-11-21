@@ -49,9 +49,17 @@ class ProjectHandler:
             project_config.analyzers = dialog.selected_analyzers
         try:
             from widgets.ProjectManager import project_manager
-            project_manager.update_project_config(project_config)
-        except Exception:
-            pass
+            if isinstance(project_config, dict):
+                sync_project_config(project_config, self._normalize_root(project_config), save=True)
+            else:
+                project_manager.update_project_config(project_config)
+        except OSError as exc:
+            if isinstance(project_config, dict):
+                project_config["analyzers"] = current
+            else:
+                project_config.analyzers = current
+            QMessageBox.warning(self.main_window, "Не удалось сохранить анализаторы", str(exc))
+            return current
         return dialog.selected_analyzers
 
     def _normalize_root(self, project_config) -> str:
@@ -90,6 +98,8 @@ class ProjectHandler:
                 analyzers = ['structure', 'dependencies', 'health']
 
         if self.main_window.close_all_editor_tabs() is False:
+            from widgets.ProjectManager import project_manager
+            project_manager.current_project = self.main_window.current_project
             return
         self.main_window.close_special_tab('welcome')
         self.main_window.close_special_tab('settings')
@@ -102,7 +112,11 @@ class ProjectHandler:
         # whole project on the UI thread (that froze the window on big trees).
         # Even the file-list walk is deferred: it scans thousands of paths and
         # used to hold the GUI thread while the project view was appearing.
-        QtCore.QTimer.singleShot(30, lambda: self._start_index(norm_root))
+        def start_index():
+            if self.main_window.current_project is project_config:
+                self._start_index(norm_root)
+
+        QtCore.QTimer.singleShot(30, start_index)
         name = getattr(project_config, "name", Path(norm_root).name)
         self.main_window._analysis_failed = False
         if analyze:
@@ -144,7 +158,7 @@ class ProjectHandler:
 
         self._restore_project_session_files(norm_root, project_config)
         self.main_window._update_project_menu()
-        self.main_window.run_panel.refresh()
+        self.main_window.refresh_editor_run_controls()
         self.main_window.status_bar.showMessage(f'Проект открыт: {name} · рабочая область')
         self.main_window.update_analysis_panels()
         self._sync_ai_context()
@@ -190,9 +204,15 @@ class ProjectHandler:
         try:
             index.prepare_root(norm_root)
             from services.background import run_async
+            project = self.main_window.current_project
+
+            def index_ready(files):
+                if self.main_window.current_project is project:
+                    self._on_index_files_scanned(files)
+
             run_async(
                 index.scan_source_files,
-                on_done=self._on_index_files_scanned,
+                on_done=index_ready,
                 on_error=lambda message: logger.warning(
                     "Не удалось просканировать проект для индекса: %s", message),
             )

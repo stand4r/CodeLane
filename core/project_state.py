@@ -53,11 +53,11 @@ def sync_project_config(config, root: str, *, save: bool = False) -> None:
         value = config.get(key) if isinstance(config, dict) else getattr(config, key, None)
         if _valid_option(key, value):
             options[key] = value
+    if save:
+        write_json(project_state_file(root, "project.json"), options)
+        return
     target = project_state_file(root, "project.json", default=options)
     try:
-        if save:
-            write_json(target, options)
-            return
         data = json.loads(target.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             for key in options:

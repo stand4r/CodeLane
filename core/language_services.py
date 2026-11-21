@@ -52,6 +52,11 @@ class Language(Enum):
     OBJECTIVE_CPP = "mm"
     FSHARP = "fs"
     R = "r"
+    LUA = "lua"
+    PERL = "pl"
+    OCAML = "ml"
+    NIM = "nim"
+    CLOJURE = "clj"
     PLAINTEXT = "txt"
 
 
@@ -119,7 +124,7 @@ class PythonLanguageProvider(LanguageProvider):
         
         return LanguageConfig(
             name="Python",
-            extensions=["py", "pyw"],
+            extensions=["py", "pyw", "pyi"],
             keywords=keywords,
             syntax_rules=syntax_rules,
             line_comment="#",
@@ -249,7 +254,7 @@ class JavaScriptLanguageProvider(LanguageProvider):
         
         return LanguageConfig(
             name="JavaScript",
-            extensions=["js", "jsx"],
+            extensions=["js", "mjs", "cjs"],
             keywords=keywords,
             syntax_rules=syntax_rules
         )
@@ -379,7 +384,7 @@ class GenericLanguageProvider(LanguageProvider):
         "cpp": "class struct namespace template typename public private protected const static void int long float double char auto return if else for while include using",
         "c": "struct typedef enum static const void int long float double char return if else for while include",
         "go": "package import func type struct interface map chan go defer select switch case default return if else for range var const",
-        "rust": "fn let mut pub impl trait struct enum mod use crate self match if else for while loop return const static",
+        "rs": "fn let mut pub impl trait struct enum mod use crate self match if else for while loop return const static",
         "php": "class function public private protected static namespace use echo return if else foreach while",
         "rb": "class module def end require include attr_reader attr_accessor if else elsif unless while until do",
         "kt": "class object fun val var private public internal package import if else when for while return",
@@ -406,7 +411,29 @@ class GenericLanguageProvider(LanguageProvider):
         "m": "interface implementation protocol property method return class import",
         "mm": "interface implementation protocol property method return class import",
         "fs": "let type module namespace open member match with function if then else for while",
-        "r": "function if else for while repeat library require return"
+        "r": "function if else for while repeat library require return",
+        "lua": "local function end return if then elseif else for while repeat until do in and or not nil true false",
+        "pl": "use no package sub my our state local if elsif else unless for foreach while until return die print require",
+        "ml": "let rec and in fun function match with type module struct sig end open include val exception mutable if then else",
+        "nim": "proc func iterator template macro type object var let const import from include if elif else when for while return discard",
+        "clj": "ns def defn defmacro fn let loop recur if do quote require import try catch throw",
+    }
+    COMMENTS = {
+        "rb": "#", "sh": "#", "yaml": "#", "dockerfile": "#", "pl": "#",
+        "nim": "#", "jl": "#", "ex": "#", "r": "#", "lua": "--", "hs": "--",
+        "erl": "%", "clj": ";", "ml": "", "xml": "", "md": "",
+    }
+    BLOCKS = {
+        "lua": ("--[[", "]]"), "ml": ("(*", "*)"), "nim": ("#[", "]#"),
+        "jl": ("#=", "=#"), "hs": ("{-", "-}"), "xml": ("<!--", "-->"),
+        "md": ("<!--", "-->"),
+    }
+    EXTENSIONS = {
+        "cpp": ["cpp", "cc", "cxx", "hpp", "hh", "hxx"], "c": ["c", "h"],
+        "kt": ["kt", "kts"], "sh": ["sh", "bash", "zsh"], "yaml": ["yaml", "yml"],
+        "md": ["md", "markdown"], "ex": ["ex", "exs"], "erl": ["erl", "hrl"],
+        "hs": ["hs", "lhs"], "fs": ["fs", "fsx", "fsi"], "pl": ["pl", "pm", "t"],
+        "ml": ["ml", "mli"], "nim": ["nim", "nims", "nimble"], "clj": ["clj", "cljs", "cljc", "edn"],
     }
 
     def __init__(self, language):
@@ -436,7 +463,18 @@ class GenericLanguageProvider(LanguageProvider):
             SyntaxRule(r"'(?:\\.|[^'\\])*'", "#CE9178"),
             SyntaxRule(r'\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b', "#B5CEA8"),
         ])
-        return LanguageConfig(name=ext.upper(), extensions=[ext], keywords=words, syntax_rules=rules, auto_indent=True, brace_auto_close=ext not in ("md", "yaml"))
+        if ext == "xml":
+            rules.append(SyntaxRule(r"</?[A-Za-z_:][\w:.-]*", "#569CD6"))
+        if ext == "md":
+            rules.extend([SyntaxRule(r"^\s{0,3}#{1,6}\s+.*", "#569CD6"),
+                          SyntaxRule(r"\[[^\]]+\]\([^\)]+\)", "#4EC9B0")])
+        if ext == "yaml":
+            rules.append(SyntaxRule(r"^\s*(?:-\s+)?[A-Za-z_][\w.-]*(?=\s*:)", "#9CDCFE"))
+        line_comment = self.COMMENTS.get(ext, "//")
+        block = self.BLOCKS.get(ext, ("", "") if ext in self.COMMENTS else ("/*", "*/"))
+        return LanguageConfig(name=ext.upper(), extensions=self.EXTENSIONS.get(ext, [ext]), keywords=words,
+                              syntax_rules=rules, brace_auto_close=ext not in ("md", "yaml"),
+                              line_comment=line_comment, block_comment_start=block[0], block_comment_end=block[1])
 
     def analyze_code(self, code, analyzer):
         patterns = [
@@ -462,6 +500,14 @@ class LanguageProviderFactory:
     
     _providers: Dict[str, LanguageProvider] = {}
     _extension_map: Dict[str, str] = {}
+    _filename_map = {"dockerfile": "dockerfile", "containerfile": "dockerfile",
+                     "gemfile": "rb", "rakefile": "rb", ".bashrc": "sh",
+                     ".bash_profile": "sh", ".zshrc": "sh"}
+
+    @classmethod
+    def language_for_path(cls, path):
+        path = Path(path)
+        return cls._filename_map.get(path.name.lower()) or cls._extension_map.get(path.suffix.lower().lstrip("."))
     
     @classmethod
     def register_provider(cls, language: Language, provider: LanguageProvider):
@@ -520,6 +566,8 @@ LanguageProviderFactory.register_provider(Language.JSON, JSONLanguageProvider())
 LanguageProviderFactory.register_provider(Language.CS, CSLanguageProvider())
 LanguageProviderFactory.register_provider(Language.SQL, GenericLanguageProvider("sql"))
 for _lang in (Language.JAVA, Language.CPP, Language.C, Language.PHP, Language.RUBY, Language.GO, Language.RUST, Language.KOTLIN, Language.SWIFT, Language.BASH, Language.YAML, Language.MARKDOWN, Language.DOCKERFILE, Language.TYPESCRIPT, Language.TSX, Language.JSX, Language.SCALA, Language.DART, Language.ELIXIR, Language.ERLANG, Language.HASKELL, Language.JULIA, Language.ZIG, Language.VERILOG, Language.SOLIDITY, Language.ASSEMBLY, Language.OBJECTIVE_C, Language.OBJECTIVE_CPP, Language.FSHARP, Language.R):
+    LanguageProviderFactory.register_provider(_lang, GenericLanguageProvider(_lang.value))
+for _lang in (Language.LUA, Language.PERL, Language.OCAML, Language.NIM, Language.CLOJURE, Language.XML):
     LanguageProviderFactory.register_provider(_lang, GenericLanguageProvider(_lang.value))
 
 

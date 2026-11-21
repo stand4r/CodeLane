@@ -13,7 +13,6 @@ from widgets.ActivityBar import ActivityBar
 from widgets.Explorer import Explorer
 from widgets.GitPanel import GitPanel
 from widgets.ProjectIntelligenceDashboard import ProjectIntelligenceDashboard
-from widgets.RunDebugPanel import RunDebugPanel
 from widgets.SearchPanel import SearchPanel
 from widgets.TabWidget import TabWidget
 
@@ -75,12 +74,6 @@ class UIManager:
         self.main_window.search_panel.hide()
         side_layout.addWidget(self.main_window.search_panel)
 
-        self.main_window.run_panel = RunDebugPanel(self.main_window, self.main_window.side_panel)
-        self.main_window.run_panel.hide()
-        self.main_window.run_panel.run_requested.connect(self.main_window.run_target)
-        self.main_window.run_panel.project_requested.connect(self.main_window.run_project_target)
-        self.main_window.run_panel.run_analyze_requested.connect(self.main_window.run_and_analyze)
-        side_layout.addWidget(self.main_window.run_panel)
 
         self.main_window.git_panel = GitPanel(self.main_window)
         self.main_window.git_panel.hide()
@@ -104,11 +97,10 @@ class UIManager:
         from widgets.DatabaseWorkspace import DatabaseManager
         self.main_window.database_manager = DatabaseManager(self.main_window)
 
-        # AI agent lives in the sidebar like VS Code's chat view.
+        # Keep the chat instance alive when its workspace tab is closed.
         from widgets.AIAgentPanel import AIAgentPanel
         self.main_window.ai_panel = AIAgentPanel(self.main_window, self.main_window.side_panel)
         self.main_window.ai_panel.hide()
-        side_layout.addWidget(self.main_window.ai_panel)
 
     def _setup_splitters(self, root):
         self.main_window.workspace_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
@@ -165,8 +157,8 @@ class UIManager:
 
         header = ExplorerHeader()
         hl = QtWidgets.QHBoxLayout(header)
-        hl.setContentsMargins(12, 0, 8, 0)
-        hl.setSpacing(2)
+        hl.setContentsMargins(12, 2, 8, 3)
+        hl.setSpacing(4)
         # The single sidebar section title. It is updated by
         # ModernMainWindow._handle_activity() when another view is selected, so
         # it always matches the panel that is actually visible.

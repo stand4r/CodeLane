@@ -71,9 +71,10 @@ def scale_stylesheet(qss: str, percent: int) -> str:
         value = float(match.group(1))
         unit = match.group(2)
         scaled = value * percent / 100.0
-        # Keep sub-pixel borders at >= 1px so hairlines never disappear.
-        if unit == "px" and value > 0 and scaled < 1:
-            scaled = 1
+        if unit == "px":
+            # Qt lays out widgets on whole logical pixels. Align the stylesheet
+            # metrics with the Python layouts and keep hairlines visible.
+            return f"{max(int(value > 0), int(scaled + 0.5))}px"
         if abs(scaled - round(scaled)) < 0.01:
             return f"{int(round(scaled))}{unit}"
         return f"{scaled:.1f}{unit}"

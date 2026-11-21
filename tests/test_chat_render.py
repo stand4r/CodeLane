@@ -75,11 +75,11 @@ def test_inline_code_becomes_custom_property():
     assert leftover == 0, "sentinel background must be cleared"
 
 
-def test_inline_code_html_uses_sentinel_and_monospace():
+def test_inline_code_html_uses_sentinel_and_inherits_chat_font():
     blocks = split_markdown_blocks("Просто `code` тут")
     html_text = blocks[0][1]
     assert SENTINEL_BG in html_text
-    assert "Cascadia Mono" in html_text or "monospace" in html_text
+    assert "font-family:" not in html_text
 
 
 def test_assistant_message_builds_parts():
@@ -133,7 +133,9 @@ def test_numbered_list_uses_hanging_indent():
 def test_fully_bold_line_becomes_subheading():
     html_text = markdown_to_html("**Исправленный вариант**")
     assert "font-weight:600" in html_text
-    assert "font-size:18px" in html_text, html_text
+    from widgets.ChatMessage import chat_font_px
+
+    assert f"font-size:{chat_font_px() + 2}px" in html_text, html_text
 
 
 def test_table_cells_use_plain_code_and_header_background():

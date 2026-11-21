@@ -731,15 +731,17 @@ class GitPanel(QtWidgets.QFrame):
             # Let the panel paint first, then query git.
             QtCore.QTimer.singleShot(0, self.refresh)
 
-    def _run(self, args, timeout=15):
-        if not self.root_path:
+    def _run(self, args, timeout=15, *, root=None):
+        directory = root if root is not None else self.root_path
+        if not directory:
             return False, ""
-        env = self.github_service.get_auth_git_env()
+        env = (self.github_service.get_auth_git_env() if root is None else
+               {**os.environ, "GIT_TERMINAL_PROMPT": "0"})
         try:
             # run_hidden: без него каждый git-вызов открывает окно консоли.
             p = run_hidden(
                 ["git", *args],
-                cwd=self.root_path,
+                cwd=directory,
                 env=env,
                 text=True,
                 stdout=subprocess.PIPE,

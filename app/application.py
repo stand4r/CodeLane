@@ -228,6 +228,21 @@ def main():
     install_activity_log(app, base_path)
     setup_application_style(app, base_path)
 
+    # Отложенные задания, чей экземпляр CodeLane закрылся аварийно, остаются
+    # в состоянии running и блокируют проект. Восстанавливаем их до первого
+    # тика планировщика; сбой восстановления не должен ломать запуск.
+    from core.job_recovery import recover_interrupted, start_heartbeat
+    try:
+        recovered = recover_interrupted()
+        if recovered:
+            logger.info("Восстановлено прерванных отложенных заданий: %s", recovered)
+    except Exception:  # noqa: BLE001 - запуск важнее восстановления
+        logger.exception("Не удалось восстановить прерванные отложенные задания")
+    try:
+        app._pyscribe_heartbeat = start_heartbeat(app)
+    except Exception:  # noqa: BLE001 - без heartbeat задания просто приостановятся позже
+        logger.exception("Не удалось запустить heartbeat отложенных заданий")
+
     # Load the optional native grammar extension before project-analysis
     # QThreads are started. On some Windows installs its first import from a
     # worker thread raises a fatal COM error (0x8001010d), which cannot be

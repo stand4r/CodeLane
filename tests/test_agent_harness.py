@@ -140,11 +140,15 @@ def test_stop_request_ends_the_run_before_new_tools():
 
 
 def test_transient_error_is_retried():
+    from http.client import RemoteDisconnected
+
     class FlakyService(ScriptedService):
         def _openai_tool_round(self, messages, tools, on_text, on_reasoning=None):
             self.requests += 1
             if self.requests == 1:
                 raise AIError("Слишком много запросов (429)", status=429)
+            if self.requests == 2:
+                raise RemoteDisconnected("Remote end closed connection without response")
             return "после повтора", []
 
     class FastHarness(AgentHarness):
@@ -154,7 +158,7 @@ def test_transient_error_is_retried():
     service = FlakyService([])
     result = FastHarness(service).run(_user_messages())
     assert result.text == "после повтора"
-    assert service.requests == 2
+    assert service.requests == 3
 
 
 def test_non_retryable_error_propagates():

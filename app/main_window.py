@@ -52,7 +52,7 @@ from core.logging_config import configure_logging, get_logger
 from widgets.GitPanel import GitPanel
 from utils.WorkspaceIndex import WorkspaceIndex
 from widgets.ProjectIntelligenceDashboard import ProjectIntelligenceDashboard, ProjectGraphEditorWidget
-from widgets.RunDebugPanel import RunDebugPanel
+from widgets.EditorRunControls import EditorRunControls, is_runnable_file
 from extensions import ExtensionManager
 from design.themes import THEMES, THEME_NAMES
 
@@ -99,7 +99,7 @@ class ModernMainWindow(QMainWindow):
         csharp_project_manager: Параметр csharp project manager.
         workbench: Параметр workbench.
 
-    Ключевые методы: toggle_terminal, apply_application_theme, apply_interface_settings, action_compile_csharp, action_build_csharp_project, compile_csharp_file, run_csharp_program, build_csharp_project, run_in_terminal_command, run_in_terminal, add_problem, append_output, start_busy_indicator, stop_busy_indicator, show_problems_tab, show_output_tab, editor_groups, close_tab_from_group, show_command_palette, execute_command_palette, split_editor, unsplit_editor, new_terminal, toggle_sidebar, resizeEvent, keyPressEvent, load_session_files, action_new_file, action_open_file, action_open_project, action_save_file, action_save_all_files, action_save_as_file, action_close_file, action_close_all_files, action_clear_cache, action_clear_recent_files, close_all_editor_tabs, action_undo, action_redo, action_cut, action_copy, action_paste, action_select_all, action_zoom_in, action_zoom_out, action_reset_zoom, action_toggle_comment, action_duplicate_line, action_delete_line, action_toggle_word_wrap, action_run_code, action_launch_parameters, action_quick_open, action_goto_line, action_rename_symbol, action_open_settings, action_open_documentation, show_keyboard_shortcuts, action_about, action_change_capsule, action_open_extensions, action_set_shell, action_preview_markdown, action_github_issues, action_exit, action_run_project, action_run_file, action_run_selected_snippet, action_debug_file, run_target, run_project_target, run_and_analyze, run_tests, action_project_manager, action_project_settings, action_close_project, create_editor_tab, close_tab, has_unsaved_changes, ask_save_before_close, update_analysis_panels, open_graph_editor, open_defense_guide, on_project_analysis_ready, open_analysis_location, action_analyze_current_impact, open_search_match, open_file_from_explorer, close_special_tab, show_welcome_screen, is_special_widget, find_tab_for_widget, on_editor_modification_changed, on_text_changed, recalculate_unsaved_count, add_unsaved_marker, remove_unsaved_marker, get_open_file_paths, save_current_session, update_tab_title, refresh_extensions_panel, update_window_title, get_current_editor, load_launch_arguments, auto_save, show_run_options_dialog, run_project_from_dialog, run_file_from_dialog, run_single_file, closeEvent, finalize_application, on_project_opened.
+    Ключевые методы: toggle_terminal, apply_application_theme, apply_interface_settings, action_compile_csharp, action_build_csharp_project, compile_csharp_file, run_csharp_program, build_csharp_project, run_in_terminal_command, run_in_terminal, add_problem, start_busy_indicator, stop_busy_indicator, show_problems_tab, editor_groups, close_tab_from_group, show_command_palette, execute_command_palette, split_editor, unsplit_editor, new_terminal, toggle_sidebar, resizeEvent, keyPressEvent, load_session_files, action_new_file, action_open_file, action_open_project, action_save_file, action_save_all_files, action_save_as_file, action_close_file, action_close_all_files, action_clear_cache, action_clear_recent_files, close_all_editor_tabs, action_undo, action_redo, action_cut, action_copy, action_paste, action_select_all, action_zoom_in, action_zoom_out, action_reset_zoom, action_toggle_comment, action_duplicate_line, action_delete_line, action_toggle_word_wrap, action_run_code, action_launch_parameters, action_quick_open, action_goto_line, action_rename_symbol, action_open_settings, action_open_documentation, show_keyboard_shortcuts, action_about, action_change_capsule, action_open_extensions, action_set_shell, action_preview_markdown, action_github_issues, action_exit, action_run_project, action_run_file, action_run_selected_snippet, action_debug_file, run_target, run_project_target, run_and_analyze, run_tests, action_project_manager, action_project_settings, action_close_project, create_editor_tab, close_tab, has_unsaved_changes, ask_save_before_close, update_analysis_panels, open_graph_editor, open_defense_guide, on_project_analysis_ready, open_analysis_location, action_analyze_current_impact, open_search_match, open_file_from_explorer, close_special_tab, show_welcome_screen, is_special_widget, find_tab_for_widget, on_editor_modification_changed, on_text_changed, recalculate_unsaved_count, add_unsaved_marker, remove_unsaved_marker, get_open_file_paths, save_current_session, update_tab_title, refresh_extensions_panel, update_window_title, get_current_editor, load_launch_arguments, auto_save, show_run_options_dialog, run_project_from_dialog, run_file_from_dialog, run_single_file, closeEvent, finalize_application, on_project_opened.
     """
 
     def __init__(self, app_manager: ApplicationManager):
@@ -295,6 +295,9 @@ class ModernMainWindow(QMainWindow):
             self.console_widget.show()
             self.console_widget.raise_()
             self.console_widget.set_current_tab("Терминал")
+            terminal = self.console_widget.get_terminal()
+            if terminal:
+                terminal.focus_current()
 
             anim = QtCore.QVariantAnimation(self)
             anim.setDuration(110)
@@ -353,9 +356,6 @@ class ModernMainWindow(QMainWindow):
         """
         self.terminal_visible = True
         self._terminal_anim = None
-        terminal = self.console_widget.get_terminal()
-        if terminal:
-            terminal.setFocus()
         self.activity_bar.sync_special_state(
             terminal_visible=True,
             settings_open=self._is_settings_tab_open()
@@ -433,32 +433,6 @@ class ModernMainWindow(QMainWindow):
             percent = get_settings_manager().get_setting("ui_scale_percent", 100)
             if effective_scale(screen, percent) != self._current_ui_scale:
                 self.apply_application_theme()
-
-    def _is_ai_view_active(self) -> bool:
-        """True when the sidebar currently shows the AI agent chat."""
-        panel = getattr(self, "ai_panel", None)
-        return bool(panel is not None and not panel.isHidden())
-
-    def _watch_ai_view_width(self):
-        """Give the chat column the room its layout needs (DSH uses ~380-460px)."""
-        from app.ui_scale import scale_px
-        try:
-            panel = getattr(self, "ai_panel", None)
-            active = self._is_ai_view_active()
-            wanted_max = scale_px(720) if active else scale_px(620)
-            if self.side_panel.maximumWidth() != wanted_max:
-                self.side_panel.setMaximumWidth(wanted_max)
-            if not active or not hasattr(self, "workspace_splitter"):
-                return
-            target = max(scale_px(300), int(get_settings_manager().get_setting('sidebar_width', 300)))
-            chat_min = scale_px(400)
-            sizes = self.workspace_splitter.sizes()
-            if target < chat_min and sizes and sizes[0] < chat_min:
-                total = sum(sizes) if sizes else self.workspace_splitter.width()
-                new_w = min(chat_min, wanted_max)
-                self.workspace_splitter.setSizes([new_w, max(1, total - new_w)])
-        except Exception:
-            logger.exception("Не удалось настроить ширину панели ИИ")
 
     def start_index_batching(self, batch_size: int = 40, interval_ms: int = 24):
         """Feed the completion index in small slices so the UI stays responsive.
@@ -589,6 +563,10 @@ class ModernMainWindow(QMainWindow):
             pass
         if getattr(self, 'terminal_visible', False) and getattr(self, 'console_widget', None):
             QtCore.QTimer.singleShot(0, self._adjust_terminal_size)
+        for group in self.editor_groups():
+            for button in getattr(group, "split_buttons", ()):
+                button.setFixedSize(scale_px(29), scale_px(29))
+                button.setIconSize(QtCore.QSize(scale_px(20), scale_px(20)))
         self.status_bar.showMessage(f"Масштаб интерфейса: {int(factor * 100)}%")
 
     def action_zoom_interface_in(self):
@@ -632,12 +610,6 @@ class ModernMainWindow(QMainWindow):
             width = scale_px(int(s.get('sidebar_width', 280)))
             total = max(width + scale_px(500), self.workspace_splitter.width())
             self.workspace_splitter.setSizes([width, max(1, total - width)])
-        # Update tab height
-        tab_h = scale_px(int(s.get('tab_height', 36)))
-        for group in self.editor_groups():
-            if hasattr(group, 'tabBar') and group.tabBar():
-                group.tabBar().setMinimumHeight(tab_h)
-                group.tabBar().setMaximumHeight(tab_h)
         # Terminal presentation update
         if hasattr(self, 'console_widget') and self.console_widget and hasattr(self.console_widget, 'apply_terminal_settings'):
             self.console_widget.apply_terminal_settings()
@@ -775,11 +747,16 @@ class ModernMainWindow(QMainWindow):
 
         if success:
             self.status_bar.showMessage("Сборка успешно завершена!")
-            self.append_output(output)
         else:
             self.status_bar.showMessage("Ошибка сборки!")
-            self.show_problems_tab()
-            self.append_output(error, is_error=True)
+        message = "\n".join(text.strip() for text in (output, error) if text and text.strip())
+        if message:
+            if self.console_widget.isHidden():
+                self.toggle_terminal()
+            self.console_widget.set_current_tab("Терминал")
+            terminal = self.console_widget.get_terminal()._current()
+            if terminal:
+                terminal.append_system_line(message)
 
     def run_in_terminal_command(self, command, working_dir=None):
         """Выполняет запуск рабочего процесса in terminal command.
@@ -814,11 +791,6 @@ class ModernMainWindow(QMainWindow):
         """Добавляет проблему в консоль"""
         if hasattr(self, 'console_widget') and self.console_widget:
             self.console_widget.add_problem(problem_type, file_path, line, description)
-
-    def append_output(self, text, is_error=False):
-        """Добавляет текст в вывод"""
-        if hasattr(self, 'console_widget') and self.console_widget:
-            self.console_widget.append_output(text, is_error)
 
     def start_busy_indicator(self, message: str = "Выполняется операция..."):
         """Запускает процесс или таймер busy indicator.
@@ -868,12 +840,6 @@ class ModernMainWindow(QMainWindow):
             self.toggle_terminal()
         self.console_widget.set_current_tab("Проблемы")
 
-    def show_output_tab(self):
-        """Показывает вкладку Output"""
-        if not self.terminal_visible:
-            self.toggle_terminal()
-        self.console_widget.set_current_tab("Вывод")
-
     def _setup_connections(self):
         """Выполняет операцию  setup connections.
         """
@@ -885,6 +851,7 @@ class ModernMainWindow(QMainWindow):
         self.file_explorer.open_file_requested.connect(self.file_manager.open_file)
         if hasattr(self.file_explorer, 'preview_markdown_requested'):
             self.file_explorer.preview_markdown_requested.connect(self.file_manager.open_markdown_file)
+        self.file_explorer.close_project_requested.connect(self.action_close_project)
         if hasattr(self.file_explorer, 'open_text_requested'):
             self.file_explorer.open_text_requested.connect(self.file_manager.open_text_editor)
         # Explorer header buttons are connected exactly once in UIManager
@@ -961,10 +928,14 @@ class ModernMainWindow(QMainWindow):
         group.groupActivated.connect(self._set_active_group)
         group.tabMovedOut.connect(self._collapse_empty_editor_group)
         from design.icons import set_line_icon
+        from app.ui_scale import scale_px
         controls = QtWidgets.QWidget(group)
         layout = QtWidgets.QHBoxLayout(controls)
-        layout.setContentsMargins(3, 0, 3, 0)
-        layout.setSpacing(2)
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(5)
+        group.run_controls = EditorRunControls(self, group, controls)
+        layout.addWidget(group.run_controls)
+        group.split_buttons = []
         for icon, title, action in (
             ("split-right", "Разделить вправо", partial(self.split_editor, orientation=Qt.Orientation.Horizontal)),
             ("split-down", "Разделить вниз", partial(self.split_editor, orientation=Qt.Orientation.Vertical)),
@@ -972,11 +943,13 @@ class ModernMainWindow(QMainWindow):
         ):
             button = QtWidgets.QToolButton(controls)
             button.setAutoRaise(True)
+            button.setObjectName("editorTabAction")
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.setFixedSize(26, 26)
+            button.setFixedSize(scale_px(29), scale_px(29))
             button.setToolTip(title)
             button.setAccessibleName(title)
-            set_line_icon(button, icon)
+            set_line_icon(button, icon, scale_px(20))
+            group.split_buttons.append(button)
             button.clicked.connect(lambda checked=False, fn=action: fn())
             layout.addWidget(button)
             if icon == "unsplit":
@@ -986,11 +959,19 @@ class ModernMainWindow(QMainWindow):
         controls.show()
 
     def _on_editor_tab_changed(self, group):
+        group.run_controls.refresh()
+        if getattr(self, "search_panel", None) is not None:
+            self.search_panel.protect_open_files()
         if group is self.active_tab_widget:
+            editor = self.get_current_editor()
+            if getattr(editor, "file_path", None) and getattr(self, "ai_panel", None) is not None:
+                self.ai_panel._workspace_source_editor = editor
             self.update_analysis_panels()
             self._sync_special_activity()
-            if getattr(self, "run_panel", None):
-                self.run_panel.refresh()
+
+    def refresh_editor_run_controls(self):
+        for group in self.editor_groups():
+            group.run_controls.refresh()
 
     def _on_editor_focus_changed(self, previous, current):
         if current is not None:
@@ -1038,18 +1019,13 @@ class ModernMainWindow(QMainWindow):
                 self.save_current_session()
 
     def show_ai_agent(self):
-        """Open the AI agent sidebar view (and focus its input)."""
+        """Open the AI workspace tab and focus the chat."""
         if not self.extension_enabled("ai"):
             return
         try:
             self.activity_bar.set_activity("ai")
         except Exception:
             self._handle_activity("ai")
-        panel = getattr(self, "ai_panel", None)
-        if panel is not None:
-            panel.refresh_status()
-            QtCore.QTimer.singleShot(80, panel.input.setFocus)
-        self.status_bar.showMessage("ИИ-агент: задайте вопрос о коде")
 
     def action_ai_explain_selection(self):
         """Ask the AI agent to explain the current selection/line."""
@@ -1101,16 +1077,18 @@ class ModernMainWindow(QMainWindow):
         panels = {
             "explorer": self.explorer_panel,
             "search": self.search_panel,
-            "run": self.run_panel,
             "git": self.git_panel,
             "todo": getattr(self, "todo_panel", None),
             "intelligence": self.intelligence_panel,
-            "ai": getattr(self, "ai_panel", None),
         }
         if key == "settings":
             self.action_open_settings()
             return
         if key in {"ai", "todo", "git", "intelligence"} and not self.extension_enabled(key):
+            return
+        if key == "ai":
+            if getattr(self, "ai_panel", None) is not None:
+                self.ai_panel._open_agent_team()
             return
         if key == "toggle_sidebar":
             self.toggle_sidebar()
@@ -1128,7 +1106,6 @@ class ModernMainWindow(QMainWindow):
         if not self.sidebar_visible:
             self.toggle_sidebar()
 
-        QtCore.QTimer.singleShot(0, self._watch_ai_view_width)
         QtCore.QTimer.singleShot(0, lambda: self._refresh_side_panel(key, panel))
 
     def _refresh_side_panel(self, key, panel):
@@ -1138,8 +1115,6 @@ class ModernMainWindow(QMainWindow):
             self._ensure_intelligence_panel_project()
         elif key == "todo":
             panel.refresh_tasks()
-        elif key == "ai":
-            panel.refresh_status()
         elif key == "search":
             panel.refresh_if_needed()
 
@@ -1171,7 +1146,7 @@ class ModernMainWindow(QMainWindow):
             ("Вид: Проводник", "explorer"),
             ("Вид: Поиск", "search"),
             ("Вид: Архитектурный граф", "graph"),
-            ("Вид: Предпросмотр Markdown", "preview_markdown"),
+            ("Вид: Предпросмотр Markdown / HTML", "preview_markdown"),
             ("Запуск: Запустить текущий файл", "run"),
             ("Проект: Открыть проект", "project"),
             ("Настройки: Параметры", "settings"),
@@ -1393,10 +1368,8 @@ class ModernMainWindow(QMainWindow):
         panels = [
             ("explorer", self.explorer_panel),
             ("search", self.search_panel),
-            ("run", self.run_panel),
             ("git", self.git_panel),
             ("intelligence", self.intelligence_panel),
-            ("ai", getattr(self, "ai_panel", None)),
         ]
         if hasattr(self, "todo_panel") and self.todo_panel:
             panels.append(("todo", self.todo_panel))
@@ -1610,7 +1583,7 @@ class ModernMainWindow(QMainWindow):
         """
         current_editor = self.get_current_editor()
         if not current_editor or self.is_special_widget(current_editor):
-            return
+            return False
         if self.file_manager.save_file(current_editor):
             if hasattr(current_editor, "editor") and hasattr(current_editor.editor, "document"):
                 current_editor.editor.document().setModified(False)
@@ -1620,13 +1593,18 @@ class ModernMainWindow(QMainWindow):
             current_index = self.active_tab_widget.currentIndex()
             self.remove_unsaved_marker(current_index)
             self.recalculate_unsaved_count()
+            return True
+        error = getattr(current_editor, "last_save_error", "")
+        if error:
+            self.status_bar.showMessage(error)
+        return False
 
     def action_save_all_files(self):
         """Выполняет операцию action save all files.
         """
         self.file_manager.save_all_files()
 
-    def action_save_as_file(self):
+    def action_save_as_file(self, *, utf8=False):
         """Выполняет операцию action save as file.
 
         Raises:
@@ -1638,7 +1616,8 @@ class ModernMainWindow(QMainWindow):
 
         old_path = getattr(current_editor, "file_path", None)
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить файл как", str(old_path) if old_path else "", "Все файлы (*)"
+            self, "Сохранить как UTF-8" if utf8 else "Сохранить файл как",
+            str(old_path) if old_path else "", "Все файлы (*)"
         )
         if not file_path:
             return
@@ -1648,8 +1627,8 @@ class ModernMainWindow(QMainWindow):
                 CustomDialog("Двоичные файлы доступны только для чтения.").exec()
                 return
 
-            if not current_editor.save_file_as(file_path):
-                raise IOError("Не удалось сохранить файл")
+            if not current_editor.save_file_as(file_path, utf8=utf8):
+                raise IOError(getattr(current_editor, "last_save_error", "") or "Не удалось сохранить файл")
             if hasattr(current_editor, "editor") and hasattr(current_editor.editor, "document"):
                 current_editor.editor.document().setModified(False)
             if self.workspace_index.root:
@@ -1665,6 +1644,8 @@ class ModernMainWindow(QMainWindow):
 
             index = self.active_tab_widget.currentIndex()
             self.update_tab_title(index, Path(file_path).name)
+            self.active_tab_widget.run_controls.refresh()
+            self.search_panel.protect_open_files()
             self.remove_unsaved_marker(index)
             self.recalculate_unsaved_count()
         except Exception as e:
@@ -1712,31 +1693,28 @@ class ModernMainWindow(QMainWindow):
         if self._welcome_tab is not None:
             self._welcome_tab.set_recent_files([])
 
-    def _close_group_editor_tabs(self, group):
-        """Закрывает и освобождает системные ресурсы group editor tabs.
-
-        Args:
-            group: Параметр group.
-        """
-        for i in range(group.count() - 1, -1, -1):
-            widget = group.widget(i)
-            if widget.property("pyscribeSpecial") not in {"welcome", "settings", "extensions"}:
-                self.close_tab(i)
-                if group.indexOf(widget) >= 0:
-                    return False
-        return True
-
     def close_all_editor_tabs(self):
-        """Keep the workspace snapshot while removing its editor widgets."""
-        if self.current_project is not None or self.get_open_file_paths():
-            self.save_current_session()
+        """Validate all closes before removing any editor tab."""
         old = self.active_tab_widget
+        planned = []
         self._suspend_session_save = True
         try:
             for group in self.editor_groups():
                 self.active_tab_widget = group
-                if not self._close_group_editor_tabs(group):
-                    return False
+                for index in range(group.count() - 1, -1, -1):
+                    editor = group.widget(index)
+                    if editor.property("pyscribeSpecial") in {"welcome", "settings", "extensions"}:
+                        continue
+                    if not self._confirm_tab_close(index, editor):
+                        return False
+                    planned.append((group, index, editor))
+            self._suspend_session_save = False
+            if self.current_project is not None or self.get_open_file_paths():
+                self.save_current_session()
+            self._suspend_session_save = True
+            for group, index, editor in planned:
+                self.active_tab_widget = group
+                self._remove_editor_tab(index, editor)
             self.unsplit_editor()
             return True
         finally:
@@ -2193,7 +2171,7 @@ class ModernMainWindow(QMainWindow):
         editor = self.get_current_editor()
         if editor:
             file_path = getattr(editor, 'file_path', None)
-            if file_path and Path(file_path).suffix.lower() in {'.md', '.markdown'}:
+            if file_path and Path(file_path).suffix.lower() in {'.md', '.markdown', '.html', '.htm'}:
                 source = getattr(editor, "editor", editor)
                 if not isinstance(source, (QtWidgets.QPlainTextEdit, QtWidgets.QTextEdit)):
                     source = None
@@ -2215,7 +2193,7 @@ class ModernMainWindow(QMainWindow):
                 index = self.active_tab_widget.addTab(viewer, "Предпросмотр Markdown")
                 self.active_tab_widget.setCurrentIndex(index)
                 return
-        self.status_bar.showMessage("Откройте Markdown (.md) файл для предпросмотра")
+        self.status_bar.showMessage("Откройте Markdown или HTML для предпросмотра")
 
     def action_github_issues(self):
         """Выполняет операцию action github issues.
@@ -2438,9 +2416,12 @@ class ModernMainWindow(QMainWindow):
             return
         # Prefer the current editor if it belongs to this workspace.
         editor = self.get_current_editor()
-        if editor and getattr(editor, 'file_path', None) and str(Path(editor.file_path).resolve()).startswith(str(root.resolve()) + os.sep):
-            self.run_target(str(editor.file_path), debug)
-            return
+        path = getattr(editor, "file_path", None)
+        if is_runnable_file(path):
+            source = Path(path).resolve()
+            if source.is_file() and source.is_relative_to(root.resolve()):
+                self.run_target(str(source), debug)
+                return
         CustomDialog("Точка входа в проект не найдена. Откройте файл, который хотите запустить.").exec()
 
     def run_and_analyze(self, file_path):
@@ -2480,9 +2461,10 @@ class ModernMainWindow(QMainWindow):
         try:
             dialog = ProjectConfigDialog(self.current_project, self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
-                self.current_project = dialog.get_config()
+                config = dialog.get_config()
                 from widgets.ProjectManager import project_manager
-                project_manager.update_project_config(self.current_project)
+                project_manager.update_project_config(config)
+                self.current_project = config
                 self.status_bar.showMessage("Параметры проекта обновлены")
                 self.project_indicator.setText(self.current_project.name)
                 self.update_window_title()
@@ -2508,10 +2490,25 @@ class ModernMainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             if not self.close_all_editor_tabs():
                 return
+            from widgets.ProjectManager import project_manager
+
+            ai_panel = getattr(self, "ai_panel", None)
+            if ai_panel is not None:
+                ai_panel.save_chat_session()
+            project_manager.close_project()
             self.current_project = None
+            self.workspace_path = None
+            self.file_explorer.set_root_path(QtCore.QDir.rootPath())
+            self.file_explorer.set_workspace_root(None)
+            self._set_explorer_location_title("")
+            get_settings_manager().set_setting("last_workspace", "")
+            self.refresh_editor_run_controls()
             self._project_session_restoring = False
             self.console_widget.get_terminal().switch_session(None)
             self.workspace_index.set_root(None)
+            if getattr(self, "_index_timer", None):
+                self._index_timer.stop()
+            self.search_panel.set_root(None)
             self.database_manager.set_project(None)
             self.intelligence_panel.set_project(None)
             if hasattr(self, "todo_panel") and self.todo_panel:
@@ -2530,10 +2527,9 @@ class ModernMainWindow(QMainWindow):
             self.status_bar.showMessage(f"Проект закрыт: {project_name}")
             self._update_project_menu()
             # No project → the agent falls back to "без контекста".
-            ai_panel = getattr(self, "ai_panel", None)
             if ai_panel is not None:
                 try:
-                    ai_panel.sync_scope_with_project()
+                    ai_panel.close_project_context()
                 except Exception:
                     logger.exception("Не удалось сбросить контекст ИИ-агента")
             self.show_welcome_screen()
@@ -2567,7 +2563,7 @@ class ModernMainWindow(QMainWindow):
         if hasattr(ed, 'textChanged'):
             ed.textChanged.connect(self.on_text_changed)
 
-    def create_editor_tab(self, content: str, file_path: str):
+    def create_editor_tab(self, content: str, file_path: str, *, snapshot=..., text_format=None):
         """Создает и инициализирует новый экземпляр editor tab.
 
         Args:
@@ -2586,7 +2582,7 @@ class ModernMainWindow(QMainWindow):
                 extension_manager=self.extension_manager
             )
             editor.set_code(content)
-            editor.set_file_path(file_path)
+            editor.set_file_path(file_path, snapshot=snapshot, text_format=text_format)
             self._configure_editor_instance(editor, s)
             if hasattr(self, '_current_status_message') and self._current_status_message:
                 if getattr(self, '_is_busy', False):
@@ -2598,8 +2594,6 @@ class ModernMainWindow(QMainWindow):
             tab_index = self.active_tab_widget.addTab(editor, tab_name)
             self.active_tab_widget.setCurrentIndex(tab_index)
             self.save_current_session()
-            if hasattr(self, "run_panel"):
-                self.run_panel.refresh()
         except Exception as e:
             CustomDialog(f"Ошибка создания вкладки редактора: {str(e)}").exec()
 
@@ -2614,18 +2608,27 @@ class ModernMainWindow(QMainWindow):
             return
 
         editor = self.active_tab_widget.widget(index)
-        if not editor:
-            return
+        if editor and self._confirm_tab_close(index, editor):
+            self._remove_editor_tab(index, editor)
+
+    def _confirm_tab_close(self, index, editor):
         if editor.property("pyscribeSpecial") == "database" and not editor.confirm_close():
-            return
+            return False
+        if not self.has_unsaved_changes(index):
+            return True
+        reply = self.ask_save_before_close()
+        if reply == QMessageBox.StandardButton.Yes:
+            save = getattr(editor, "save_file", None)
+            if not callable(save) or not save():
+                self.status_bar.showMessage(getattr(editor, "last_save_error", "") or "Не удалось сохранить вкладку")
+                return False
+        return reply != QMessageBox.StandardButton.Cancel
 
-        if self.has_unsaved_changes(index):
-            reply = self.ask_save_before_close()
-            if reply == QMessageBox.StandardButton.Yes and hasattr(editor, 'save_file'):
-                editor.save_file()
-            elif reply == QMessageBox.StandardButton.Cancel:
-                return
-
+    def _remove_editor_tab(self, index, editor):
+        if editor.property("pyscribeSpecial") == "agentTeam":
+            editor.stop()
+            self.ai_panel.hide()
+            self.ai_panel.setParent(self.side_panel)
         if hasattr(editor, 'file_path') and editor.file_path:
             file_path = str(getattr(editor, 'file_path'))
             if file_path in self.app_manager.session_files:
@@ -2685,7 +2688,7 @@ class ModernMainWindow(QMainWindow):
         )
 
     def update_analysis_panels(self, *, content=None):
-        """Refresh Problems/Output for the active editor file, never the whole project."""
+        """Refresh problems for the active editor file."""
         if not getattr(self, "console_widget", None):
             return
         editor = self.get_current_editor()
@@ -3492,11 +3495,10 @@ class ModernMainWindow(QMainWindow):
     def auto_save(self):
         """Выполняет операцию auto save.
         """
-        saved_any = any(
-            self._save_modified_tab(group, i)
-            for group in self.editor_groups()
-            for i in range(group.count())
-        )
+        saved_any = False
+        for group in self.editor_groups():
+            for index in range(group.count()):
+                saved_any |= self._save_modified_tab(group, index)
         if saved_any:
             self.recalculate_unsaved_count()
             if getattr(self, "status_bar", None):
@@ -3624,6 +3626,10 @@ class ModernMainWindow(QMainWindow):
 
             if reply == QMessageBox.StandardButton.Yes:
                 self.action_save_all_files()
+                if self.unsaved_files_count:
+                    self.status_bar.showMessage("Не удалось сохранить все вкладки")
+                    event.ignore()
+                    return
                 self.finalize_application()
                 event.accept()
             elif reply == QMessageBox.StandardButton.No:
@@ -3640,6 +3646,8 @@ class ModernMainWindow(QMainWindow):
         """Выполняет операцию finalize application.
         """
         try:
+            if getattr(self, "search_panel", None) is not None:
+                self.search_panel.cancel_background()
             if hasattr(self, 'console_widget') and hasattr(self.console_widget, 'shutdown'):
                 self.console_widget.shutdown()
             # Stop the AI worker and terminate any MCP servers it spawned.

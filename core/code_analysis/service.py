@@ -188,7 +188,7 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
         if spec:
             client = self._lsp_clients.get(spec.id)
             if client and client.is_alive:
-                client.did_open(norm_path, spec.id, text, version=1)
+                client.did_open(norm_path, spec.document_id(norm_path), text, version=1)
             elif self.root_path and spec.lsp_candidates and spec.id not in self._document_lsp_requested:
                 self._document_lsp_requested.add(spec.id)
                 from services.background import run_async
@@ -201,7 +201,7 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
                     for path, (version, latest) in list(self._file_buffers.items()):
                         language = self.registry.get_by_path(path)
                         if language and language.id == spec.id:
-                            client.did_open(path, language.id, latest, version=version)
+                            client.did_open(path, language.document_id(path), latest, version=version)
 
                 run_async(lambda: self._get_or_start_lsp(spec, generation), on_done=ready)
 
@@ -233,6 +233,14 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
             client = self._lsp_clients.get(spec.id)
             if client and client.is_alive:
                 client.did_change(file_path, text, version=version)
+
+    def flush_document_change(self, file_path: str) -> None:
+        """Send a pending buffer update before a semantic query."""
+        norm_path = str(Path(file_path).resolve())
+        timer = self._debounce_timers.get(norm_path)
+        if timer is not None and timer.isActive():
+            timer.stop()
+            self._dispatch_document_change(norm_path)
 
     def on_document_saved(self, file_path: str) -> None:
         norm_path = str(Path(file_path).resolve())
@@ -434,16 +442,23 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
         server_exe, _ = self.registry.resolve_lsp_server(spec, configured_path=configured_path)
         server_found = bool(server_exe)
 
-        level = AnalysisLevel.SEMANTIC if lsp_active else AnalysisLevel.SYNTAX
-
-        badge = f"{spec.display_name} (LSP)" if lsp_active else f"{spec.display_name} (Синтаксис)"
+        from importlib.util import find_spec
+        from core.code_analysis.treesitter_pack import pack_has_language
+        treesitter = bool(spec.tree_sitter_module and (
+            find_spec(spec.tree_sitter_module) is not None or pack_has_language(spec.id)
+        ))
+        level = AnalysisLevel.SEMANTIC if lsp_active else (
+            AnalysisLevel.SYNTAX if treesitter else AnalysisLevel.TEXT
+        )
+        kind = "LSP" if lsp_active else "Синтаксис" if treesitter else "Текст"
+        badge = f"{spec.display_name} ({kind})"
 
         return {
             "lang_id": spec.id,
             "display_name": spec.display_name,
             "level": level,
             "badge": badge,
-            "treesitter": True,
+            "treesitter": treesitter,
             "lsp_active": lsp_active,
             "server_found": server_found,
             "server_name": Path(server_exe).name if server_exe else None,

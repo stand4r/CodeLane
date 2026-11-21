@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import Qt
@@ -90,7 +91,7 @@ def ui_qfont(point_size: int = 9, weight=None, bold: bool = False) -> QFont:
     """Interface font as a configured ``QFont``."""
     font = QFont(ui_font_family(), int(point_size))
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-    font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+    font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
     if bold:
         font.setBold(True)
     elif weight is not None:
@@ -120,8 +121,9 @@ def _load_design_qss(base_path: Path) -> str:
     qss_path = base_path / "design" / "theme.qss"
     try:
         qss = qss_path.read_text(encoding="utf-8")
-        close_icon = (base_path / "design" / "icons" / "tab-close.svg").as_posix()
-        qss = qss.replace("url(icons/tab-close.svg)", f"url({close_icon})")
+        icons = base_path / "design" / "icons"
+        qss = re.sub(r"url\(icons/([\w.-]+)\)",
+                     lambda match: f'url("{(icons / match[1]).as_posix()}")', qss)
         # The base stylesheet uses design tokens rather than hard-coded theme islands.
         # This keeps every widget on the same surface when the user changes theme.
         sm = get_settings_manager()
@@ -193,23 +195,17 @@ def user_appearance_qss(settings: dict, ui_font_size: int) -> str:
     input_background = settings.get('input_background', '#313131')
     editor_font = settings.get('editor_font', 'Cascadia Code')
     editor_font_size = int(settings.get('editor_font_size', 13) or 13)
-    terminal_font_size = int(settings.get('terminal_font_size', 11) or 11)
     tab_height = int(settings.get('tab_height', 35) or 35)
-    chat_px = max(16, ui_font_size + 2)
-    # Keep every chat-related control on the same typographic scale: the input
-    # used to fall back to the 9pt editor font (12px) while answers were 16px,
-    # and the code viewer inherited that small editor size as well.
-    chat_code_pt = max(11, int(round(chat_px * 0.75)))       # 16px → 12pt
-    chip_px = max(12, int(round(chat_px * 0.78)))            # context/model chips
+    chip_px = max(12, ui_font_size)
     return f"""QWidget {{ font-size: {ui_font_size}px; color: {text_primary}; }}
 QMainWindow, QDialog {{ background: {app_background}; }}
 QFrame#workbenchTopBar, QFrame#activityBar, QFrame#sidePanel, QFrame#explorerHeader {{ background: {app_background}; }}
-QLabel#aiUserBubbleText {{ font-size: {chat_code_pt}pt; }}
-QPlainTextEdit#aiInput {{ font-size: {chat_code_pt}pt; padding: 2px 4px; }}
-QPlainTextEdit#chatCodeView {{
+QLabel#aiUserBubbleText, QLabel#aiAssistantBubbleText,
+QPlainTextEdit#aiInput, QPlainTextEdit#chatCodeView {{
     font-family: '{editor_font}';
-    font-size: {chat_code_pt}pt;
+    font-size: {editor_font_size}pt;
 }}
+QPlainTextEdit#aiInput {{ padding: 2px 4px; }}
 QToolButton#aiAccessMode, QToolButton#aiScopeButton, QToolButton#aiModelButton {{
     font-size: {chip_px}px;
 }}
@@ -220,11 +216,9 @@ QPlainTextEdit, QTextEdit#codeEditor, QTextEdit#terminalScreen {{
     font-family: '{editor_font}';
     font-size: {editor_font_size}pt;
 }}
-QTextEdit#terminalScreen {{ font-family: 'Cascadia Mono', 'Cascadia Code', 'Consolas', monospace; font-size: {terminal_font_size}pt; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: {input_background}; color: {text_primary}; }}
 QTabWidget#editorGroupPrimary QTabBar::tab, QTabWidget#editorGroupSecondary QTabBar::tab {{
     min-height: {tab_height}px;
-    max-height: {tab_height}px;
 }}
 """
 

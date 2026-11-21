@@ -1,5 +1,6 @@
 """Expose the language pack's syntax nodes to the existing analyzers."""
 
+from functools import lru_cache
 
 class PackSyntaxNode:
     def __init__(self, node):
@@ -50,3 +51,14 @@ def parse_pack_root(parser, source: str):
 
 def pack_language(language: str) -> str:
     return {"jsx": "tsx", "c_sharp": "csharp", "cs": "csharp"}.get(language, language)
+
+
+@lru_cache(maxsize=64)
+def pack_has_language(language: str) -> bool:
+    try:
+        from tree_sitter_language_pack import available_languages, downloaded_languages
+
+        name = pack_language(language)
+        return name in available_languages() or name in downloaded_languages()
+    except (ImportError, OSError, RuntimeError):
+        return False

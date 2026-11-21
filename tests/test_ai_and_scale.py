@@ -17,6 +17,108 @@ from PyQt6 import QtCore, QtWidgets
 _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
+def test_worker_delegates_read_only_project_subtask(tmp_path):
+    from services.agent_tools import LocalToolbox
+    from widgets.AIAgentPanel import AIWorker
+
+    (tmp_path / "sample.py").write_text("value = 7", encoding="utf-8")
+    usage = []
+
+    class Provider:
+        is_teaching = False
+
+        def converse(self, prompt, *args, tools, tool_runner, max_rounds=None, **kwargs):
+            names = {item["function"]["name"] for item in tools}
+            if max_rounds is not None:
+                assert "write_file" not in names and "delegate_task" not in names
+                assert "недоступен" in tool_runner("write_file", {})
+                assert "value = 7" in tool_runner("read_file", {"path": "sample.py"})
+                self.last_usage = {"total_tokens": 9}
+                return "sample.py содержит value"
+            assert "delegate_task" in names
+            result = json.loads(tool_runner("delegate_task", {"role": "code", "task": "Найди value"}))
+            assert "sample.py" in result["result"]
+            self.last_usage = {"total_tokens": 11}
+            return "Готово"
+
+    worker = AIWorker(Provider(), "Проверь код", local_tools=LocalToolbox(str(tmp_path)))
+    worker.finished_ok.connect(lambda _: usage.append(worker.usage))
+    worker.run()
+    assert usage == [{"total_tokens": 20}]
+
+
+def test_agent_search_returns_sources_and_keeps_workspace_active():
+    from types import SimpleNamespace
+    from PyQt6.QtTest import QTest
+    from app.agent_workbench import PENDING, run_workbench
+
+    sources = [{"title": "Documentation", "url": "https://example.test/docs"}]
+
+    class View(QtCore.QObject):
+        loadFinished = QtCore.pyqtSignal(bool)
+
+        def page(self):
+            return SimpleNamespace(runJavaScript=lambda script, callback: callback(sources))
+
+    view = View()
+    tab = SimpleNamespace(view=view)
+    visited = []
+    browser = SimpleNamespace(
+        stack=SimpleNamespace(currentWidget=lambda: tab),
+        new_tab=lambda: None,
+        navigate=lambda url, _: (visited.append(url), QtCore.QTimer.singleShot(0, lambda: view.loadFinished.emit(True))),
+    )
+    group = QtWidgets.QTabWidget()
+    workspace = QtWidgets.QWidget()
+    group.addTab(workspace, "ИИ-агент")
+    window = SimpleNamespace(active_tab_widget=group,
+                             _find_special_tab=lambda _: (SimpleNamespace(widget=lambda _: browser), 0),
+                             _set_active_group=lambda _: None)
+    results = []
+    value = run_workbench(window, "browser_search", {"query": "Python documentation"},
+                          lambda data=None, **kwargs: results.append((data, kwargs)))
+    assert value is PENDING
+    QTest.qWait(10)
+    assert visited[0].scheme() == "https"
+    assert results[0][0]["sources"] == sources
+    assert group.currentWidget() is workspace
+
+
+def test_agent_browser_navigation_and_async_page_text():
+    from types import SimpleNamespace
+    from PyQt6.QtTest import QTest
+    from widgets.AIAgentPanel import AIAgentPanel
+
+    url = QtCore.QUrl("https://example.test/")
+    calls = []
+
+    def read_page(script, callback):
+        assert "document.body" in script
+        QtCore.QTimer.singleShot(0, lambda: callback("Example page"))
+
+    page = SimpleNamespace(isLoading=lambda: False, runJavaScript=read_page)
+    view = SimpleNamespace(page=lambda: page, url=lambda: url)
+    tab = SimpleNamespace(view=view, showing_web=lambda: True)
+    browser = SimpleNamespace(
+        navigate=lambda target: calls.append(target),
+        stack=SimpleNamespace(currentWidget=lambda: tab),
+    )
+    group = SimpleNamespace(widget=lambda _: browser)
+    window = SimpleNamespace(
+        action_open_browser=lambda: None,
+        _find_special_tab=lambda _: (group, 0),
+    )
+    panel = SimpleNamespace(main_window=window)
+    done, result = threading.Event(), {}
+    AIAgentPanel._on_ui_tool_requested(panel, "browser_navigate", {"url": url.toString()}, done, result)
+    assert done.is_set() and calls == [url]
+    done, result = threading.Event(), {}
+    AIAgentPanel._on_ui_tool_requested(panel, "browser_read", {}, done, result)
+    assert not done.is_set()
+    QTest.qWait(10)
+    assert done.is_set() and json.loads(result["value"])["text"] == "Example page"
+
+
 # ----------------------------------------------------------------------
 # Mock OpenAI-compatible server
 # ----------------------------------------------------------------------
@@ -974,10 +1076,10 @@ def test_ui_scale_stylesheet_math():
     assert normalize_scale("nonsense") == 100
     qss = "QWidget { font-size: 13px; border: 1px solid #FFFFFF; padding: 0 8px; }"
     scaled = scale_stylesheet(qss, 150)
-    assert "font-size: 19.5px" in scaled
+    assert "font-size: 20px" in scaled
     assert "padding: 0 12px" in scaled
     assert "#FFFFFF" in scaled
-    # A hairline may scale to 1.5px, but never below 1px.
+    assert "border: 2px solid" in scaled
     tiny = scale_stylesheet("QLabel { border: 1px solid #000000; }", 75)
     assert "border: 1px solid" in tiny
     assert "0.5px" not in scale_stylesheet("QLabel { border: 1px solid #000000; }", 50)
@@ -1045,13 +1147,16 @@ def test_chat_sessions_are_persisted_and_new_chat_keeps_previous_history():
     try:
         panel.main_window = _Window()
         panel._history = [AIMessage("user", "привет"), AIMessage("assistant", "ответ")]
+        panel._record_session_stats({"input_tokens": 30, "output_tokens": 12})
         panel.save_chat_session()
         saved = project / ".codelane" / "ai_chat.json"
         assert saved.is_file(), "session file must be written"
         panel._history = []
         assert panel.load_chat_session() == 2
         assert [m.role for m in panel._history] == ["user", "assistant"]
+        assert "диалог 42" in panel.stats_label.text()
         panel.clear_conversation()
+        assert panel.stats_label.isHidden()
         payload = __import__("json").loads(saved.read_text(encoding="utf-8"))
         assert payload["version"] == 2
         assert len(payload["sessions"]) == 2
@@ -1063,28 +1168,31 @@ def test_chat_sessions_are_persisted_and_new_chat_keeps_previous_history():
         assert len(previous["messages"]) == 2
         assert panel.switch_chat_session(previous["id"])
         assert [message.content for message in panel._history] == ["привет", "ответ"]
+        assert "диалог 42" in panel.stats_label.text()
     finally:
         panel.deleteLater()
 
 
 def test_agent_stats_footer_updates_and_resets():
-    """The composer footer mirrors the harness metrics line."""
-    import time as _time
+    """The footer separates the last request from the known chat total."""
     from widgets.AIAgentPanel import AIAgentPanel
 
     panel = AIAgentPanel(None)
     try:
-        panel._tool_counters = {"read_file": 2, "write_file": 1}
-        panel._request_started = _time.monotonic() - 1.0
         panel._record_session_stats({"prompt_tokens": 100, "completion_tokens": 50})
         text = panel.stats_label.text()
-        assert "Токены 150" in text and "выход 50" in text, text
-        assert "3 шагов" in text, text
+        assert "запрос 150 · диалог 150" in text, text
+        assert "вход 100 · выход 50" in panel.stats_label.toolTip()
         assert not panel.stats_label.isHidden()
-        panel._record_session_stats({"prompt_tokens": 10, "completion_tokens": 10})
-        assert "Токены 170" in panel.stats_label.text(), panel.stats_label.text()
+        panel._record_session_stats({"total_tokens": 20})
+        assert "запрос 20 · диалог 170" in panel.stats_label.text()
+        panel._record_session_stats({})
+        assert "запрос — · диалог 170+" in panel.stats_label.text()
+        saved = json.loads(json.dumps(panel._session_stats))
         panel._reset_session_stats()
         assert panel.stats_label.isHidden()
+        panel._restore_session_stats(saved)
+        assert "диалог 170+" in panel.stats_label.text()
     finally:
         panel.deleteLater()
 
@@ -1130,21 +1238,29 @@ def test_ai_panel_uses_one_row_header_and_readable_composer():
         panel.deleteLater()
 
 
-def test_ai_panel_typography_scale_matches_chat():
-    """Input, user bubble and code viewer follow the 16px chat body size."""
+def test_ai_panel_typography_scale_matches_chat(monkeypatch):
+    """Editor settings control chat text and terminal output."""
+    from types import SimpleNamespace
     from app.styling import user_appearance_qss
-    from utils.settings_manager import get_settings_manager
-    from widgets.ChatMessage import chat_code_font_px, chat_font_px
+    from app.ui_scale import scale_px
+    from utils import settings_manager
+    from widgets.ChatMessage import chat_code_font_px, chat_editor_font, chat_font_px
+    import widgets.TerminalWidget as terminal_module
 
-    body = chat_font_px()
-    assert body >= 16
-    assert abs(chat_code_font_px() - body) <= 1
-    qss = user_appearance_qss(get_settings_manager().get_all_settings(), 13)
+    settings = {"editor_font": "Consolas", "editor_font_size": 15, "terminal_font_size": 9}
+    monkeypatch.setattr(settings_manager, "get_settings_manager", lambda: SimpleNamespace(get_setting=settings.get))
+    monkeypatch.setattr(terminal_module, "get_settings_manager", settings_manager.get_settings_manager)
+    terminal = terminal_module.InteractiveTerminalEdit(None)
+    terminal.apply_terminal_settings()
+    assert terminal.document().defaultFont().family() == chat_editor_font().family() == "Consolas"
+    assert terminal.document().defaultFont().pointSize() == chat_editor_font().pointSize() == scale_px(15)
+    assert chat_code_font_px() == chat_font_px()
+    qss = user_appearance_qss(settings, 13)
     assert "QPlainTextEdit#aiInput" in qss
     assert "QPlainTextEdit#chatCodeView" in qss
     assert "QToolButton#aiScopeButton" in qss
-    # 16px ≈ 12pt at 96 dpi: the input must not inherit the 9pt editor font.
-    assert "font-size: 12pt" in qss
+    assert "font-size: 15pt" in qss
+    assert "font-size: 9pt" not in qss
 
 
 if __name__ == "__main__":

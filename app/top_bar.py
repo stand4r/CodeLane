@@ -4,11 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QColor, QIcon, QPainter
-
-from design.themes import THEMES
 from design import icons as codicons
-from utils.settings_manager import get_settings_manager
 
 # VS Code-like custom title bar. The menu strip inside it uses 24px hit areas
 # and 13px text, matching the rest of the chrome typography.
@@ -69,14 +65,22 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         self.setObjectName("workbenchTopBar")
         self.setFixedHeight(TITLE_BAR_HEIGHT)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
-        layout = QtWidgets.QHBoxLayout(self)
+        stacked = QtWidgets.QVBoxLayout(self)
+        stacked.setContentsMargins(0, 0, 0, 0)
+        stacked.setSpacing(0)
+        layout = self._chrome_layout = QtWidgets.QHBoxLayout()
+        stacked.addLayout(layout, 1)
+        separator = QtWidgets.QFrame(self)
+        separator.setObjectName("workbenchSeparator")
+        separator.setFixedHeight(1)
+        stacked.addWidget(separator)
         layout.setContentsMargins(12, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(4)
         self.menu_group = QtWidgets.QWidget(self)
         self.menu_group.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
         menu_layout = QtWidgets.QHBoxLayout(self.menu_group)
         menu_layout.setContentsMargins(0, 0, 0, 0)
-        menu_layout.setSpacing(2)
+        menu_layout.setSpacing(4)
         layout.addWidget(self.menu_group)
 
         base_path = getattr(getattr(window, "app_manager", None), "base_path", Path(__file__).resolve().parent.parent)
@@ -113,7 +117,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         self.menu_strip.setObjectName("workbenchMenuStrip")
         strip = QtWidgets.QHBoxLayout(self.menu_strip)
         strip.setContentsMargins(0, 0, 0, 0)
-        strip.setSpacing(1)
+        strip.setSpacing(3)
         self.compact_menu = self._menu_button("Меню")
         overflow = QtWidgets.QMenu(self.compact_menu)
         overflow.setObjectName("workbenchPopup")
@@ -160,15 +164,6 @@ class WorkbenchTopBar(QtWidgets.QFrame):
             controls.addWidget(b)
         layout.addWidget(self.window_controls, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         self._drag_pos = None
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QtGui.QPainter(self)
-        sm = get_settings_manager()
-        preset = THEMES.get(str(sm.get("theme", "midnight")), THEMES.get("dark", {}))
-        border_hex = sm.get("border_color", preset.get("border_color", "#25303C"))
-        painter.setPen(QtGui.QColor(border_hex))
-        painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
 
     def _window_button(self, icon_name, tooltip, handler, object_name):
         button = QtWidgets.QToolButton(self)
@@ -279,6 +274,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
                 ("Сохранение и закрытие", (
                     ("Сохранить", "Ctrl+S", w.action_save_file),
                     ("Сохранить как…", "Ctrl+Shift+S", w.action_save_as_file),
+                    ("Сохранить как UTF-8…", None, lambda: w.action_save_as_file(utf8=True)),
                     ("Сохранить все файлы", None, w.action_save_all_files),
                     ("Закрыть вкладку", "Ctrl+W", w.action_close_file),
                     ("Выход", None, w.action_exit),
@@ -324,7 +320,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
                 ("Редактор", (
                     ("Разделить редактор", None, w.split_editor),
                     ("Объединить группы редактора", None, w.unsplit_editor),
-                    ("Предпросмотр Markdown", "Ctrl+Shift+V", w.action_preview_markdown),
+                    ("Предпросмотр Markdown / HTML", "Ctrl+Shift+V", w.action_preview_markdown),
                 )),
                 ("Масштаб интерфейса", (
                     ("Увеличить", "Ctrl+Alt+=", w.action_zoom_interface_in),
@@ -402,7 +398,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         self._center_search()
 
     def _center_search(self):
-        layout = self.layout()
+        layout = self._chrome_layout
         margins = layout.contentsMargins()
         left = margins.left() + self.menu_group.layout().sizeHint().width() + MENU_SEARCH_SPACING
         right = margins.right() + self.window_controls.sizeHint().width() + 6
@@ -441,16 +437,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
 
 
 class ExplorerHeader(QtWidgets.QFrame):
-    """Header frame with guaranteed continuous 1px bottom border."""
+    """Explorer title and actions."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("explorerHeader")
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QtGui.QPainter(self)
-        sm = get_settings_manager()
-        preset = THEMES.get(str(sm.get("theme", "midnight")), THEMES.get("dark", {}))
-        border_hex = sm.get("border_color", preset.get("border_color", "#25303C"))
-        painter.setPen(QtGui.QColor(border_hex))
-        painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)

@@ -19,18 +19,8 @@ class EditorTabBar(QtWidgets.QTabBar):
         self.setAcceptDrops(True)
         self.setIconSize(QtCore.QSize(16, 16))
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-        # Плавное подсвечивание таба под курсором.
-        self._hover_index = -1
-        self._hover_intensity = 0.0
-        self._hover_anim = None
-        self.setMouseTracking(True)
 
-    # -- hover animation ------------------------------------------------
     def mouseMoveEvent(self, event):
-        index = self.tabAt(event.pos())
-        if index != self._hover_index:
-            self._hover_index = index
-            self._animate_hover()
         if (self._press_pos is not None and self._press_index >= 0 and
                 event.buttons() & QtCore.Qt.MouseButton.LeftButton and
                 (event.pos() - self._press_pos).manhattanLength() >= QtWidgets.QApplication.startDragDistance()):
@@ -47,54 +37,6 @@ class EditorTabBar(QtWidgets.QTabBar):
                 self._press_index = -1
                 return
         super().mouseMoveEvent(event)
-
-    def leaveEvent(self, event):
-        self._hover_index = -1
-        self._animate_hover()
-        super().leaveEvent(event)
-
-    def _animate_hover(self):
-        try:
-            from widgets.animations import animate_property, DURATION
-        except Exception:
-            self.update()
-            return
-        if self._hover_anim is not None:
-            try:
-                self._hover_anim.stop()
-            except RuntimeError:
-                pass
-        target = 1.0 if self._hover_index >= 0 else 0.0
-        self._hover_anim = animate_property(
-            self, b"hoverIntensity", float(self._hover_intensity), target,
-            duration=DURATION["fast"], owner=self,
-        )
-
-    # Qt property so animations can target it.
-    def _get_hover_intensity(self):
-        return self._hover_intensity
-
-    def _set_hover_intensity(self, value):
-        self._hover_intensity = float(value)
-        self.update()
-
-    hoverIntensity = QtCore.pyqtProperty(float, _get_hover_intensity, _set_hover_intensity)
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        if self._hover_intensity <= 0.01 or self._hover_index < 0:
-            return
-        rect = self.tabRect(self._hover_index)
-        if rect.isNull():
-            return
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        color = QtGui.QColor("#00F2FE")
-        color.setAlphaF(0.10 * self._hover_intensity)
-        painter.setPen(QtCore.Qt.PenStyle.NoPen)
-        painter.setBrush(color)
-        painter.drawRoundedRect(rect.adjusted(1, 2, -1, -2), 6, 6)
-        painter.end()
 
     def mousePressEvent(self, event):
         self._press_pos = event.pos()

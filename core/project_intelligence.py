@@ -1,7 +1,6 @@
 """PyScribe core/project_intelligence.py: application module and reusable component."""
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
@@ -11,13 +10,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from core.subprocess_utils import run_hidden
-
-SKIP_DIRS = {
-    '.git', '.hg', '.svn', '__pycache__', '.venv', 'venv', 'env', 'node_modules',
-    'dist', 'build', '.idea', '.vscode', '.mypy_cache', '.pytest_cache',
-    'target', 'vendor', '.gradle', '.tox', '.ruff_cache',
-}
 
 @dataclass
 class SymbolInfo:
@@ -143,6 +135,8 @@ class ProjectIntelligenceEngine:
         '.cc', '.cpp', '.cxx', '.hpp', '.hh', '.hxx', '.go', '.rs', '.cs', '.php', '.rb',
         '.swift', '.kt', '.kts', '.scala', '.dart', '.lua', '.sh', '.bash', '.zsh', '.sql', '.r', '.fs', '.fsx', '.ex', '.exs', '.erl', '.hrl', '.hs', '.lhs', '.jl', '.m', '.mm', '.zig', '.v', '.sol', '.asm', '.s'
     }
+    SOURCE_EXTENSIONS.update({".pl", ".pm", ".t", ".ml", ".mli", ".nim", ".nims", ".nimble",
+                              ".clj", ".cljs", ".cljc", ".edn", ".rake", ".gemspec", ".nasm", ".fasm"})
 
     SOURCE_CACHE_BUDGET = 24 * 1024 * 1024
 
@@ -432,7 +426,7 @@ class ProjectIntelligenceEngine:
         if 'health' in self.enabled_analyzers:
             self._analyze_health_and_debt(analysis)
         analysis.dependencies = sorted(set(analysis.dependencies))
-        analysis.duration_ms = int((time.perf_counter() - started) * 1000)
+        analysis.duration_ms = max(1, int((time.perf_counter() - started) * 1000))
         self.analysis = analysis
         return analysis
 
@@ -492,20 +486,15 @@ class ProjectIntelligenceEngine:
         if not analysis.python_files:
             return
         try:
-            import bandit  # noqa: F401
-        except Exception:
-            return
-        try:
-            proc = run_hidden(
-                [sys.executable, '-m', 'bandit', '-r', str(self.root), '-f', 'json', '-q',
-                 '-x', ','.join(SKIP_DIRS)],
-                capture_output=True, text=True, timeout=90, cwd=str(self.root), check=False,
-            )
-            if not proc.stdout.strip():
-                return
-            payload = json.loads(proc.stdout)
+            from bandit.core.config import BanditConfig
+            from bandit.core.manager import BanditManager
+
+            manager = BanditManager(BanditConfig(), "file", quiet=True)
+            manager.discover_files([info.path for info in analysis.python_files])
+            manager.run_tests()
             existing = {(i.file, i.line, i.code) for i in analysis.issues}
-            for item in payload.get('results', []):
+            for finding in manager.get_issue_list():
+                item = finding.as_dict(with_code=False)
                 filename = str(Path(item.get('filename', '')).resolve())
                 line = int(item.get('line_number') or 1)
                 code = str(item.get('test_id') or 'BANDIT')
@@ -518,8 +507,7 @@ class ProjectIntelligenceEngine:
                 existing.add(key)
             analysis.backend_status['bandit'] = 'available + executed'
         except Exception:
-            # A third-party analyzer must never make the primary index fail.
-            return
+            analysis.backend_status['bandit'] = 'unavailable'
 
     def analyze_file(self, path: str, content: Optional[str] = None):
         p = Path(path).resolve()

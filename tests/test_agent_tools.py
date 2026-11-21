@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from services.agent_tools import TOOL_DEFINITIONS, LocalToolbox, ToolError
+from services.workbench_tools import TOOLS as WORKBENCH_TOOLS
 
 
 def _make_project(root: Path) -> None:
@@ -39,6 +40,35 @@ def test_read_file_returns_content():
         text = box.run("read_file", json.dumps({"path": "app.py"}))
         assert "def greet" in text
         assert approvals == []          # read-only tools never ask
+
+
+def test_direct_ai_edit_does_not_replace_concurrent_changes(tmp_path):
+    import pytest
+
+    path = tmp_path / "sample.txt"
+    path.write_text("old\n", encoding="utf-8")
+
+    def confirm(*_args):
+        path.write_text("external\nold\n", encoding="utf-8")
+        return True
+
+    box = LocalToolbox(str(tmp_path), access_mode="write_only", confirm=confirm)
+    with pytest.raises(ToolError, match="изменён на диске"):
+        box.edit_file(path.name, "old", "new")
+    assert path.read_text(encoding="utf-8") == "external\nold\n"
+
+
+def test_read_file_streams_a_range_and_caps_output(tmp_path, monkeypatch):
+    from services import agent_tools
+
+    monkeypatch.setattr(agent_tools, "MAX_READ_BYTES", 4)
+    monkeypatch.setattr(agent_tools, "MAX_READ_CHARS", 30)
+    path = tmp_path / "sample.txt"
+    path.write_text("A" * 100 + "\nsecond\nthird\n", encoding="utf-8")
+    box = LocalToolbox(str(tmp_path))
+    assert box.read_file("sample.txt", offset=2, limit=1) == "[строки 2–2]\nsecond"
+    assert "Достигнут предел" in box.read_file("sample.txt")
+    assert "отсутствуют" in box.read_file("sample.txt", offset=5)
 
 
 def test_read_file_prefers_the_open_unsaved_editor_buffer():
@@ -274,7 +304,7 @@ def test_access_modes_enforced_at_dispatch():
     expected = {
         "read_only": {"read_file", "open_file", "list_directory", "search_in_project"},
         "write_only": {"write_file", "edit_file"},
-        "full": {d["function"]["name"] for d in TOOL_DEFINITIONS},
+        "full": {d["function"]["name"] for d in TOOL_DEFINITIONS} - WORKBENCH_TOOLS.keys(),
         "invalid": {"read_file", "open_file", "list_directory", "search_in_project"},
     }
     with tempfile.TemporaryDirectory() as td:
@@ -301,6 +331,98 @@ def test_access_modes_enforced_at_dispatch():
         box, _ = _toolbox(root, access_mode="write_only")
         box.run("write_file", json.dumps({"path": "new.txt", "content": "written"}))
         assert (root / "new.txt").read_text() == "written"
+
+
+def test_workbench_permissions_and_project_paths(tmp_path):
+    import pytest
+
+    calls = []
+    box, approvals = _toolbox(tmp_path, access_mode="write_only",
+                              ui_action=lambda name, payload: calls.append((name, payload)))
+    names = {item["function"]["name"] for item in box.definitions()}
+    assert {"todo_edit", "editor_save", "explorer_edit", "project_config_edit"} <= names
+    assert {"todo_list", "terminal_execute", "browser_read"}.isdisjoint(names)
+    box.run("todo_edit", json.dumps({"action": "add", "title": "Check", "path": "app.py"}))
+    assert approvals == ["todo_edit"]
+    assert calls[0][1]["path"] == str(tmp_path / "app.py")
+    assert calls[0][1]["_project_root"] == str(tmp_path)
+    with pytest.raises(ToolError, match="вне проекта"):
+        box.run("explorer_edit", json.dumps({"action": "move", "path": "app.py", "destination": "../outside.py"}))
+    with pytest.raises(ToolError, match="Недопустимое"):
+        box.run("project_config_edit", json.dumps({"analyzers": ["unknown"]}))
+    full, _ = _toolbox(tmp_path, allow_commands=False, ui_action=lambda *_: "")
+    with pytest.raises(ToolError, match="запрещён"):
+        full.run("terminal_execute", json.dumps({"command": "echo test"}))
+
+
+def test_git_agent_handles_repository_before_first_commit(tmp_path):
+    import shutil
+    import subprocess
+    from types import SimpleNamespace
+
+    import pytest
+    from app.agent_workbench import _git_operation
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("Git is unavailable")
+
+    def run(args, *, root):
+        completed = subprocess.run(
+            [git, *args], cwd=root, capture_output=True, text=True, encoding="utf-8", check=False,
+        )
+        return completed.returncode == 0, (completed.stdout or completed.stderr).strip()
+
+    root = tmp_path.resolve()
+    assert run(["init"], root=root)[0]
+    panel = SimpleNamespace(_run=run)
+    path = root / "new file.txt"
+    path.write_text("staged", encoding="utf-8")
+
+    assert "нет коммитов" in _git_operation(panel, root, {"action": "log"})["output"]
+    _git_operation(panel, root, {"action": "stage", "path": str(path)})
+    assert run(["ls-files"], root=root) == (True, path.name)
+    path.write_text("working copy", encoding="utf-8")
+    _git_operation(panel, root, {"action": "unstage", "path": str(path)})
+    assert run(["ls-files"], root=root) == (True, "")
+    assert path.read_text(encoding="utf-8") == "working copy"
+
+
+def test_background_edits_do_not_open_tabs_and_preserve_open_buffers(tmp_path):
+    target = tmp_path / "demo.py"
+    target.write_text("value = 1", encoding="utf-8")
+    calls = []
+    buffer = "__NO_OPEN_EDITOR_BUFFER__"
+
+    def ui(kind, payload):
+        calls.append((kind, payload))
+        assert kind != "open_file"
+        return buffer if kind == "read_buffer" else "buffer updated"
+
+    box = LocalToolbox(str(tmp_path), ui_action=ui)
+    box.background = True
+    box.edit_file("demo.py", "value = 1", "value = 2")
+    assert target.read_text(encoding="utf-8") == "value = 2"
+    box.write_file("other.py", "created")
+    assert (tmp_path / "other.py").read_text(encoding="utf-8") == "created"
+    buffer = "unsaved = 1"
+    assert box.edit_file("demo.py", "unsaved = 1", "unsaved = 2") == "buffer updated"
+    assert calls[-1][0] == "edit_file"
+    assert calls[-1][1]["expected"] == "unsaved = 1"
+    assert target.read_text(encoding="utf-8") == "value = 2"
+
+
+def test_ide_mcp_enforces_project_tool_permissions(tmp_path):
+    from services.ide_mcp import IDEMCP
+
+    (tmp_path / "main.py").write_text("answer = 42", encoding="utf-8")
+    toolbox, _ = _toolbox(tmp_path, access_mode="read_only")
+    mcp = IDEMCP(toolbox)
+    listed = {tool["name"] for tool in mcp.request("tools/list")["tools"]}
+    assert "read_file" in listed and "write_file" not in listed
+    assert "answer = 42" in mcp.call("read_file", {"path": "main.py"})
+    assert mcp.request("tools/call", {"name": "write_file"})["isError"]
+    assert mcp.request("tools/call", {"name": "read_file", "arguments": {"path": "../outside"}})["isError"]
 
 
 if __name__ == "__main__":

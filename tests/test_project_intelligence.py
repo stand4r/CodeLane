@@ -16,6 +16,23 @@ def test_all_analyzers_are_registered():
     assert {"structure", "dependencies", "metrics", "health", "security", "binaries"} <= set(specs)
 
 
+def test_full_analysis_does_not_start_the_frozen_app(tmp_path, monkeypatch):
+    import subprocess
+
+    (tmp_path / "example.py").write_text("assert True\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", "CodeLane.exe")
+
+    def no_process(*args, **kwargs):
+        raise AssertionError("Project analysis must not spawn the application")
+
+    monkeypatch.setattr(subprocess, "Popen", no_process)
+    result = ProjectIntelligenceEngine(str(tmp_path), enabled_analyzers=analyzer_map()).analyze()
+    assert result.backend_status["bandit"] == "available + executed"
+    assert any(issue.code == "B101" for issue in result.issues)
+    assert result.duration_ms > 0
+
+
 def test_empty_analyzer_selection_is_a_true_noop(tmp_path: Path):
     (tmp_path / "main.py").write_text("print('should not be scanned')\n", encoding="utf-8")
     engine = ProjectIntelligenceEngine(str(tmp_path), enabled_analyzers=[])

@@ -308,7 +308,7 @@ class Ui_Welcome(QtWidgets.QWidget):
             #welcomeAction QLabel, #welcomeProject QLabel { background: transparent; background-color: transparent; border: none; }
             #welcomeActionTitle, #welcomeProjectName { background: transparent; color: #CCCCCC; font-size: 13px; font-weight: 400; }
             #welcomeActionDescription, #welcomeProjectPath, #welcomeProjectTime, #welcomeMuted { background: transparent; color: #8C8C8C; font-size: 12px; }
-            #welcomeRecentSection { background: #181818; border: 1px solid #2B2B2B; border-radius: 2px; }
+            #welcomeRecentSection { background: transparent; border: none; }
             #welcomeRecentSection QScrollArea, #welcomeRecentSection QScrollArea > QWidget, #welcomeRecentSection QScrollArea > QWidget > QWidget { background: transparent; border: none; }
             #welcomeSectionTitle { background: transparent; color: #CCCCCC; font-size: 13px; font-weight: 400; }
         ''')

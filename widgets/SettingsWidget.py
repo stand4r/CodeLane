@@ -361,12 +361,12 @@ class SettingsWidget(QtWidgets.QWidget):
         l.addRow('', self._check('word_wrap','Перенос строк'))
         self._section(l, 'Сохранение')
         l.addRow('Автосохранение, сек.', self._spin('auto_save_interval', 0, 3600))
+        l.addRow('', self._check('format_on_save', 'Форматировать Python при сохранении'))
         return page
 
     def _terminal_page(self):
         page, l = self._page()
         l.addRow('Высота панели терминала', self._spin('terminal_panel_height', 120, 800))
-        l.addRow('Размер шрифта', self._spin('terminal_font_size', 9, 24))
         return page
 
     def _toolchains_page(self):
@@ -416,6 +416,26 @@ class SettingsWidget(QtWidgets.QWidget):
         detect_btn.clicked.connect(_do_detect)
         l.addRow('', detect_btn)
         l.addRow('', status_lbl)
+        from core.code_analysis.registry import get_language_registry
+
+        self._section(l, "Языковые серверы (LSP)")
+        languages = QtWidgets.QComboBox()
+        paths = QtWidgets.QStackedWidget()
+        specs = sorted(get_language_registry().all_specs(), key=lambda spec: spec.display_name.casefold())
+        for spec in specs:
+            if not spec.lsp_candidates:
+                continue
+            key = f"lsp_{spec.id}_path"
+            field = QtWidgets.QLineEdit(str(self.settings_manager.get_setting(key, "") or ""))
+            field.setPlaceholderText(f"Автопоиск: {spec.lsp_candidates[0]}")
+            field.setToolTip(spec.install_hint)
+            field.textEdited.connect(self._live_apply)
+            self.controls[key] = field
+            languages.addItem(spec.display_name)
+            paths.addWidget(field)
+        languages.currentIndexChanged.connect(paths.setCurrentIndex)
+        l.addRow("Язык", languages)
+        l.addRow("Сервер", paths)
         database = getattr(self.main_window, "database_manager", None)
         if database is not None:
             self._section(l, "Локальные СУБД")

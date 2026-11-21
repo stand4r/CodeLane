@@ -10,6 +10,7 @@ Plain Python on purpose — no Qt imports, fully unit-testable.
 from __future__ import annotations
 
 import json
+from io import StringIO
 import os
 import re
 import shutil
@@ -21,10 +22,12 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from core.subprocess_utils import CREATE_NO_WINDOW, popen_hidden, run_hidden
+from core.file_snapshot import snapshot_bytes, snapshot_file, write_if_unchanged
+from services.workbench_tools import TOOLS as WORKBENCH_TOOLS
 
 __all__ = ["ToolError", "LocalToolbox", "TOOL_DEFINITIONS"]
 
-MAX_READ_CHARS = None            # no artificial cut: the model sees the whole file
+MAX_READ_CHARS = 120_000
 MAX_READ_BYTES = 20 * 1024 * 1024
 MAX_OUTPUT_CHARS = 2_000_000     # safety valve against a runaway command only
 MAX_SEARCH_RESULTS = 500
@@ -162,6 +165,12 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
 ]
 
 
+TOOL_DEFINITIONS.extend(
+    _tool(name, description, properties, required)
+    for name, (_, description, properties, required) in WORKBENCH_TOOLS.items()
+)
+
+
 class ToolError(RuntimeError):
     """Raised for a rejected or failed tool call (message is user-facing)."""
 
@@ -183,8 +192,18 @@ class LocalToolbox:
         self.access_mode = normalize_access_mode(access_mode)
         self.ui_action = ui_action
         self.should_stop = should_stop
+        self.background = False
 
     def _allowed(self, name):
+        if name in WORKBENCH_TOOLS:
+            if self.ui_action is None:
+                return False
+            access = WORKBENCH_TOOLS[name][0]
+            if access == "read":
+                return self.access_mode != "write_only"
+            if access == "write":
+                return self.allow_write and self.access_mode != "read_only"
+            return self.access_mode == "full" and (access != "command" or self.allow_commands)
         if name == "workspace_state":
             return self.access_mode != "write_only"
         if name in ("browser_navigate", "analysis_refresh"):
@@ -244,6 +263,9 @@ class LocalToolbox:
         target = self._resolve(path)
         if not target.is_file():
             raise ToolError(f"Файл не найден: {path}")
+        from services.workbench_documents import DOCUMENT_SUFFIXES
+        if target.suffix.lower() in DOCUMENT_SUFFIXES:
+            raise ToolError("Для PDF, DOCX и ODT используй read_document.")
         text = None
         if self.ui_action is not None:
             try:
@@ -253,29 +275,57 @@ class LocalToolbox:
             except Exception:
                 # The disk copy remains a useful fallback if a UI is closing.
                 text = None
+        first = max(1, int(offset or 1))
+        count = max(0, int(limit or 0))
+        collected = []
+        remaining = MAX_READ_CHARS
+        read = 0
+        truncated = False
         try:
-            if text is None and target.stat().st_size > MAX_READ_BYTES:
-                raise ToolError(
-                    f"Файл больше {MAX_READ_BYTES // (1024 * 1024)} МБ; читай его частями "
-                    "через offset/limit.")
-            if text is None:
-                text = target.read_text(encoding="utf-8", errors="replace")
+            source = (StringIO(text, newline=None) if text is not None else
+                      target.open(encoding="utf-8", errors="replace", newline=None))
+            with source:
+                skipped = 1
+                while skipped < first:
+                    if self.should_stop and self.should_stop():
+                        raise ToolError("Запрос остановлен.")
+                    piece = source.readline(65536)
+                    if not piece:
+                        break
+                    if piece.endswith("\n") or len(piece) < 65536:
+                        skipped += 1
+                if skipped == first:
+                    while not count or read < count:
+                        line = source.readline(remaining + 1)
+                        if not line:
+                            break
+                        if len(line) > remaining:
+                            if read == 0:
+                                collected.append(line[:remaining])
+                                read += 1
+                            truncated = True
+                            break
+                        collected.append(line)
+                        remaining -= len(line)
+                        read += 1
         except OSError as exc:
             raise ToolError(f"Не удалось прочитать файл: {exc}") from exc
-        if not offset and not limit:
-            return text
-        lines = text.splitlines()
-        start = max(1, int(offset or 1))
-        count = int(limit or 0)
-        end = len(lines) if count <= 0 else min(len(lines), start - 1 + count)
-        chunk = "\n".join(lines[start - 1:end])
-        header = f"[строки {start}–{end} из {len(lines)}]\n"
-        return header + chunk
+        answer = "".join(collected)
+        if not read:
+            return "[Строки в указанном диапазоне отсутствуют.]" if offset or limit else ""
+        if offset or limit or truncated:
+            header = f"[строки {first}–{first + read - 1}]\n"
+            answer = header + answer.rstrip("\n")
+        if truncated:
+            answer += "\n[Достигнут предел размера ответа.]"
+        return answer
 
     def open_file(self, path: str) -> str:
         target = self._resolve(path)
         if not target.is_file():
             raise ToolError(f"Файл не найден: {path}")
+        if self.background:
+            return f"Файл доступен для фоновой работы: {target}. Используй read_file для чтения."
         if self.ui_action is None:
             raise ToolError("Открытие вкладки CodeLane недоступно в текущем режиме.")
         return self.ui_action("open_file", {"path": str(target)})
@@ -343,14 +393,16 @@ class LocalToolbox:
         payload = str(content)
         if len(payload.encode("utf-8")) > MAX_WRITE_BYTES:
             raise ToolError("Содержимое слишком большое для записи.")
-        existed = target.exists()
+        expected = snapshot_file(target)
+        existed = expected is not None
         preview = payload if len(payload) <= 1200 else payload[:1200] + "\n… (обрезано)"
         self._ask("write_file",
                   f"Файл: {target}\nРежим: {'перезапись' if existed else 'создание'}\n\n{preview}",
                   "Изменить файл проекта")
         if self.ui_action is not None and existed:
             try:
-                self.ui_action("open_file", {"path": str(target)})
+                if not self.background:
+                    self.ui_action("open_file", {"path": str(target)})
                 buffer = self.ui_action("read_buffer", {"path": str(target)})
                 if buffer != "__NO_OPEN_EDITOR_BUFFER__":
                     return self.ui_action("replace_buffer", {
@@ -360,27 +412,23 @@ class LocalToolbox:
                 raise ToolError(f"Не удалось обновить открытую вкладку: {exc}") from exc
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(payload, encoding="utf-8")
+            write_if_unchanged(target, payload.encode("utf-8"), expected)
         except OSError as exc:
             raise ToolError(f"Не удалось записать файл: {exc}") from exc
-        if self.ui_action is not None:
+        if self.ui_action is not None and not self.background:
             self.ui_action("open_file", {"path": str(target)})
         return f"{'Обновлён' if existed else 'Создан'} файл {path} ({len(payload)} символов)."
 
-    def edit_file(self, path: str, old_text: str, new_text: str) -> str:
-        if not self.allow_write:
-            raise ToolError("Редактирование файлов отключено в настройках агента.")
+    def _edit_source(self, path):
         target = self._resolve(path)
         if not target.is_file():
             raise ToolError(f"Файл не найден: {path}")
-        if not old_text:
-            raise ToolError("Исходный фрагмент не может быть пустым.")
-        if len(str(new_text).encode("utf-8")) > MAX_WRITE_BYTES:
-            raise ToolError("Новый фрагмент слишком большой.")
         try:
             if target.stat().st_size > MAX_READ_BYTES:
                 raise ToolError(f"Файл больше {MAX_READ_BYTES // (1024 * 1024)} МБ.")
-            current = target.read_text(encoding="utf-8", errors="replace")
+            data = target.read_bytes()
+            expected = snapshot_bytes(data)
+            current = data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
         except OSError as exc:
             raise ToolError(f"Не удалось прочитать файл: {exc}") from exc
         if self.ui_action is not None:
@@ -390,6 +438,24 @@ class LocalToolbox:
                     current = buffer
             except Exception:
                 pass
+        return target, data, expected, current
+
+    def preview_edit_source(self, path):
+        if not self._allowed("edit_file") or self.access_mode == "write_only":
+            raise ToolError("Разрешите чтение и правку файлов в настройках агента.")
+        target, _, _, current = self._edit_source(path)
+        return target.relative_to(self.root).as_posix(), current
+
+    def edit_file(self, path: str, old_text: str, new_text: str, *, expected_source=None) -> str:
+        if not self._allowed("edit_file"):
+            raise ToolError("Редактирование файлов отключено в настройках агента.")
+        if not old_text and expected_source != "":
+            raise ToolError("Исходный фрагмент не может быть пустым.")
+        if len(str(new_text).encode("utf-8")) > MAX_WRITE_BYTES:
+            raise ToolError("Новый фрагмент слишком большой.")
+        target, data, expected, current = self._edit_source(path)
+        if expected_source is not None and current != expected_source:
+            raise ToolError("Файл изменился после подготовки правки. Пересоберите изменения.")
         count = current.count(old_text)
         if count != 1:
             raise ToolError(
@@ -401,13 +467,27 @@ class LocalToolbox:
         self._ask("edit_file", f"Файл: {target}\n\n--- было ---\n{old_text[:1200]}"
                   f"\n\n--- станет ---\n{str(new_text)[:1200]}",
                   "Применить правку в редакторе")
+        if self.should_stop and self.should_stop():
+            raise ToolError("Правка отменена.")
         if self.ui_action is not None:
-            return self.ui_action("edit_file", {
+            if self.background:
+                buffer = self.ui_action("read_buffer", {"path": str(target)})
+                if buffer == "__NO_OPEN_EDITOR_BUFFER__":
+                    data.decode("utf-8")
+                    write_if_unchanged(target, updated.encode("utf-8"), expected)
+                    return f"Изменён файл {path}."
+            payload = {
                 "path": str(target), "old_text": str(old_text),
                 "new_text": str(new_text), "expected": current,
-            })
+            }
+            if expected_source is not None:
+                payload["_project_root"] = str(self.root)
+            return self.ui_action("edit_file", payload)
         try:
-            target.write_text(updated, encoding="utf-8")
+            data.decode("utf-8")
+            write_if_unchanged(target, updated.encode("utf-8"), expected)
+        except UnicodeDecodeError as exc:
+            raise ToolError("Откройте файл в редакторе для правки текста в этой кодировке.") from exc
         except OSError as exc:
             raise ToolError(f"Не удалось изменить файл: {exc}") from exc
         return f"Изменён файл {path}."
@@ -531,6 +611,8 @@ class LocalToolbox:
 
     def run(self, name: str, arguments: str) -> str:
         """Execute one tool call; *arguments* is the raw JSON the model sent."""
+        if self.should_stop and self.should_stop():
+            raise ToolError("Запрос остановлен.")
         handlers = {
             "workspace_state": self.workspace_state,
             "browser_navigate": self.browser_navigate,
@@ -547,7 +629,7 @@ class LocalToolbox:
             "open_application": self.open_application,
         }
         handler = handlers.get(str(name))
-        if handler is None:
+        if handler is None and name not in WORKBENCH_TOOLS:
             raise ToolError(f"Неизвестный инструмент: {name}")
         if not self._allowed(name):
             raise ToolError(f"Инструмент {name} запрещён настройками доступа агента.")
@@ -558,6 +640,10 @@ class LocalToolbox:
         if not isinstance(payload, dict):
             raise ToolError("Аргументы инструмента должны быть объектом JSON.")
         try:
+            if name in WORKBENCH_TOOLS:
+                if self.background and name == "terminal_execute":
+                    return self.run_terminal_command(payload["command"])
+                return self._run_workbench(name, payload)
             return handler(**payload)
         except TypeError as exc:
             raise ToolError(f"Неверные аргументы для {name}: {exc}") from exc
@@ -565,3 +651,32 @@ class LocalToolbox:
             raise
         except Exception as exc:  # noqa: BLE001 - surface as tool output
             raise ToolError(f"Ошибка инструмента {name}: {exc}") from exc
+
+    def _run_workbench(self, name, payload):
+        access, description, properties, required = WORKBENCH_TOOLS[name]
+        if set(payload) - properties.keys() or set(required) - payload.keys():
+            raise ToolError(f"Проверь аргументы инструмента {name}.")
+        types = {"string": str, "integer": int, "boolean": bool, "array": list}
+        for key, value in payload.items():
+            schema = properties[key]
+            if type(value) is not types[schema["type"]] or (
+                "enum" in schema and value not in schema["enum"]
+            ) or ("minimum" in schema and value < schema["minimum"]) or (
+                "maximum" in schema and value > schema["maximum"]
+            ) or (
+                "items" in schema and (any(item not in schema["items"]["enum"] for item in value)
+                                       or len(set(value)) != len(value))
+            ):
+                raise ToolError(f"Недопустимое значение аргумента {key}.")
+        for key in ("path", "destination"):
+            if key in payload:
+                payload[key] = str(self._resolve(payload[key]))
+        if name == "project_config_edit" and "launch_command" in payload and not self.allow_commands:
+            raise ToolError("Изменение команды запуска отключено настройками агента.")
+        if access == "write":
+            self._ask(name, json.dumps(payload, ensure_ascii=False), description)
+        if name.startswith(("explorer_", "analysis_", "dependency_", "lsp_", "todo_", "project_config", "git_")) or (
+            name in ("terminal_execute", "editor_save") or "path" in payload
+        ):
+            payload["_project_root"] = str(self.root) if self.root else None
+        return self.ui_action(name, payload)

@@ -17,6 +17,7 @@ polish pass:
 * internal ``cd`` sync lines and PowerShell's ``PS>`` noise are filtered.
 """
 import os
+import ast
 import sys
 from pathlib import Path
 
@@ -34,8 +35,296 @@ _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 _KEEP_ALIVE = []
 
 
+def test_terminal_shortcuts_take_precedence_and_filter_control_characters():
+    from PyQt6.QtTest import QTest
+    from widgets.TerminalWidget import InteractiveTerminalEdit
+
+    class Shell:
+        def __init__(self):
+            self.interrupts = 0
+
+        def is_run_process_active(self):
+            return False
+
+        def interrupt(self):
+            self.interrupts += 1
+
+        def print_prompt(self):
+            screen._insert_at_end("\n$ ")
+
+    app = _app()
+    host = QtWidgets.QWidget()
+    shell = Shell()
+    screen = InteractiveTerminalEdit(shell, host)
+    layout = QtWidgets.QVBoxLayout(host)
+    layout.addWidget(screen)
+    calls = []
+    shortcuts = [
+        QtGui.QShortcut(QtGui.QKeySequence(sequence), host)
+        for sequence in ("Ctrl+W", "Ctrl+A", "Ctrl+Shift+V", "Ctrl+C", "Ctrl+P")
+    ]
+    for index, shortcut in enumerate(shortcuts):
+        shortcut.activated.connect(lambda index=index: calls.append(index))
+
+    host.show()
+    host.activateWindow()
+    screen.setFocus()
+    app.processEvents()
+    screen._insert_at_end("$ ")
+    screen._set_input_text("pip install")
+    key = QtCore.Qt.Key
+    ctrl = QtCore.Qt.KeyboardModifier.ControlModifier
+    shift = QtCore.Qt.KeyboardModifier.ShiftModifier
+    clipboard = QtWidgets.QApplication.clipboard()
+    previous_clipboard = clipboard.text()
+    try:
+        QTest.keyClick(screen, key.Key_W, ctrl)
+        assert screen.get_current_command().strip() == "pip"
+        QTest.keyClick(screen, key.Key_A, ctrl)
+        assert screen.textCursor().position() == screen.prompt_pos
+        QTest.keyClick(screen, key.Key_C, ctrl)
+        assert shell.interrupts == 1
+        clipboard.setText("\x03\x03pip install pyqt6")
+        QTest.keyClick(screen, key.Key_V, ctrl | shift)
+        assert screen.get_current_command() == "pip install pyqt6"
+        event = QtGui.QKeyEvent(QtCore.QEvent.Type.KeyPress, key.Key_B, ctrl, "\x02")
+        app.sendEvent(screen, event)
+        assert screen.get_current_command() == "pip install pyqt6"
+        assert "\x03" not in screen.toPlainText() and "\x02" not in screen.toPlainText()
+        selection = screen.textCursor()
+        selection.setPosition(0)
+        selection.setPosition(2, QtGui.QTextCursor.MoveMode.KeepAnchor)
+        screen.setTextCursor(selection)
+        QTest.keyPress(screen, key.Key_Control)
+        assert screen.textCursor().selectedText() == "$ "
+        QTest.keyRelease(screen, key.Key_Control)
+        QTest.keyClick(screen, key.Key_C, ctrl)
+        assert clipboard.text() == "$ "
+        assert shell.interrupts == 1
+        QTest.keyClick(screen, key.Key_P, ctrl)
+        assert calls == [4]
+    finally:
+        clipboard.setText(previous_clipboard)
+        host.close()
+
+
+def test_terminal_interrupt_does_not_write_control_bytes_to_shell():
+    from types import SimpleNamespace
+    from widgets.TerminalWidget import TerminalTab
+
+    calls = []
+    process = SimpleNamespace(
+        state=lambda: QtCore.QProcess.ProcessState.Running,
+        write=lambda data: calls.append(data),
+        kill=lambda: calls.append("kill"),
+    )
+    tab = SimpleNamespace(
+        process=process,
+        is_run_process_active=lambda: False,
+        _command_running=False,
+    )
+    TerminalTab.interrupt(tab)
+    assert calls == []
+    tab._command_running = True
+    TerminalTab.interrupt(tab)
+    assert calls == ["kill"]
+    assert not tab._command_running
+
+
 def _app():
     return _APP
+
+
+def test_syntax_highlighting_covers_all_registered_languages():
+    from core.language_services import LanguageProviderFactory
+    from widgets.QCodeEditor import ModernSyntaxHighlighter
+
+    examples = {
+        "asm": ("MOV eax, 1", "MOV"), "c": ("int x = 1;", "int"),
+        "clj": ("(defn f [] 1)", "defn"), "cpp": ("class Cat {};", "class"),
+        "cs": ("class Cat {}", "class"), "css": (".item { color: red; }", "color"),
+        "dart": ("final x = 1;", "final"), "dockerfile": ("FROM scratch", "FROM"),
+        "erl": ("receive _ -> ok end.", "receive"), "ex": ("def f, do: 1", "def"),
+        "fs": ("let x = 1", "let"), "go": ("package main", "package"),
+        "hs": ("module Main where", "module"), "html": ("<div>text</div>", "<div>"),
+        "java": ("class Cat {}", "class"), "jl": ("function f() end", "function"),
+        "js": ("const x = 1;", "const"), "json": ('{"id": 1}', '"id"'),
+        "jsx": ("const view = <p/>;", "const"), "kt": ("fun f() = 1", "fun"),
+        "lua": ("local x = 1", "local"), "m": ("@interface Cat", "interface"),
+        "md": ("# Title", "Title"), "ml": ("let answer = 42", "let"),
+        "mm": ("@protocol Reader", "protocol"), "nim": ("proc answer(): int = 42", "proc"),
+        "php": ("<?php function answer() {}", "function"), "pl": ("sub answer { 42 }", "sub"),
+        "py": ("def answer(): pass", "def"), "r": ("if (TRUE) 1", "if"),
+        "rb": ("def answer; 42; end", "def"), "rs": ("fn answer() {}", "fn"),
+        "scala": ("object App {}", "object"), "sh": ("if true; then :; fi", "if"),
+        "sol": ("contract Token {}", "contract"), "sql": ("SeLeCt 1", "SeLeCt"),
+        "swift": ("let answer = 42", "let"), "ts": ("interface Cat {}", "interface"),
+        "tsx": ("const view = <p/>;", "const"), "v": ("module top;", "module"),
+        "xml": ("<element/>", "<element"), "yaml": ("name: example", "name"),
+        "zig": ("const answer = 42;", "const"),
+    }
+    supported = LanguageProviderFactory.get_supported_extensions()
+    assert {LanguageProviderFactory.language_for_path(f"example.{ext}") for ext in supported} == examples.keys()
+    for language, (text, token) in examples.items():
+        config = LanguageProviderFactory.get_language_config(language)
+        doc = QtGui.QTextDocument(text)
+        highlighter = ModernSyntaxHighlighter(doc, config)
+        highlighter.rehighlight()
+        start = text.index(token)
+        formats = doc.firstBlock().layout().formats()
+        assert any(item.start <= start < item.start + item.length and item.format.foreground().color().isValid()
+                   for item in formats), language
+
+
+def test_highlighter_keeps_comment_tokens_inside_strings_and_resumes_after_blocks():
+    from core.language_services import LanguageProviderFactory
+    from widgets.QCodeEditor import ModernSyntaxHighlighter
+
+    doc = QtGui.QTextDocument('local value = "-- text" -- note\n--[[ block\n]] local x = 1')
+    highlighter = ModernSyntaxHighlighter(doc, LanguageProviderFactory.get_language_config("lua"))
+    highlighter.rehighlight()
+
+    def color(block_number, offset):
+        block = doc.findBlockByNumber(block_number)
+        return next(item.format.foreground().color().name() for item in block.layout().formats()
+                    if item.start <= offset < item.start + item.length)
+
+    assert color(0, 16) == "#ce9178"
+    assert color(0, 28) == "#6a9955"
+    assert color(1, 5) == "#6a9955"
+    assert color(2, 3) == "#569cd6"
+
+def test_terminal_replaces_token_after_astral_unicode():
+    from widgets.TerminalWidget import InteractiveTerminalEdit
+
+    screen = InteractiveTerminalEdit(None)
+    screen._insert_at_end("$ ")
+    screen._set_input_text("😀 file tails")
+    cursor = screen.textCursor()
+    cursor.setPosition(screen.prompt_pos + len("😀 file".encode("utf-16-le")) // 2)
+    screen.setTextCursor(cursor)
+    screen._replace_token(2, "filename")
+    assert screen.get_current_command() == "😀 filename tails"
+    assert screen._input_cursor_offset() == len("😀 filename")
+
+
+def test_format_python_preserves_logic_and_is_undoable():
+    from widgets.CodeLensBar import CleanCodeRefactorer
+
+    source = 'def f(x):\n    if x == True:\n        return "x=1"\n    return x+1\n'
+    formatted = CleanCodeRefactorer.format_code(source)
+    assert "return x + 1" in formatted
+    assert ast.dump(ast.parse(source)) == ast.dump(ast.parse(formatted))
+    editor = _make_editor(source)
+    editor.code_lens.format_entire_file()
+    assert editor.get_code() == formatted
+    editor.editor.undo()
+    assert editor.get_code() == source
+
+
+def test_save_preserves_an_externally_edited_file_and_allows_a_copy(tmp_path):
+    from app.file_manager import FileManager
+
+    path = tmp_path / "source.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    text, snapshot, text_format = FileManager._read_text(path)
+    editor = _make_editor(text)
+    path.write_text("value = 2\n", encoding="utf-8")
+    editor.set_file_path(path, snapshot=snapshot, text_format=text_format)
+    editor.set_code("value = 3\n")
+    assert not editor.save_file()
+    assert path.read_text(encoding="utf-8") == "value = 2\n"
+    assert editor.get_code() == "value = 3\n"
+    copy = tmp_path / "copy.py"
+    assert editor.save_file_as(str(copy))
+    assert copy.read_text(encoding="utf-8") == "value = 3\n"
+    assert editor.save_file()
+
+
+def test_editor_preserves_bom_encoding_line_endings_and_nonbreaking_space(tmp_path):
+    from codecs import BOM_UTF8, BOM_UTF16_BE, BOM_UTF32_LE
+    from app.file_manager import FileManager
+
+    for index, (codec, marker) in enumerate(
+        (("utf-8", BOM_UTF8), ("utf-16-be", BOM_UTF16_BE),
+         ("utf-32-le", BOM_UTF32_LE), ("cp1251", b""))
+    ):
+        path = tmp_path / f"sample{index}.txt"
+        original = "Тест\u00a0строки\r\nвторая\r\n"
+        path.write_bytes(marker + original.encode(codec))
+        text, snapshot, text_format = FileManager._read_text(path)
+        editor = _make_editor(text)
+        editor.set_file_path(path, snapshot=snapshot, text_format=text_format)
+        cursor = editor.editor.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+        cursor.insertText("третья\n")
+        assert editor.save_file(), editor.last_save_error
+        assert path.read_bytes() == marker + (original + "третья\r\n").encode(codec)
+
+
+def test_editor_can_save_utf8_after_legacy_encoding_conflict(tmp_path):
+    original = tmp_path / "legacy.txt"
+    original_bytes = "Тест\r\n".encode("cp1251")
+    original.write_bytes(original_bytes)
+    editor = _make_editor("Тест\n🙂\n")
+    editor.set_file_path(original)
+    assert not editor.save_file()
+    assert "Сохранить как UTF-8" in editor.last_save_error
+    assert original.read_bytes() == original_bytes
+    destination = tmp_path / "utf8.txt"
+    assert editor.save_file_as(str(destination), utf8=True)
+    assert destination.read_bytes() == "Тест\r\n🙂\r\n".encode("utf-8")
+    assert original.read_bytes() == original_bytes
+
+
+def test_mixed_line_endings_survive_insertions():
+    from core.text_file import decode_text_file
+
+    original = b"a\r\nb\nc\r\n"
+    _, text_format = decode_text_file(original)
+    assert text_format.encode("a\nb\nc\n") == original
+    updated = text_format.encode("a\ninserted\nb\nc\n")
+    assert updated == b"a\r\ninserted\r\nb\nc\r\n"
+    assert text_format.after_save(updated).encode("a\ninserted\nb\nc\n") == updated
+
+
+def test_format_python_on_save_when_enabled(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from utils import settings_manager
+
+    editor = _make_editor("answer=42\n")
+    path = tmp_path / "answer.py"
+    editor.set_file_path(path)
+    monkeypatch.setattr(settings_manager, "get_settings_manager", lambda: SimpleNamespace(
+        get_setting=lambda key, default=None: True if key == "format_on_save" else default,
+    ))
+    assert editor.save_file()
+    assert path.read_text(encoding="utf-8") == "answer = 42\n"
+
+
+def test_python_docstrings_handle_inline_multiline_and_nested_scopes():
+    from widgets.CodeLensBar import DocumentationGenerator
+
+    source = (
+        "#!/usr/bin/env python\n# coding: utf-8\n"
+        "from __future__ import annotations\n\n"
+        "def outer(\n    x: int, /, *args, enabled=True, **kwargs\n):\n"
+        "    @staticmethod\n    def inner(): raise ValueError()\n"
+        "    return x\n\n"
+        "def keep():\n    \"\"\"Original.\"\"\"\n"
+    )
+    updated = DocumentationGenerator.document_python(source, filename="demo.py")
+    assert updated.startswith("#!/usr/bin/env python\n# coding: utf-8\n")
+    tree = ast.parse(updated)
+    outer, keep = tree.body[-2:]
+    assert all(name in ast.get_docstring(outer) for name in ("x:", "*args:", "enabled:", "**kwargs:"))
+    assert "Raises:" not in ast.get_docstring(outer)
+    assert "ValueError" in ast.get_docstring(outer.body[1])
+    assert ast.get_docstring(keep) == "Original."
+    assert DocumentationGenerator.document_python(updated) == updated
+    only_inner = ast.parse(DocumentationGenerator.document_python(source, line=9))
+    assert ast.get_docstring(only_inner.body[1]) is None
+    assert ast.get_docstring(only_inner.body[1].body[0])
 
 
 def _make_editor(code: str = ""):
@@ -312,11 +601,12 @@ def test_terminal_opens_clean_without_banner(tmp_path, monkeypatch):
         widget.shutdown()
 
 
-def test_terminal_banner_hook_is_quiet():
+def test_terminal_banner_hook_is_quiet(tmp_path, monkeypatch):
     """The legacy show_startup_banner() keeps working but adds nothing."""
     import time
     from widgets.TerminalWidget import TerminalWidget
 
+    monkeypatch.setattr(TerminalWidget, "_session_path", lambda self: tmp_path / "terminal.json")
     app = _app()
     widget = TerminalWidget()
     widget.resize(700, 240)
@@ -325,7 +615,7 @@ def test_terminal_banner_hook_is_quiet():
     while time.time() < deadline:
         app.processEvents()
         tab = widget._current()
-        if tab is not None and tab._shell_running():
+        if tab is not None and tab.screen.toPlainText().endswith("$ "):
             break
         time.sleep(0.02)
     tab = widget._current()
