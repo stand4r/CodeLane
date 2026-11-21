@@ -22,6 +22,23 @@ ROLE_DETAILS = {
 }
 
 
+class _AlwaysTeamMode:
+    """Stand-in for the removed mode toggle button.
+
+    Team mode cannot be switched off any more, so ``isChecked()`` is always
+    ``True``. The attribute is kept because callers and tests read it.
+    """
+
+    def isChecked(self) -> bool:  # noqa: N802 - Qt naming
+        return True
+
+    def setChecked(self, _checked) -> None:  # noqa: N802 - Qt naming
+        return None
+
+    def isVisible(self) -> bool:  # noqa: N802 - Qt naming
+        return False
+
+
 class AgentTeamTab(QtWidgets.QWidget):
     agent_updated = QtCore.pyqtSignal(int, str, str, str)
     report_updated = QtCore.pyqtSignal(int, str)
@@ -63,16 +80,13 @@ class AgentTeamTab(QtWidgets.QWidget):
         title.setObjectName("agentWorkspaceTitle")
         controls.addWidget(title)
         controls.addStretch()
-        self.team_mode = QtWidgets.QPushButton()
-        self.team_mode.setCheckable(True)
-        self.team_mode.setObjectName("agentModeButton")
-        self.team_mode.toggled.connect(self._update_mode)
-        self.team_mode.setChecked(True)
+        # Team mode is always on: the mode toggle button was removed, so the
+        # composer always sends the project task to the whole team.
+        self.team_mode = _AlwaysTeamMode()
         self.stop_button = QtWidgets.QPushButton("Стоп")
         self.stop_button.setObjectName("agentStopButton")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop)
-        controls.addWidget(self.team_mode)
         controls.addWidget(self.stop_button)
         right.addLayout(controls)
         self.activity = QtWidgets.QLabel("Готов к задаче")
@@ -108,6 +122,7 @@ class AgentTeamTab(QtWidgets.QWidget):
         split.setStretchFactor(1, 2)
         split.setSizes([660, 380])
         layout.addWidget(split)
+        self._update_mode()
         self.agent_updated.connect(self._update_card, QtCore.Qt.ConnectionType.QueuedConnection)
         self.report_updated.connect(self._update_report, QtCore.Qt.ConnectionType.QueuedConnection)
         self.action_logged.connect(self._log, QtCore.Qt.ConnectionType.QueuedConnection)
@@ -118,10 +133,9 @@ class AgentTeamTab(QtWidgets.QWidget):
         self.graph.set_relationship(number, parent, dependencies)
         self._log(number, f"Родитель: {parent}. Зависимости: {dependencies}")
 
-    def _update_mode(self, team):
-        self.team_mode.setText("Режим: команда" if team else "Режим: чат")
-        self.team_mode.setToolTip("Нажмите, чтобы переключить режим отправки")
-        self.idea.setPlaceholderText("Задача для команды" if team else "Сообщение")
+    def _update_mode(self, team: bool = True):
+        """Team mode is fixed; only the composer hint has to be kept in sync."""
+        self.idea.setPlaceholderText("Задача для команды")
 
     @property
     def busy(self):

@@ -734,6 +734,13 @@ class AIAgentPanel(QtWidgets.QWidget):
         self.transcript.setWidget(column_host)
         root.addWidget(self.transcript, 1)
 
+        # The transcript opens on the last message: the pin stays active until
+        # the user scrolls up by hand, so the *first* render (session restore,
+        # startup) does not stay at the top of a long conversation.
+        self._pin_transcript_end = True
+        self._pinning_transcript = False
+        self.transcript.verticalScrollBar().valueChanged.connect(self._on_transcript_scrolled)
+
         # No quick-action button grid: the secondary actions live in the
         # right-click menu (see _show_context_menu) to keep the panel quiet.
         root.addWidget(self._build_composer())
@@ -1890,6 +1897,38 @@ class AIAgentPanel(QtWidgets.QWidget):
         if force or self._at_bottom():
             bar.setValue(bar.maximum())
 
+    # -- keep the transcript pinned to the last message ------------------
+    def _on_transcript_scrolled(self, value: int) -> None:
+        """A manual scroll upwards disables the startup pin."""
+        if getattr(self, "_pinning_transcript", False):
+            return
+        previous = getattr(self, "_transcript_last_value", None)
+        self._transcript_last_value = value
+        # Growing content only ever pushes the bar down, so an upward move is
+        # the user reading the history: never drag them back to the end.
+        if previous is not None and value < previous - 2:
+            self._pin_transcript_end = False
+
+    def _pin_transcript_to_end(self) -> None:
+        """Jump to the last message once the layout has settled."""
+        if not getattr(self, "_pin_transcript_end", False):
+            return
+        try:
+            bar = self.transcript.verticalScrollBar()
+            self._pinning_transcript = True
+            bar.setValue(bar.maximum())
+            self._transcript_last_value = bar.value()
+        except RuntimeError:
+            pass
+        finally:
+            self._pinning_transcript = False
+
+    def _schedule_pin_transcript_end(self, delays=(0, 50, 200, 500)) -> None:
+        """Enable the pin and re-apply it after the delayed layout passes."""
+        self._pin_transcript_end = True
+        for delay in delays:
+            QtCore.QTimer.singleShot(delay, self._pin_transcript_to_end)
+
     def _add_message_widget(self, widget: QtWidgets.QWidget, stretch: int = 0):
         """Append a widget above the trailing stretch of the messages layout."""
         self.messages.insertWidget(self.messages.count() - 1, widget, stretch)
@@ -1931,12 +1970,16 @@ class AIAgentPanel(QtWidgets.QWidget):
 
     def _insert_bubble(self, bubble, first_margin: int = 0):
         """Append a chat bubble widget to the message list, animated in."""
+        follow = self._pin_transcript_end or self._at_bottom()
         self._add_message_widget(bubble)
         self._bubbles = getattr(self, "_bubbles", [])
         self._bubbles.append(bubble)
         self._relayout_transcript()
         self._animate_message_in(bubble)
-        QtCore.QTimer.singleShot(0, self._scroll_to_latest)
+        # A new message may only drag the view down when the user is already at
+        # the end (or the transcript is still being pinned from a restore).
+        if follow:
+            QtCore.QTimer.singleShot(0, self._scroll_to_latest)
         return bubble
 
     @staticmethod
@@ -1952,6 +1995,10 @@ class AIAgentPanel(QtWidgets.QWidget):
         """Fade the transcript in the first time the agent view is opened."""
         super().showEvent(event)
         if getattr(self, "_shown_once", False):
+            # Layout changed while the panel was hidden: keep the last message
+            # in view unless the user scrolled away on purpose.
+            if getattr(self, "_pin_transcript_end", False):
+                self._schedule_pin_transcript_end()
             return
         self._shown_once = True
         try:
@@ -1959,6 +2006,9 @@ class AIAgentPanel(QtWidgets.QWidget):
             fade_in(self.transcript, duration=DURATION["normal"])
         except Exception:
             pass
+        # First paint: the scroll area gets its real viewport only now, so the
+        # restored conversation has to be pushed to the end once more.
+        self._schedule_pin_transcript_end()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1990,7 +2040,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                     bubble.apply_width(width)
             except RuntimeError:
                 continue
-        if self._at_bottom():
+        if self._pin_transcript_end or self._at_bottom():
             QtCore.QTimer.singleShot(0, self._scroll_to_latest)
 
     def _remove_widget(self, widget):
@@ -2355,7 +2405,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                 self._append_assistant(message.content, mark_thinking=False)
         self._last_author = restored[-1].role
         self._refresh_menus()
-        self._scroll_to_latest()
+        self._schedule_pin_transcript_end()
         return len(restored)
 
     def _clear_transcript_widgets(self):
@@ -2399,7 +2449,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                 elif message.role == "assistant":
                     self._append_assistant(message.content, mark_thinking=False)
             self._last_author = self._history[-1].role
-            self._scroll_to_latest()
+            self._schedule_pin_transcript_end()
         else:
             self._append_welcome()
         preferences = target.get("preferences") or {}
@@ -2731,15 +2781,16 @@ class AIAgentPanel(QtWidgets.QWidget):
         if host is not None:
             group, index = host
             team = group.widget(index)
-            if team.team_mode.isChecked() or team.busy:
-                if self._worker is not None:
-                    self._append_notice("Дождитесь завершения текущего ответа.", "warn")
-                elif team.busy:
-                    if team.enqueue(raw):
-                        self.input.clear()
-                elif team.submit(raw):
+            # Team mode is always on: the mode toggle was removed, so every
+            # message goes to the agent team (busy team queues it).
+            if self._worker is not None:
+                self._append_notice("Дождитесь завершения текущего ответа.", "warn")
+            elif team.busy:
+                if team.enqueue(raw):
                     self.input.clear()
-                return
+            elif team.submit(raw):
+                self.input.clear()
+            return
         mentions = parsed.mentions
         text = parsed.text or raw
         self.input.clear()
@@ -3660,7 +3711,14 @@ class _UserBubble(QtWidgets.QWidget):
             self.retry_btn.clicked.connect(lambda: self.regenerate_requested.emit(self))
             row.addWidget(self.retry_btn)
             row.addStretch(1)
-            self.actions.hide()
+            # The action row is always part of the layout and keeps a constant
+            # height: hovering only toggles the buttons themselves. Showing the
+            # buttons therefore never changes the bubble geometry, so the whole
+            # transcript (and the scroll position) no longer jumps.
+            self.actions.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred,
+                                       QtWidgets.QSizePolicy.Policy.Fixed)
+            self.actions.setFixedHeight(self._actions_height())
+            self.set_actions_visible(False)
             pill_layout.addWidget(self.actions)
 
         outer.addWidget(self.pill, 0)
@@ -3668,14 +3726,30 @@ class _UserBubble(QtWidgets.QWidget):
             outer.addStretch(1)
 
     # -- hover actions -------------------------------------------------
+    def _actions_height(self) -> int:
+        """Constant height reserved for the hover action row."""
+        height = 0
+        for button in (getattr(self, "copy_btn", None), getattr(self, "retry_btn", None)):
+            if button is not None:
+                height = max(height, button.sizeHint().height())
+        if not height:
+            height = max(18, self.fontMetrics().height())
+        return height + 4  # + top margin of the button row
+
+    def set_actions_visible(self, visible: bool) -> None:
+        """Show/hide only the buttons — the reserved row keeps its height."""
+        for button in (getattr(self, "copy_btn", None), getattr(self, "retry_btn", None)):
+            if button is not None:
+                button.setVisible(bool(visible))
+
     def enterEvent(self, event):
         if self.actions is not None and self._text:
-            self.actions.show()
+            self.set_actions_visible(True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         if self.actions is not None:
-            self.actions.hide()
+            self.set_actions_visible(False)
         super().leaveEvent(event)
 
     @property
