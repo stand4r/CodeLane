@@ -488,6 +488,7 @@ def test_ai_panel_has_model_and_scope_pickers():
     assert any(a.text() == "Прикреплять выделение / строку"
                for a in panel._scope_menu.actions())
     assert any(a.text() for a in panel._model_menu.actions())
+    panel.setFixedWidth(190)
     panel.resize(190, 620)
     panel.show()
     _APP.processEvents()

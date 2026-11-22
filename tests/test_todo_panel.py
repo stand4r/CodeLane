@@ -236,7 +236,7 @@ def test_todo_panel_location_jump_signal(qapp):
 
         panel._jump_to_location(file_path, 77)
         assert len(jumped) == 1
-        assert jumped[0] == (file_path, 77)
+        assert jumped[0] == (str(Path(file_path).resolve()), 77)
 
 
 def test_todo_panel_live_badge_signal(qapp):

@@ -85,7 +85,7 @@ def qapp():
 @pytest.fixture
 def temp_project_dir():
     temp_dir = tempfile.mkdtemp(prefix="pyscribe_analysis_")
-    yield Path(temp_dir)
+    yield Path(temp_dir).resolve()
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
