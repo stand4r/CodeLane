@@ -125,6 +125,28 @@ installer\build_installer.bat
 
 ---
 
+## GitHub-токен: разработка и публикация
+
+Встроенная интеграция с GitHub и ручной `git push` используют один и тот же Personal Access Token
+(scope `repo`).
+
+- **Где хранится:** `config/github_auth.json` (создаётся при входе через панель Git) или переменная
+  окружения `GITHUB_TOKEN` / `GH_TOKEN` — переменная приоритетнее.
+- **Файл игнорируется git:** `config/github_auth.json` указан в `.gitignore` (строка 36), в репозитории
+  лежит только `config/github_auth.json.example`. Никогда не коммитьте реальный файл и не снимайте
+  его с ignore.
+- **Не выводите токен в терминал:** ни `echo $GITHUB_TOKEN`, ни `git remote add origin https://<token>@github.com/...`.
+  Токен в URL remote сохраняется в `.git/config` открытым текстом. CodeLane передаёт секрет git через
+  окружение (`GIT_CONFIG_*` → `http.extraheader`) и маскирует его в выводе, remote остаётся чистым.
+- **Ручной push из терминала:** `python tools/push_github.py [--branch <ветка>]` — читает токен из
+  файла/ENV, не печатает его, маскирует вывод git и не пишет секрет в конфиг.
+- **Проверка гигиены:** `git check-ignore -v config/github_auth.json` и
+  `git log --all -- config/github_auth.json` (в истории файла быть не должно).
+- **При подозрении на утечку:** немедленно отозвать токен на github.com/settings/tokens, выпустить
+  новый, при необходимости вычистить `.git/config` (`git remote set-url origin https://github.com/<owner>/<repo>.git`).
+
+---
+
 ## Архитектура проекта
 
 ```text

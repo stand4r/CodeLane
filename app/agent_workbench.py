@@ -279,6 +279,18 @@ def run_workbench(window, name, payload, complete):
         root = Path(requested_root)
     if name == "explorer_edit":
         return _edit_explorer(window, payload, root)
+    if name == "test_results":
+        location = window._find_special_tab("testResults")
+        if location is None:
+            return {"ready": False, "reason": "В проекте ещё нет результатов pytest."}
+        group, index = location
+        panel = group.widget(index)
+        if panel.exit_code is None:
+            return {"ready": False, "reason": "Тесты ещё выполняются."}
+        rows = [row for row in panel.results if not payload.get("failed_only") or row["outcome"] == "failed"]
+        items = [{**row, "detail": row["detail"][-1000:]} for row in _page(rows, payload)]
+        return {"ready": True, "exit_code": panel.exit_code, "nodeid": panel.nodeid,
+                "total": len(rows), "items": items}
     if name in ("read_document", "preview_document"):
         from services.workbench_documents import DOCUMENT_SUFFIXES, read_document
 

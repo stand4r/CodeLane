@@ -24,8 +24,51 @@ from core.code_analysis.lsp_client import LspClient, LspDiagnostic, LspLocation,
 from core.code_analysis.openapi_bridge import OpenApiBridge, paths_match
 from core.code_analysis.registry import AnalysisLevel, LanguageRegistry, get_language_registry
 from core.code_analysis.service import UnifiedCodeAnalysisService
-from core.code_analysis.syntax_treesitter import TreeSitterEngine, get_treesitter_engine
+from core.code_analysis.syntax_treesitter import (
+    TREE_SITTER_AVAILABLE,
+    TreeSitterEngine,
+    get_treesitter_engine,
+)
 from core.code_analysis.text_analyzer import TextCodeAnalyzer
+from core.code_analysis.treesitter_pack import pack_has_language
+
+
+# ---------------------------------------------------------------------
+# Level 2 (AST) backend guards
+#
+# The AST layer has two interchangeable backends: the native ``tree_sitter``
+# bindings (grammars as separate ``tree_sitter_*`` modules) and
+# ``tree-sitter-language-pack`` (grammars fetched lazily).  Environments exist
+# where only one of them is installed, so Level 2 assertions must SKIP instead
+# of FAIL when neither backend can hand out a parser.
+# ---------------------------------------------------------------------
+def level2_backend_status(language: str = "python") -> str:
+    """Human-readable description of the Level 2 backend for ``language``."""
+    native = "есть" if TREE_SITTER_AVAILABLE else "нет"
+    pack = "есть" if pack_has_language(language) else "нет"
+    return (
+        f"Level 2 AST-бэкенд не выдал парсер для языка '{language}' "
+        f"(tree_sitter: {native}, tree-sitter-language-pack: {pack})"
+    )
+
+
+def require_tree_sitter(result, language: str) -> None:
+    """Skip (not fail) when the AST backend cannot parse ``language`` here."""
+    if not getattr(result, "is_tree_sitter", False):
+        pytest.skip(
+            level2_backend_status(language)
+            + "; установите tree-sitter-language-pack>=1.9.1 (requirements.txt)"
+            " или tree_sitter + соответствующий tree_sitter_* парсер"
+        )
+
+
+requires_level2_backend = pytest.mark.skipif(
+    not (TREE_SITTER_AVAILABLE or pack_has_language("python")),
+    reason=(
+        "Level 2 AST-бэкенд недоступен: нет ни tree_sitter, ни "
+        "tree-sitter-language-pack (см. requirements.txt)"
+    ),
+)
 
 
 # =====================================================================
@@ -70,6 +113,7 @@ def test_level1_text_analyzer(temp_project_dir):
 # =====================================================================
 # 2. Level 2: Tree-sitter Multi-Language Symbol Extraction
 # =====================================================================
+@requires_level2_backend
 def test_level2_treesitter_python_extraction():
     engine = get_treesitter_engine()
     py_code = """
@@ -84,7 +128,7 @@ def standalone_helper():
     pass
 """
     res = engine.parse(py_code, "python", "processor.py")
-    assert res.is_tree_sitter is True
+    require_tree_sitter(res, "python")
     names = [s.name for s in res.symbols]
     kinds = {s.name: s.kind for s in res.symbols}
 
@@ -98,6 +142,7 @@ def standalone_helper():
     assert kinds["standalone_helper"] == "function"
 
 
+@requires_level2_backend
 def test_level2_treesitter_javascript_typescript():
     engine = get_treesitter_engine()
     ts_code = """
@@ -117,7 +162,7 @@ export function formatUser(profile: UserProfile): string {
 }
 """
     res = engine.parse(ts_code, "typescript", "service.ts")
-    assert res.is_tree_sitter is True
+    require_tree_sitter(res, "typescript")
     names = [s.name for s in res.symbols]
     assert "UserProfile" in names
     assert "UserService" in names
@@ -125,6 +170,7 @@ export function formatUser(profile: UserProfile): string {
     assert "formatUser" in names
 
 
+@requires_level2_backend
 def test_level2_treesitter_go():
     engine = get_treesitter_engine()
     go_code = """
@@ -147,7 +193,7 @@ func NewStore() *MemoryStore {
 }
 """
     res = engine.parse(go_code, "go", "main.go")
-    assert res.is_tree_sitter is True
+    require_tree_sitter(res, "go")
     names = [s.name for s in res.symbols]
     assert "Storage" in names
     assert "MemoryStore" in names
@@ -155,6 +201,7 @@ func NewStore() *MemoryStore {
     assert "NewStore" in names
 
 
+@requires_level2_backend
 def test_level2_treesitter_rust():
     engine = get_treesitter_engine()
     rs_code = """
@@ -180,7 +227,7 @@ impl Config {
 fn execute() {}
 """
     res = engine.parse(rs_code, "rust", "lib.rs")
-    assert res.is_tree_sitter is True
+    require_tree_sitter(res, "rust")
     names = [s.name for s in res.symbols]
     assert "Status" in names
     assert "Config" in names
@@ -189,6 +236,7 @@ fn execute() {}
     assert "execute" in names
 
 
+@requires_level2_backend
 def test_level2_treesitter_csharp_and_java():
     engine = get_treesitter_engine()
     cs_code = """
@@ -205,7 +253,7 @@ namespace Demo {
 }
 """
     res_cs = engine.parse(cs_code, "c_sharp", "Calc.cs")
-    assert res_cs.is_tree_sitter is True
+    require_tree_sitter(res_cs, "c_sharp")
     names_cs = [s.name for s in res_cs.symbols]
     assert "ICalculator" in names_cs
     assert "Calculator" in names_cs
@@ -219,12 +267,13 @@ public class OrderService {
 }
 """
     res_java = engine.parse(java_code, "java", "OrderService.java")
-    assert res_java.is_tree_sitter is True
+    require_tree_sitter(res_java, "java")
     names_java = [s.name for s in res_java.symbols]
     assert "OrderService" in names_java
     assert "processOrder" in names_java
 
 
+@requires_level2_backend
 def test_level2_treesitter_cpp():
     engine = get_treesitter_engine()
     cpp_code = """
@@ -242,13 +291,14 @@ void Renderer::render(Point p) {
 }
 """
     res = engine.parse(cpp_code, "cpp", "render.cpp")
-    assert res.is_tree_sitter is True
+    require_tree_sitter(res, "cpp")
     names = [s.name for s in res.symbols]
     assert "Point" in names
     assert "Renderer" in names
     assert "render" in names
 
 
+@requires_level2_backend
 def test_level2_incomplete_broken_code_tolerance():
     """Verify that Tree-sitter still extracts valid symbols when syntax is incomplete."""
     engine = get_treesitter_engine()
@@ -264,7 +314,7 @@ def next_valid_function():
     return 100
 """
     res = engine.parse(broken_py, "python", "broken.py")
-    assert res.is_tree_sitter is True
+    require_tree_sitter(res, "python")
     names = [s.name for s in res.symbols]
     assert "ImportantClass" in names
     assert "valid_method" in names
@@ -348,12 +398,15 @@ def test_new_language_servers_and_local_outline(monkeypatch, temp_project_dir):
             assert any(symbol.name == "demo" for symbol in engine._fallback_parse(source, spec.id, path).symbols)
 
 
+@requires_level2_backend
 def test_language_status_and_install_hints(temp_project_dir):
     service = UnifiedCodeAnalysisService(str(temp_project_dir))
     rs_file = str(temp_project_dir / "main.rs")
 
     status = service.get_language_status(rs_file)
     assert status["lang_id"] == "rust"
+    if not status["treesitter"]:
+        pytest.skip(level2_backend_status("rust"))
     assert status["treesitter"] is True
     # If rust-analyzer is not installed on host, server_found is False and install_hint is non-empty
     if not status["server_found"]:
@@ -385,6 +438,36 @@ def test_paths_match():
     assert paths_match("/api/v1/users/{id}", "/api/v1/users/42") is True
     assert paths_match("/api/v1/users/{id}", "/api/v1/users/${userId}") is True
     assert paths_match("/api/v1/users/{id}", "/api/v1/orders/42") is False
+
+
+def test_openapi_indexing_without_root_is_a_no_op():
+    """A scan must never walk ``None``: no project means no indexing thread."""
+    bridge = OpenApiBridge()
+    bridge.rebuild_index()                  # no root configured at all
+    bridge.set_root(None)
+    bridge.rebuild_index()                  # still no root
+    assert bridge.start_indexing() is None  # nothing to scan -> no thread
+    assert bridge.operations == [] and bridge.client_calls == []
+
+
+def test_openapi_scan_stops_when_project_changes(temp_project_dir):
+    """set_root() during a running scan cancels it instead of killing the thread."""
+    (temp_project_dir / "client.ts").write_text(
+        "fetch('/api/v1/users/42');\n", encoding="utf-8")
+    bridge = OpenApiBridge(str(temp_project_dir))
+    walked = []
+    original = bridge._index_source_file
+
+    def index_then_switch(path):
+        walked.append(path)
+        bridge.set_root(None)               # project closed mid-scan
+        return original(path)
+
+    bridge._index_source_file = index_then_switch
+    bridge.rebuild_index()                  # used to raise TypeError: ... not NoneType
+    assert walked, "scan did not reach the source file"
+    assert bridge.operations == []
+    assert bridge.client_calls == [] and bridge.server_handlers == []
 
 
 def test_openapi_end_to_end_navigation(temp_project_dir):

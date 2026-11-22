@@ -30,21 +30,15 @@ class ExtensionManager:
         self.errors: Dict[str, str] = {}
         self._modules = {}
 
-    def set_project_root(self, root: Optional[str]) -> None:
+    def set_project_root(self, root: Optional[str], *, confirm=None) -> None:
         self.deactivate_project_extensions()
         self.errors.clear()
         self.context.root_path = Path(root).resolve() if root else None
-        self.load_project_extensions()
+        self.load_project_extensions(confirm=confirm)
 
-    def _manifest_dirs(self) -> List[Path]:
-        dirs = [self.app_root / "extensions" / "installed"]
-        if self.context.root_path:
-            dirs.insert(0, self.context.root_path / ".pyscribe" / "extensions")
-        return dirs
-
-    def discover(self) -> List[Tuple[Path, dict]]:
+    def discover(self, bases) -> List[Tuple[Path, dict]]:
         found = []
-        for base in self._manifest_dirs():
+        for base in bases:
             if not base.exists():
                 continue
             candidates = [base / "pyscribe-extension.json"]
@@ -58,14 +52,21 @@ class ExtensionManager:
                     self.errors[str(manifest_path)] = str(exc)
         return found
 
-    def load_project_extensions(self) -> None:
-        for directory, manifest in self.discover():
+    def load_project_extensions(self, *, confirm=None) -> None:
+        installed = self.app_root / "extensions" / "installed"
+        root = self.context.root_path
+        project_extensions = self.discover([root / ".pyscribe" / "extensions"]) if root else []
+        if project_extensions and confirm and confirm(root):
+            for directory, manifest in project_extensions:
+                self._activate(directory, manifest)
+        for directory, manifest in self.discover([installed]):
             self._activate(directory, manifest)
 
     def _activate(self, directory: Path, manifest: dict) -> None:
         ext_id = manifest["id"]
         if not isinstance(ext_id, str) or not ext_id or len(ext_id) > 80:
-            raise ValueError("Invalid extension id")
+            self.errors[str(directory)] = "Некорректный идентификатор расширения"
+            return
         if ext_id in self.extensions:
             return
         try:

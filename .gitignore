@@ -39,6 +39,12 @@ config/github_auth.json
 .codelane/
 logs/*.log
 logs/*.log.*
+# Диагностические выгрузки прогонов (stdout/stderr тестов и отладки)
+logs/*.out
+logs/*.err
+logs/*.code
+logs/*.txt
+logs/*.bat
 !logs/.gitkeep
 scratch/
 

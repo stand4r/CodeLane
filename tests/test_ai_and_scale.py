@@ -718,7 +718,7 @@ def test_models_hidden_without_api_key():
     assert "DeepSeek Flash" in labels
 
 
-def test_messages_queue_while_busy():
+def test_messages_queue_while_busy(monkeypatch):
     """Sending during an answer must queue, not drop, the message."""
     from widgets import AIAgentPanel as panel_module
     panel = panel_module.AIAgentPanel(None)
@@ -735,10 +735,14 @@ def test_messages_queue_while_busy():
         assert "2" in panel.queue_chip.text()
     finally:
         panel._worker = None
-    # Draining pops one message and starts it.
+    # Check dispatch without leaving a real worker running into the next test.
+    dispatched = []
+    monkeypatch.setattr(panel, "_send", lambda *args: dispatched.append(args))
     panel._drain_queue()
     _APP.processEvents()
     assert panel.pending_count() == 1
+    assert dispatched == [("второе сообщение", "", None)]
+    panel.deleteLater()
 
 
 def test_file_scope_is_not_overridden_by_project_sync():

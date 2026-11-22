@@ -14,6 +14,28 @@ from time import perf_counter
 
 from core.project_state import write_json
 
+# SQLAlchemy (and the DBAPI drivers it pulls in) are *native* dependencies whose
+# first import walks a deep import chain.  Resolve them once, on the import
+# thread, instead of lazily inside ``DatabaseSession`` — that lazy import ran on
+# a Qt thread-pool worker and intermittently killed the interpreter with
+# "Windows fatal exception: access violation" inside importlib/re/sysconfig
+# (see core/database_workspace.py history).  The workbench still degrades
+# gracefully when the dependency is missing.
+try:  # pragma: no cover - trivial import guard
+    from sqlalchemy import (
+        BigInteger, Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, Text,
+        and_, create_engine, event, inspect, literal_column, select,
+    )
+    from sqlalchemy.engine import URL
+    from sqlalchemy.pool import NullPool
+    from sqlalchemy.schema import CreateTable
+    SQLALCHEMY_ERROR: str | None = None
+except ImportError as exc:  # pragma: no cover - dependency missing
+    (BigInteger, Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, Text,
+     and_, create_engine, event, inspect, literal_column, select, URL, NullPool,
+     CreateTable) = (None,) * 19
+    SQLALCHEMY_ERROR = f"SQLAlchemy не установлен: {exc}"
+
 
 ENGINES = {
     "sqlite": ("SQLite", "sqlite+pysqlite", 0),
@@ -67,8 +89,6 @@ class DatabaseProfile:
         return os.environ.get(self.password_env) if self.password_env else None
 
     def url(self, password=None):
-        from sqlalchemy.engine import URL
-
         if self.kind == "sqlite":
             path = Path(self.database).resolve()
             mode = "ro" if self.read_only else "rw"
@@ -340,8 +360,8 @@ class DatabaseSession:
     """Each operation borrows a connection and returns plain data to the UI."""
 
     def __init__(self, profile, session_password=None):
-        from sqlalchemy import create_engine
-        from sqlalchemy.pool import NullPool
+        if SQLALCHEMY_ERROR:
+            raise RuntimeError(SQLALCHEMY_ERROR)
 
         self.profile = profile
         password = profile.password(session_password)
@@ -354,15 +374,11 @@ class DatabaseSession:
         }[profile.kind]
         self.engine = create_engine(url, connect_args=options, poolclass=NullPool, hide_parameters=True)
         if profile.kind == "sqlite":
-            from sqlalchemy import event
-
             @event.listens_for(self.engine, "connect")
             def enable_foreign_keys(connection, _record):
                 connection.execute("PRAGMA foreign_keys = ON")
 
     def schemas(self):
-        from sqlalchemy import inspect
-
         with self.engine.connect() as connection:
             inspector = inspect(connection)
             default = inspector.default_schema_name
@@ -382,22 +398,16 @@ class DatabaseSession:
             return list(connection.exec_driver_sql(sql).scalars())
 
     def tables(self, schema):
-        from sqlalchemy import inspect
-
         with self.engine.connect() as connection:
             inspector = inspect(connection)
             return ([TableRef(schema, name) for name in inspector.get_table_names(schema or None)]
                     + [TableRef(schema, name, True) for name in inspector.get_view_names(schema or None)])
 
     def _table(self, connection, ref):
-        from sqlalchemy import MetaData, Table
-
         return Table(ref.name, MetaData(), schema=ref.schema or None, autoload_with=connection,
                      resolve_fks=False)
 
     def browse(self, ref, offset=0, limit=200):
-        from sqlalchemy import literal_column, select
-
         with self.engine.connect() as connection:
             table = self._table(connection, ref)
             primary = tuple(col.name for col in table.primary_key)
@@ -411,8 +421,6 @@ class DatabaseSession:
             return tuple(result.keys()), rows[:limit], primary, len(rows) > limit
 
     def structure(self, ref):
-        from sqlalchemy import inspect
-
         with self.engine.connect() as connection:
             inspector = inspect(connection)
             schema = ref.schema or None
@@ -437,8 +445,6 @@ class DatabaseSession:
     def mutate(self, ref, action, values, original=None):
         if ref.view:
             raise ValueError("Редактирование представлений выполняется через SQL")
-        from sqlalchemy import and_
-
         with self.engine.begin() as connection:
             table = self._table(connection, ref)
             converted = {name: self._convert(table.c[name], value) for name, value in values.items()}
@@ -547,9 +553,6 @@ class DatabaseSession:
         return result
 
     def create_table_sql(self, schema, name, columns):
-        from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, Text
-        from sqlalchemy.schema import CreateTable
-
         types = {"INTEGER": Integer, "BIGINT": BigInteger, "VARCHAR": lambda: String(255),
                  "TEXT": Text, "FLOAT": Float, "BOOLEAN": Boolean, "TIMESTAMP": DateTime}
         if not name or "\x00" in name or not columns or len({item[0] for item in columns}) != len(columns):
@@ -565,8 +568,6 @@ class DatabaseSession:
         return str(CreateTable(table).compile(dialect=self.engine.dialect)).strip() + ";"
 
     def select_table_sql(self, ref, limit=200):
-        from sqlalchemy import MetaData, Table, literal_column, select
-
         table = Table(ref.name, MetaData(), schema=ref.schema or None)
         query = select(literal_column("*")).select_from(table).limit(limit)
         return str(query.compile(dialect=self.engine.dialect, compile_kwargs={"literal_binds": True})).strip() + ";"

@@ -384,13 +384,14 @@ class CloneGitHubDialog(QtWidgets.QDialog):
         self.status_label.setText("Клонирование репозитория…")
         QtWidgets.QApplication.processEvents()
 
-        # Inject auth token if available so private repos work seamlessly
-        actual_url = self.github_service.inject_token_into_url(clone_url)
+        # Токен не подставляется в URL: он уходит в git через окружение
+        # (см. GitHubService.get_auth_git_env), поэтому не попадает ни в
+        # командную строку, ни в .git/config, ни в вывод.
         env = self.github_service.get_auth_git_env()
 
         try:
             result = run_hidden(
-                ["git", "clone", actual_url, str(target)],
+                ["git", "clone", clone_url, str(target)],
                 cwd=str(parent),
                 env=env,
                 text=True,
@@ -401,16 +402,12 @@ class CloneGitHubDialog(QtWidgets.QDialog):
                 timeout=180
             )
             if result.returncode != 0:
-                out = result.stdout.strip()
-                # Clean any exposed token from error output
-                token = self.github_service.get_token()
-                if token:
-                    out = out.replace(token, "***")
+                out = self.github_service.mask_secrets(result.stdout.strip())
                 self.status_label.setText(out or "Ошибка клонирования (Git clone failed)")
                 self.clone_btn.setEnabled(True)
                 return
         except (OSError, subprocess.SubprocessError) as exc:
-            self.status_label.setText(str(exc))
+            self.status_label.setText(self.github_service.mask_secrets(str(exc)))
             self.clone_btn.setEnabled(True)
             return
 
@@ -750,14 +747,11 @@ class GitPanel(QtWidgets.QFrame):
                 errors="replace",
                 timeout=timeout
             )
-            out = p.stdout.strip()
-            # Mask token from output for security
-            token = self.github_service.get_token()
-            if token:
-                out = out.replace(token, "***")
+            out = self.github_service.mask_secrets(p.stdout.strip())
             return p.returncode == 0, out
         except (OSError, subprocess.SubprocessError) as exc:
-            return False, str(exc)
+            # В тексте исключения может оказаться командная строка с URL.
+            return False, self.github_service.mask_secrets(str(exc))
 
     def _detect_github(self, url: str = None):
         """Fill the GitHub card from the remote URL (already read off-thread)."""
@@ -879,9 +873,10 @@ class GitPanel(QtWidgets.QFrame):
         dialog.exec()
 
     def _on_repo_published(self, clone_url: str):
-        auth_url = self.github_service.inject_token_into_url(clone_url)
+        # В remote пишется чистый URL без токена: авторизация приходит из
+        # get_auth_git_env() при каждом git-вызове, .git/config остаётся без секрета.
         self._run(["remote", "remove", "origin"])
-        ok, out = self._run(["remote", "add", "origin", auth_url])
+        ok, out = self._run(["remote", "add", "origin", clone_url])
         if not ok:
             self.status.setText(f"Ошибка привязки remote: {out}")
             QtWidgets.QMessageBox.critical(self, "Ошибка публикации", f"Не удалось привязать удалённый репозиторий origin:\n\n{out}")
@@ -963,8 +958,7 @@ class GitPanel(QtWidgets.QFrame):
 
         def work():
             if remote and "github.com" in remote and authenticated:
-                auth_url = self.github_service.inject_token_into_url(remote)
-                return self._run(["pull", auth_url, branch])
+                return self._run(["pull", "origin", branch])
             return self._run(["pull"])
 
         def done(result):
@@ -993,8 +987,7 @@ class GitPanel(QtWidgets.QFrame):
 
         def work():
             if remote and "github.com" in remote and authenticated:
-                auth_url = self.github_service.inject_token_into_url(remote)
-                return self._run(["push", auth_url, f"HEAD:{branch}"])
+                return self._run(["push", "origin", f"HEAD:{branch}"])
             return self._run(["push"])
 
         def done(result):
@@ -1023,9 +1016,8 @@ class GitPanel(QtWidgets.QFrame):
 
         def work():
             if remote and "github.com" in remote and authenticated:
-                auth_url = self.github_service.inject_token_into_url(remote)
-                pull = self._run(["pull", auth_url, branch])
-                push = self._run(["push", auth_url, f"HEAD:{branch}"])
+                pull = self._run(["pull", "origin", branch])
+                push = self._run(["push", "origin", f"HEAD:{branch}"])
             else:
                 pull = self._run(["pull"])
                 push = self._run(["push"])

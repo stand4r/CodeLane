@@ -7,9 +7,12 @@ import re
 import sys
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from core.analysis_cache import AnalyzerCache
+from core.file_snapshot import snapshot_bytes, snapshot_file
 
 
 @dataclass
@@ -80,6 +83,36 @@ class BinaryInfo:
     symbols: List[SymbolInfo] = field(default_factory=list)
     issues: List[Issue] = field(default_factory=list)
     metrics: Dict[str, Any] = field(default_factory=dict)
+
+
+def _decode_analyzer_result(result_type, payload):
+    data = dict(payload)
+    for key, item_type in (
+        ("symbols", SymbolInfo), ("issues", Issue),
+        ("nodes", StructureNode), ("edges", StructureEdge),
+    ):
+        data[key] = [item_type(**item) for item in data[key]]
+    if not isinstance(data["metrics"], dict) or not isinstance(data["imports"], list):
+        raise ValueError("Invalid analyzer cache entry")
+    return result_type(**data)
+
+
+def _file_digest(path: Path) -> Optional[str]:
+    try:
+        digest = snapshot_file(path)
+    except OSError:
+        return None
+    return digest.hex() if digest is not None else None
+
+
+def _decode_security_findings(payload):
+    if not isinstance(payload, list) or any(
+        not isinstance(item, dict) or not isinstance(item.get("line_number"), int)
+        or not isinstance(item.get("filename"), str) for item in payload
+    ):
+        raise ValueError("Invalid Bandit cache entry")
+    return payload
+
 
 @dataclass
 class ProjectAnalysis:
@@ -160,6 +193,7 @@ class ProjectIntelligenceEngine:
         self._source_cache_weight = 0
         self._metrics_cache = OrderedDict()
         self._security_cache = OrderedDict()
+        self._disk_cache = None
         self.last_scan = None
         self.scan_truncated = False
         self.skipped_dirs = 0
@@ -173,6 +207,7 @@ class ProjectIntelligenceEngine:
         self._security_cache.clear()
         self._source_cache_weight = 0
         self.root = Path(root).resolve() if root else None
+        self._disk_cache = AnalyzerCache(self.root) if self.root else None
         self.analysis = ProjectAnalysis(str(self.root) if self.root else '')
 
     def iter_source_files(self) -> List[Path]:
@@ -219,50 +254,72 @@ class ProjectIntelligenceEngine:
                 continue
         return sorted(set(files) | set(binaries), key=lambda p: str(p).lower())
 
+    def _source_snapshot(self, path: Path):
+        try:
+            with path.open("rb") as stream:
+                data = stream.read(self.max_source_bytes + 1)
+        except OSError:
+            return '', None
+        if len(data) > self.max_source_bytes:
+            return '', None
+        text = data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        return text, snapshot_bytes(data).hex()
+
     def _read(self, path: Path) -> str:
-        try:
-            if path.stat().st_size > self.max_source_bytes:
-                # Generated/minified data: parsing it would cost memory and
-                # produce noise rather than structure.
-                return ''
-        except OSError:
-            return ''
-        try:
-            return path.read_text(encoding='utf-8')
-        except UnicodeDecodeError:
-            return path.read_text(encoding='utf-8', errors='replace')
-        except OSError:
-            return ''
+        return self._source_snapshot(path)[0]
 
     def _analyze_source(self, path, analyzer):
-        try:
-            stat = path.stat()
-            fingerprint = stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino
-        except OSError:
-            fingerprint = None
+        from core.analyzers.polyglot import GenericResult
+        from core.code_analysis.treesitter_pack import pack_has_language
 
+        text, digest = self._source_snapshot(path)
         cached = self._source_cache.pop(path, None)
         if cached is not None:
-            if fingerprint is not None and cached[0] == fingerprint:
+            if digest is not None and cached[0] == digest:
                 self._source_cache[path] = cached
                 return cached[1], cached[2]
             self._source_cache_weight -= cached[3]
 
-        text = self._read(path)
-        result = analyzer.analyze(path, text)
-        if fingerprint is not None and text:
+        def decode(payload):
+            return _decode_analyzer_result(GenericResult, payload)
+
+        result = self._disk_cache.load("source", path, digest, decode)
+        if result is None:
+            result = analyzer.analyze(path, text)
+            # A failed lazy grammar load can succeed on the next application run.
+            transient_fallback = (
+                result.metrics.get("parser") == "fallback"
+                and analyzer.available and pack_has_language(result.language)
+            )
+            if digest is not None and not transient_fallback:
+                self._disk_cache.store("source", path, digest, asdict(result))
+        if digest is not None:
             # Account for retained Python objects as well as source text.
             weight = sys.getsizeof(text) + 256 * (
                 1 + len(result.symbols) + len(result.nodes) + len(result.edges)
                 + len(result.issues) + len(result.imports)
             )
             if weight <= self.SOURCE_CACHE_BUDGET:
-                self._source_cache[path] = (fingerprint, text, result, weight)
+                self._source_cache[path] = (digest, text, result, weight)
                 self._source_cache_weight += weight
                 while self._source_cache_weight > self.SOURCE_CACHE_BUDGET:
                     _, oldest = self._source_cache.popitem(last=False)
                     self._source_cache_weight -= oldest[3]
         return text, result
+
+    def _analyze_binary(self, path, analyzer):
+        from core.analyzers.binary import BinaryResult
+
+        digest = _file_digest(path)
+        result = self._disk_cache.load(
+            "binary", path, digest, lambda payload: _decode_analyzer_result(BinaryResult, payload)
+        )
+        if result is None:
+            result = analyzer.analyze(path)
+            # LIEF opens the file independently of the raw analysis.
+            if digest is not None and result.metrics.get("sha256") == digest and _file_digest(path) == digest:
+                self._disk_cache.store("binary", path, digest, asdict(result))
+        return result
 
     def _analysis_source_text(self, path: Path) -> str:
         cached = self._source_cache.get(path)
@@ -406,7 +463,7 @@ class ProjectIntelligenceEngine:
                 analysis.structure_edges.extend(result.edges)
             elif binary_analyzer is not None:
                 try:
-                    result = binary_analyzer.analyze(path)
+                    result = self._analyze_binary(path, binary_analyzer)
                     b = BinaryInfo(
                         path=str(path), format=result.format, architecture=result.architecture, bits=result.bits,
                         entrypoint=result.entrypoint, size=result.metrics['size'] if 'size' in result.metrics else path.stat().st_size,
@@ -478,24 +535,25 @@ class ProjectIntelligenceEngine:
         for info in analysis.files.values():
             if info.language != 'python': continue
             text = self._analysis_source_text(Path(info.path))
-            digest = hashlib.sha256(text.encode('utf-8')).digest()
+            digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
             cached = self._metrics_cache.get(info.path)
-            if cached and cached[0] == digest:
-                info.metrics.update(cached[1])
-                self._metrics_cache.move_to_end(info.path)
-                continue
+            metrics = cached[1] if cached and cached[0] == digest else self._disk_cache.load(
+                "metrics", info.path, digest, dict
+            )
             try:
-                tree = ast.parse(text)
-                visitor = ComplexityVisitor.from_ast(tree)
-                blocks = visitor.blocks
-                raw = raw_analyze(text)
-                comments = (raw.comments + raw.multi) / float(raw.sloc) * 100 if raw.sloc else 0
-                mi = mi_compute(h_visit_ast(tree).total.volume, visitor.total_complexity, raw.lloc, comments)
-                metrics = {
-                    'radon_complexity': round(sum(getattr(b, 'complexity', 1) for b in blocks) / max(1, len(blocks)), 2),
-                    'maintainability_index': round(float(mi), 2),
-                    'sloc': int(raw.sloc), 'lloc': int(raw.lloc), 'comments': int(raw.comments), 'blank': int(raw.blank),
-                }
+                if metrics is None:
+                    tree = ast.parse(text)
+                    visitor = ComplexityVisitor.from_ast(tree)
+                    blocks = visitor.blocks
+                    raw = raw_analyze(text)
+                    comments = (raw.comments + raw.multi) / float(raw.sloc) * 100 if raw.sloc else 0
+                    mi = mi_compute(h_visit_ast(tree).total.volume, visitor.total_complexity, raw.lloc, comments)
+                    metrics = {
+                        'radon_complexity': round(sum(getattr(b, 'complexity', 1) for b in blocks) / max(1, len(blocks)), 2),
+                        'maintainability_index': round(float(mi), 2),
+                        'sloc': int(raw.sloc), 'lloc': int(raw.lloc), 'comments': int(raw.comments), 'blank': int(raw.blank),
+                    }
+                    self._disk_cache.store("metrics", info.path, digest, metrics)
                 info.metrics.update(metrics)
                 self._metrics_cache[info.path] = (digest, metrics)
                 self._metrics_cache.move_to_end(info.path)
@@ -512,15 +570,17 @@ class ProjectIntelligenceEngine:
             from bandit.core.config import BanditConfig
             from bandit.core.manager import BanditManager
 
-            # Bandit reads files itself. Check metadata both before and after the
-            # scan, so an edit during analysis is never cached as a newer version.
-            def fingerprint(filename):
-                stat = Path(filename).stat()
-                return stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino
-
-            stamps = {info.path: fingerprint(info.path) for info in analysis.python_files}
-            changed = [path for path, stamp in stamps.items()
-                       if path not in self._security_cache or self._security_cache[path][0] != stamp]
+            digests = {info.path: _file_digest(Path(info.path)) for info in analysis.python_files}
+            changed = []
+            for path, digest in digests.items():
+                cached = self._security_cache.get(path)
+                if cached is not None and cached[0] == digest:
+                    continue
+                items = self._disk_cache.load("security", path, digest, _decode_security_findings)
+                if items is None:
+                    changed.append(path)
+                else:
+                    self._security_cache[path] = (digest, items)
             findings = {path: [] for path in changed}
             if changed:
                 manager = BanditManager(BanditConfig(), "file", quiet=True)
@@ -533,12 +593,15 @@ class ProjectIntelligenceEngine:
                         findings[filename].append(item)
                 skipped = {str(Path(path).resolve()) for path, _ in manager.skipped}
                 for path in changed:
-                    if path not in skipped and fingerprint(path) == stamps[path]:
-                        self._security_cache[path] = (stamps[path], findings[path])
+                    # Bandit opens the file itself. Only reuse a stable scan.
+                    digest = digests[path]
+                    if path not in skipped and digest is not None and _file_digest(Path(path)) == digest:
+                        self._security_cache[path] = (digest, findings[path])
+                        self._disk_cache.store("security", path, digest, findings[path])
             existing = {(i.file, i.line, i.code) for i in analysis.issues}
             items = []
             # Match Bandit's case-sensitive filename ordering on every run.
-            for path in sorted(stamps):
+            for path in sorted(digests):
                 if path in findings:
                     items.extend(findings[path])
                 else:
@@ -566,11 +629,14 @@ class ProjectIntelligenceEngine:
         if not self.root or not self.enabled_analyzers:
             return None
         from core.analyzers.polyglot import PolyglotSourceAnalyzer
-        text = content if content is not None else self._read(p)
-        result = PolyglotSourceAnalyzer(self.root).analyze(p, text)
+        analyzer = PolyglotSourceAnalyzer(self.root)
+        if content is None:
+            text, result = self._analyze_source(p, analyzer)
+        else:
+            text, result = content, analyzer.analyze(p, content)
         info = FileInfo(str(p), self._module_name(p), text.count('\n') + (1 if text else 0), language=result.language,
-                        parser=result.metrics.get('parser', ''), metrics=result.metrics)
-        info.symbols, info.imports, info.issues = result.symbols, result.imports, result.issues
+                        parser=result.metrics.get('parser', ''), metrics=dict(result.metrics))
+        info.symbols, info.imports, info.issues = list(result.symbols), list(result.imports), list(result.issues)
         info.functions = sum(1 for s in result.symbols if s.kind in {'function', 'method', 'constructor'})
         info.classes = sum(1 for s in result.symbols if s.kind in {'class', 'struct', 'interface', 'enum'})
         info.complexity = int(result.metrics.get('complexity', 1) or 1)

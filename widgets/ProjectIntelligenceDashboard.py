@@ -13,6 +13,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from core.logging_config import get_logger
 from core.project_intelligence import ProjectAnalysis, ProjectIntelligenceEngine, FileInfo, Issue
+from services.background import run_async
 from services.code_intelligence_service import CodeIntelligenceService
 from widgets.LoadingSpinner import LoadingOverlay
 from widgets.Dialog import CustomDialog
@@ -100,9 +101,10 @@ class AnalysisWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
 
-    def __init__(self, engine: ProjectIntelligenceEngine):
+    def __init__(self, engine: ProjectIntelligenceEngine, should_stop=None):
         super().__init__()
         self.engine = engine
+        self._should_stop = should_stop
         self._last_progress_at = 0.0
 
     @QtCore.pyqtSlot()
@@ -121,7 +123,7 @@ class AnalysisWorker(QtCore.QObject):
             pass
 
     def _progress(self, current, total, name):
-        if QtCore.QThread.currentThread().isInterruptionRequested():
+        if self._should_stop is not None and self._should_stop():
             raise InterruptedError("Project analysis cancelled")
         now = time.monotonic()
         if current < total and now - self._last_progress_at < 0.12:
@@ -133,71 +135,6 @@ class AnalysisWorker(QtCore.QObject):
             # The dashboard (and this worker) can be gone while the analysis
             # thread is still finishing; that must not abort the thread.
             pass
-
-
-class AnalysisNavigation(QtWidgets.QWidget):
-    """Full-width page buttons that wrap instead of clipping or eliding."""
-
-    def __init__(self, tabs, parent=None):
-        super().__init__(parent)
-        self.tabs = tabs
-        self.setObjectName("analysisNavigation")
-        self.grid = QtWidgets.QGridLayout(self)
-        self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setSpacing(4)
-        self.buttons = []
-        self._columns = 0
-        group = QtWidgets.QButtonGroup(self)
-        group.setExclusive(True)
-        for index in range(tabs.count()):
-            button = QtWidgets.QToolButton(self)
-            button.setObjectName("analysisPageButton")
-            button.setText(tabs.tabText(index))
-            button.setCheckable(True)
-            button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-            button.clicked.connect(lambda checked=False, i=index: tabs.setCurrentIndex(i))
-            group.addButton(button)
-            self.buttons.append(button)
-        tabs.currentChanged.connect(self._select)
-        self._select(tabs.currentIndex())
-        self._arrange()
-
-    def _select(self, index):
-        if 0 <= index < len(self.buttons):
-            self.buttons[index].setChecked(True)
-
-    def _arrange(self):
-        if not self.buttons:
-            return
-        needed = max(button.sizeHint().width() for button in self.buttons)
-        gap = self.grid.spacing()
-        columns = max(1, min(len(self.buttons), (self.width() + gap) // (needed + gap)))
-        # Keep complete, equal rows (six, three, two or one column).
-        while len(self.buttons) % columns:
-            columns -= 1
-        if columns == self._columns:
-            return
-        for column in range(len(self.buttons)):
-            self.grid.setColumnStretch(column, 0)
-            self.grid.setColumnMinimumWidth(column, 0)
-        for button in self.buttons:
-            self.grid.removeWidget(button)
-        for index, button in enumerate(self.buttons):
-            self.grid.addWidget(button, index // columns, index % columns)
-        for column in range(columns):
-            self.grid.setColumnStretch(column, 1)
-        self._columns = columns
-        self.updateGeometry()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._arrange()
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() in (QtCore.QEvent.Type.StyleChange, QtCore.QEvent.Type.FontChange):
-            self._columns = 0
-            QtCore.QTimer.singleShot(0, self._arrange)
 
 
 class AdversaryWorker(QtCore.QObject):
@@ -793,10 +730,14 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
     open_file_requested = QtCore.pyqtSignal(str, int)
     open_graph_editor_requested = QtCore.pyqtSignal(object, str)
     open_defense_guide_requested = QtCore.pyqtSignal()
+    open_analyzers_requested = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('projectIntelligence')
+        self.setProperty('pyscribeSpecial', 'projectAnalysis')
+        self.editor_path_hint = None
+        self._wide_layout = None
         self.engine: Optional[ProjectIntelligenceEngine] = None
         self.analysis: Optional[ProjectAnalysis] = None
         self._thread = None
@@ -810,21 +751,10 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.student_tips = []
         self._build()
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        if not self.engine or not getattr(self.engine, 'root', None):
-            detected = self._resolve_root_path()
-            if detected:
-                self.set_project(detected)
-        # Five tabs need more room than the default sidebar width.
-        ensure = getattr(self.window(), "_ensure_intelligence_width", None)
-        if callable(ensure):
-            QtCore.QTimer.singleShot(0, ensure)
-
     def _build(self):
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(10, 8, 10, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(16, 12, 16, 14)
+        root.setSpacing(10)
 
         # Header
         header = QtWidgets.QFrame()
@@ -838,7 +768,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         title = QtWidgets.QLabel('Анализ проекта')
         title.setObjectName('intelligenceTitle')
         title.setStyleSheet(
-            ' font-size: 12px; font-weight: 600;'
+            ' font-size: 16px; font-weight: 600;'
             f' color: {Palette.TEXT_STRONG};')
         self.status = QtWidgets.QLabel('Проект не открыт')
         self.status.setObjectName('intelligenceStatus')
@@ -859,23 +789,27 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.refresh_button = QtWidgets.QToolButton()
         set_line_icon(self.refresh_button, 'reload')
         self.refresh_button.setToolTip('Повторно проанализировать проект')
-        self.refresh_button.setStyleSheet(secondary_button_qss())
+        self.refresh_button.setStyleSheet(secondary_button_qss("4px 6px", 6))
         self.refresh_button.clicked.connect(self.refresh)
-        hl.addWidget(self.refresh_button)
 
         self.open_graph_button = QtWidgets.QToolButton()
         self.open_graph_button.setText('Граф')
         self.open_graph_button.setToolTip('Открыть интерактивную карту/граф связей проекта')
-        self.open_graph_button.setStyleSheet(secondary_button_qss())
+        self.open_graph_button.setStyleSheet(secondary_button_qss("4px 7px", 6))
         self.open_graph_button.clicked.connect(self._open_graph_editor)
-        hl.addWidget(self.open_graph_button)
 
         self.defense_guide_button = QtWidgets.QToolButton()
         self.defense_guide_button.setText('Паспорт')
         self.defense_guide_button.setToolTip('Сформировать архитектурный паспорт и сводный отчёт проекта')
-        self.defense_guide_button.setStyleSheet(primary_button_qss())
+        self.defense_guide_button.setStyleSheet(primary_button_qss("4px 7px", 6))
         self.defense_guide_button.clicked.connect(self._open_defense_guide)
-        hl.addWidget(self.defense_guide_button)
+        self.analyzers_button = QtWidgets.QToolButton()
+        self.analyzers_button.setText('Анализаторы')
+        self.analyzers_button.setStyleSheet(secondary_button_qss("4px 7px", 6))
+        self.analyzers_button.clicked.connect(self.open_analyzers_requested)
+        for button in (self.analyzers_button, self.open_graph_button,
+                       self.defense_guide_button, self.refresh_button):
+            hl.addWidget(button)
         root.addWidget(header)
 
         self.progress = QtWidgets.QProgressBar()
@@ -885,92 +819,129 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.progress.hide()
         root.addWidget(self.progress)
 
-        self.tabs = QtWidgets.QTabWidget()
-        self.tabs.setObjectName('intelligenceTabs')
-        root.addWidget(self.tabs, 1)
+        self.analysis_scroll = QtWidgets.QScrollArea()
+        self.analysis_scroll.setObjectName('projectAnalysisScroll')
+        self.analysis_scroll.setWidgetResizable(True)
+        self.analysis_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.analysis_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._analysis_body = QtWidgets.QWidget()
+        body = QtWidgets.QVBoxLayout(self._analysis_body)
+        body.setContentsMargins(0, 0, 3, 0)
+        body.setSpacing(12)
+        self.analysis_scroll.setWidget(self._analysis_body)
+        root.addWidget(self.analysis_scroll, 1)
 
-        # Tab 1: Overview & Quality
         self.overview_tab = QtWidgets.QWidget()
         self._build_overview_tab()
-        self.overview_scroll = QtWidgets.QScrollArea()
-        self.overview_scroll.setWidgetResizable(True)
-        self.overview_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self.overview_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.overview_scroll.setWidget(self.overview_tab)
-        self.tabs.addTab(self.overview_scroll, 'Сводка')
-
-        # Tab 2: Code Recommendations
         self.tips_tab = QtWidgets.QWidget()
         self._build_tips_tab()
-        self.tips_scroll = self._wrap_in_scroll(self.tips_tab)
-        self.tabs.addTab(self.tips_scroll, 'Советы')
-
-        # Tab 3: Structure & Files
         self.structure_tab = QtWidgets.QWidget()
         self._build_structure_tab()
-        self.tabs.addTab(self._wrap_in_scroll(self.structure_tab), 'Файлы')
-
-        # Tab 4: Impact Analyzer
         self.impact_page = QtWidgets.QWidget()
         self._build_impact_tab()
-        self.impact_scroll = self._wrap_in_scroll(self.impact_page)
-        self.tabs.addTab(self.impact_scroll, 'Влияние')
 
-        # Tab 5: Adversarial testing («Адвокат дьявола»)
         self._adversary_path: Optional[str] = None
+        self._adversary_explicit_path: Optional[str] = None
         self._adversary_report = None
-        self._adversary_thread: Optional[QtCore.QThread] = None
+        self._adversary_thread: Optional[object] = None
         self._adversary_worker = None
         self.adversary_page = QtWidgets.QWidget()
         self._build_adversary_tab()
-        self.adversary_scroll = self._wrap_in_scroll(self.adversary_page)
-        self.tabs.addTab(self.adversary_scroll, 'Тесты')
+
+        self._analysis_sections = {'overview': self.overview_tab}
+        body.addWidget(self.overview_tab)
+        self.section_grid = QtWidgets.QGridLayout()
+        self.section_grid.setSpacing(12)
+        body.addLayout(self.section_grid)
+        for key, title, page in (
+            ('tips', 'Рекомендации', self.tips_tab),
+            ('structure', 'Файлы и символы', self.structure_tab),
+            ('impact', 'Влияние изменений', self.impact_page),
+            ('tests', 'Тесты', self.adversary_page),
+        ):
+            page.setObjectName('analysisSectionContent')
+            section = QtWidgets.QFrame()
+            section.setObjectName('analysisSection')
+            section_layout = QtWidgets.QVBoxLayout(section)
+            section_layout.setContentsMargins(10, 10, 10, 10)
+            section_layout.setSpacing(8)
+            heading = QtWidgets.QLabel(title)
+            heading.setObjectName('analysisSectionTitle')
+            section_layout.addWidget(heading)
+            section_layout.addWidget(page)
+            self._analysis_sections[key] = section
+        body.addStretch()
+        self._arrange_sections()
 
         self.tasks_page = None
         self._task_store = None
-        self.tabs.tabBar().hide()
-        self.navigation = AnalysisNavigation(self.tabs, self)
-        root.insertWidget(root.indexOf(self.tabs), self.navigation)
-        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self.loading_overlay = LoadingOverlay(self)
         self.apply_interface_font()
 
-    @staticmethod
-    def _wrap_in_scroll(page: QtWidgets.QWidget) -> QtWidgets.QScrollArea:
-        """Let a tab scroll instead of forcing the whole panel wider.
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'section_grid'):
+            self._arrange_sections()
 
-        Recommendation cards and wide tables used to raise the panel's minimum
-        width to ~950 px, so on a 400 px sidebar everything was clipped.
-        """
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setWidget(page)
-        return scroll
+    def _arrange_sections(self):
+        wide = self.width() >= 850
+        if wide == self._wide_layout:
+            return
+        self._wide_layout = wide
+        columns = 2 if wide else 1
+        sections = list(self._analysis_sections.values())[1:]
+        for section in sections:
+            self.section_grid.removeWidget(section)
+        self.section_grid.setColumnStretch(0, 1)
+        self.section_grid.setColumnStretch(1, int(wide))
+        for index, section in enumerate(sections):
+            self.section_grid.addWidget(section, index // columns, index % columns)
+        direction = QtWidgets.QBoxLayout.Direction.LeftToRight if wide else QtWidgets.QBoxLayout.Direction.TopToBottom
+        self.overview_content.setDirection(direction)
+        self.tips_inputs.setDirection(direction)
+        metric_columns = 4 if wide else 2
+        for column in range(4):
+            self.metrics_grid.setColumnStretch(column, int(column < metric_columns))
+        for index, metric in enumerate(self.metric_cards):
+            self.metrics_grid.removeWidget(metric)
+            if index == 4:
+                self.metrics_grid.addWidget(metric, index // metric_columns, 0, 1, metric_columns)
+            else:
+                self.metrics_grid.addWidget(metric, index // metric_columns, index % metric_columns)
+
+    def _scroll_to_section(self, key):
+        section = self._analysis_sections.get(key)
+        if section is not None:
+            position = section.mapTo(self._analysis_body, QtCore.QPoint()).y()
+            self.analysis_scroll.verticalScrollBar().setValue(position)
 
     def _build_overview_tab(self):
         layout = QtWidgets.QVBoxLayout(self.overview_tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        # Project Quality Card
         self.grade_card = QtWidgets.QFrame()
-        self.grade_card.setObjectName('overviewGradeCard')
-        self.grade_card.setStyleSheet(
-            f'#overviewGradeCard {{ background: {Palette.SURFACE};'
-            f' border: 1px solid {Palette.BORDER}; border-radius: 8px; }}')
-        gcl = QtWidgets.QHBoxLayout(self.grade_card)
-        gcl.setContentsMargins(14, 12, 14, 12)
-        gcl.setSpacing(14)
+        self.grade_card.setObjectName('analysisSection')
+        self.overview_content = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom, self.grade_card)
+        self.overview_content.setContentsMargins(14, 12, 14, 12)
+        self.overview_content.setSpacing(14)
+        quality = QtWidgets.QWidget()
+        quality.setObjectName('analysisSectionContent')
+        gcl = QtWidgets.QHBoxLayout(quality)
+        gcl.setContentsMargins(0, 0, 0, 0)
+        gcl.setSpacing(10)
+        self.overview_content.addWidget(quality, 2)
 
         self.grade_badge = QualityBadgeWidget()
         gcl.addWidget(self.grade_badge)
 
-        ginfo_layout = QtWidgets.QVBoxLayout()
+        quality_info = QtWidgets.QWidget()
+        quality_info.setObjectName('analysisSectionContent')
+        ginfo_layout = QtWidgets.QVBoxLayout(quality_info)
+        ginfo_layout.setContentsMargins(0, 0, 0, 0)
         ginfo_layout.setSpacing(3)
         self.grade_title = QtWidgets.QLabel('Качество кода: —')
+        self.grade_title.setWordWrap(True)
         self.grade_title.setStyleSheet(
             ' font-size: 13px; font-weight: 600;'
             f' color: {Palette.TEXT_STRONG};')
@@ -987,40 +958,18 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         ginfo_layout.addWidget(self.grade_score)
         ginfo_layout.addWidget(self.grade_desc)
 
-        # Folder change button removed per user request; hidden button kept for API safety
-        self.open_folder_btn = QtWidgets.QPushButton()
-        self.open_folder_btn.hide()
-
-        gcl.addLayout(ginfo_layout, 1)
+        gcl.addWidget(quality_info, 1, QtCore.Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self.grade_card)
 
-        # Metrics Grid (with proper top margin/spacing under the title)
-        metrics_group = QtWidgets.QGroupBox('Показатели проекта')
-        metrics_group.setStyleSheet(f'''
-            QGroupBox {{
-
-                font-weight: 600;
-                font-size: 12px;
-                color: {Palette.TEXT};
-                border: 1px solid {Palette.BORDER};
-                border-radius: 6px;
-                margin-top: 14px;
-                padding-top: 18px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 10px;
-                padding: 0 6px;
-                color: {Palette.TEXT_MUTED};
-            }}
-        ''')
-        mgl = QtWidgets.QGridLayout(metrics_group)
-        mgl.setContentsMargins(10, 18, 10, 10)
-        mgl.setHorizontalSpacing(8)
-        mgl.setVerticalSpacing(8)
+        metrics = QtWidgets.QWidget()
+        metrics.setObjectName('analysisSectionContent')
+        self.metrics_grid = QtWidgets.QGridLayout(metrics)
+        self.metrics_grid.setContentsMargins(0, 0, 0, 0)
+        self.metrics_grid.setSpacing(5)
+        self.overview_content.addWidget(metrics, 3)
 
         self.metric_widgets = {}
+        self.metric_cards = []
         cards = [
             ('files', 'Файлов', 'Файлы исходного кода'),
             ('lines', 'Строк кода', 'Всего строк'),
@@ -1028,12 +977,10 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             ('classes', 'Классов', 'Классы и структуры'),
             ('complexity', 'Сложность', 'Средняя сложность функций'),
         ]
-        for idx, (key, label, desc) in enumerate(cards):
+        for key, label, desc in cards:
             box = QtWidgets.QFrame()
-            box.setObjectName(f'metricBox_{key}')
-            box.setStyleSheet(
-                f'#metricBox_{key} {{ background: {Palette.SURFACE_ALT};'
-                f' border: 1px solid {Palette.BORDER}; border-radius: 6px; }}')
+            box.setObjectName('analysisMetric')
+            box.setToolTip(desc)
             bl = QtWidgets.QVBoxLayout(box)
             bl.setContentsMargins(8, 6, 8, 6)
             bl.setSpacing(2)
@@ -1045,99 +992,54 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             lbl.setStyleSheet(' color: #8B949E; font-size: 11px; font-weight: 500;')
             bl.addWidget(val)
             bl.addWidget(lbl)
-            if idx == 4:
-                mgl.addWidget(box, 2, 0, 1, 2)
-            else:
-                mgl.addWidget(box, idx // 2, idx % 2)
+            self.metric_cards.append(box)
             self.metric_widgets[key] = val
-        layout.addWidget(metrics_group)
-
-        # Quick Actions Box (with proper top margin/spacing under the title)
-        actions_box = QtWidgets.QGroupBox('Быстрые действия')
-        actions_box.setStyleSheet(f'''
-            QGroupBox {{
-
-                font-weight: 600;
-                font-size: 12px;
-                color: {Palette.TEXT};
-                border: 1px solid {Palette.BORDER};
-                border-radius: 6px;
-                margin-top: 14px;
-                padding-top: 18px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 10px;
-                padding: 0 6px;
-                color: {Palette.TEXT_MUTED};
-            }}
-        ''')
-        abl = QtWidgets.QVBoxLayout(actions_box)
-        abl.setContentsMargins(10, 18, 10, 10)
-        abl.setSpacing(8)
-
-        # One primary (accent) action, the rest quiet — no gradients.
-        self.act_defense_btn = QtWidgets.QPushButton('Открыть паспорт проекта')
-        self.act_defense_btn.setStyleSheet(primary_button_qss("8px 12px", 6))
-        self.act_defense_btn.clicked.connect(self._open_defense_guide)
-        abl.addWidget(self.act_defense_btn)
-
-        self.act_graph_btn = QtWidgets.QPushButton('Открыть карту связей')
-        self.act_graph_btn.setStyleSheet(secondary_button_qss("8px 12px", 6))
-        self.act_graph_btn.clicked.connect(self._open_graph_editor)
-        abl.addWidget(self.act_graph_btn)
-
-        self.act_tips_btn = QtWidgets.QPushButton('Посмотреть рекомендации')
-        self.act_tips_btn.setStyleSheet(secondary_button_qss("8px 12px", 6))
-        self.act_tips_btn.clicked.connect(lambda: self.tabs.setCurrentWidget(self.tips_scroll))
-        abl.addWidget(self.act_tips_btn)
-        layout.addWidget(actions_box)
-
-        layout.addStretch()
 
     def _build_tips_tab(self):
         layout = QtWidgets.QVBoxLayout(self.tips_tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
-        hint = QtWidgets.QLabel('Что стоит улучшить в коде — по приоритету.')
-        hint.setStyleSheet('color: #8B949E; font-size: 11px;')
-        layout.addWidget(hint)
-
-        filter_row = QtWidgets.QHBoxLayout()
+        self.tips_inputs = QtWidgets.QBoxLayout(QtWidgets.QBoxLayout.Direction.TopToBottom)
+        layout.addLayout(self.tips_inputs)
         self.tips_filter = QtWidgets.QComboBox()
+        self.tips_filter.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.tips_filter.setMinimumContentsLength(12)
         self.tips_filter.addItems(['Все рекомендации', 'Высокий приоритет', 'Слишком длинные функции', 'Глубокая вложенность'])
         self.tips_filter.currentIndexChanged.connect(self._filter_tips)
-        filter_row.addWidget(self.tips_filter)
+        self.tips_inputs.addWidget(self.tips_filter)
 
         self.tips_search = QtWidgets.QLineEdit()
         self.tips_search.setPlaceholderText('Поиск по файлу или описанию…')
         self.tips_search.setClearButtonEnabled(True)
         self.tips_search.textChanged.connect(self._filter_tips)
-        filter_row.addWidget(self.tips_search, 1)
+        self.tips_inputs.addWidget(self.tips_search, 1)
 
+        actions = QtWidgets.QHBoxLayout()
         self.copy_tips_btn = QtWidgets.QPushButton('Скопировать')
         self.copy_tips_btn.setToolTip('Скопировать все текущие рекомендации в буфер обмена')
         self.copy_tips_btn.setStyleSheet(secondary_button_qss("4px 10px", 6))
         self.copy_tips_btn.clicked.connect(self._copy_tips)
-        filter_row.addWidget(self.copy_tips_btn)
+        actions.addWidget(self.copy_tips_btn)
 
-        self.save_tips_btn = QtWidgets.QPushButton('Экспорт в файл…')
+        self.save_tips_btn = QtWidgets.QPushButton('Экспорт…')
         self.save_tips_btn.setToolTip('Сохранить рекомендации и дефекты в файл (.md, .txt, .json)')
         self.save_tips_btn.setStyleSheet(secondary_button_qss("4px 10px", 6))
         self.save_tips_btn.clicked.connect(self._save_tips_to_file)
-        filter_row.addWidget(self.save_tips_btn)
+        actions.addWidget(self.save_tips_btn)
 
-        layout.addLayout(filter_row)
+        actions.addStretch()
+        layout.addLayout(actions)
 
         self.tips_tree = QtWidgets.QTreeWidget()
+        self.tips_tree.setFixedHeight(100)
         self.tips_tree.setHeaderLabels(['Замечание', 'Приоритет', 'Файл', 'Строка', 'Рекомендация'])
         self.tips_tree.setAlternatingRowColors(True)
         self.tips_tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.tips_tree.customContextMenuRequested.connect(self._on_tips_context_menu)
         self.tips_tree.itemDoubleClicked.connect(self._open_tip_item)
-        layout.addWidget(self.tips_tree, 1)
+        layout.addWidget(self.tips_tree)
+        layout.addStretch()
 
     def _collect_tips_data(self, only_selected: bool = False) -> list:
         items = []
@@ -1304,8 +1206,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
 
     def _build_structure_tab(self):
         layout = QtWidgets.QVBoxLayout(self.structure_tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
         self.structure_summary = QtWidgets.QLabel('Откройте проект')
         self.structure_summary.setWordWrap(True)
@@ -1319,11 +1221,33 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         layout.addWidget(self.structure_search)
 
         self.structure_tree = QtWidgets.QTreeWidget()
+        self.structure_tree.setMinimumHeight(170)
         self.structure_tree.setHeaderLabels(['Элемент', 'Тип', 'Файл', 'Строка'])
         self.structure_tree.itemDoubleClicked.connect(self._open_symbol_item)
         self.structure_tree.itemExpanded.connect(self._on_structure_item_expanded)
         layout.addWidget(self.structure_tree, 1)
 
+        actions = QtWidgets.QHBoxLayout()
+        self.structure_impact_button = QtWidgets.QPushButton('Влияние')
+        self.structure_impact_button.clicked.connect(lambda: self.set_impact_file(self._selected_analysis_file()))
+        self.structure_test_button = QtWidgets.QPushButton('Тесты файла')
+        self.structure_test_button.clicked.connect(lambda: self.set_adversary_file(self._selected_analysis_file()))
+        for button in (self.structure_impact_button, self.structure_test_button):
+            button.setStyleSheet(secondary_button_qss("4px 8px", 6))
+            actions.addWidget(button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        self.structure_tree.currentItemChanged.connect(self._sync_structure_actions)
+        self._sync_structure_actions()
+
+    def _selected_analysis_file(self):
+        item = self.structure_tree.currentItem()
+        return item.data(0, QtCore.Qt.ItemDataRole.UserRole) if item is not None else None
+
+    def _sync_structure_actions(self):
+        path = self._selected_analysis_file()
+        self.structure_impact_button.setEnabled(bool(path))
+        self.structure_test_button.setEnabled(bool(path and Path(path).suffix.lower() == '.py'))
 
     def apply_interface_font(self):
         """Keep analysis UI independent of the editor's monospace font."""
@@ -1336,7 +1260,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         item = getattr(self, "tips_tree", None) and self.tips_tree.currentItem()
         if item is None:
             from widgets.Dialog import CustomDialog
-            CustomDialog("Выберите рекомендацию на вкладке «Советы».").exec()
+            CustomDialog("Выберите замечание в разделе «Рекомендации».").exec()
             return
         title = item.text(0)
         file_path = item.data(0, QtCore.Qt.ItemDataRole.UserRole) or ""
@@ -1361,16 +1285,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
     def _build_adversary_tab(self):
         """«Адвокат дьявола»: run boundary inputs and prove the crashes."""
         layout = QtWidgets.QVBoxLayout(self.adversary_page)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        hint = QtWidgets.QLabel(
-            '«Адвокат дьявола»: подаёт функции граничные входы (пустой список, None, '
-            '0, длинные строки) в отдельном процессе, ловит падения и зависания, '
-            'сокращает вход до минимального и показывает причину.')
-        hint.setWordWrap(True)
-        hint.setStyleSheet('color: #8B949E; font-size: 11px;')
-        layout.addWidget(hint)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
         row = QtWidgets.QHBoxLayout()
         self.adversary_file_label = QtWidgets.QLabel('Файл не выбран')
@@ -1378,30 +1294,37 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             f'color: {Palette.TEXT}; font-size: 12px;')
         self.adversary_file_label.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
-        row.addWidget(self.adversary_file_label, 1)
+        layout.addWidget(self.adversary_file_label)
         self.adversary_btn = QtWidgets.QPushButton('Испытать')
         self.adversary_btn.setStyleSheet(primary_button_qss("5px 12px", 6))
         self.adversary_btn.clicked.connect(self._run_adversary)
+        self.adversary_editor_btn = QtWidgets.QToolButton()
+        self.adversary_editor_btn.setText('Текущий файл')
+        self.adversary_editor_btn.setToolTip('Использовать файл из активного редактора')
+        self.adversary_editor_btn.setStyleSheet(secondary_button_qss("3px 5px", 6))
+        self.adversary_editor_btn.clicked.connect(self._use_editor_for_adversary)
         row.addWidget(self.adversary_btn)
+        row.addWidget(self.adversary_editor_btn)
+        row.addStretch()
         layout.addLayout(row)
 
         actions = QtWidgets.QHBoxLayout()
         actions.setSpacing(4)
         self.adversary_test_btn = QtWidgets.QPushButton('Тест')
-        self.adversary_test_btn.setStyleSheet(secondary_button_qss("4px 8px", 6))
+        self.adversary_test_btn.setStyleSheet(secondary_button_qss("3px 5px", 6))
         self.adversary_test_btn.setToolTip(
             '«Создать тест»: сохранить найденные падения как pytest-тесты')
         self.adversary_test_btn.clicked.connect(self._save_adversary_tests)
         actions.addWidget(self.adversary_test_btn)
 
         self.adversary_export_btn = QtWidgets.QPushButton('Отчёт')
-        self.adversary_export_btn.setStyleSheet(secondary_button_qss("4px 8px", 6))
+        self.adversary_export_btn.setStyleSheet(secondary_button_qss("3px 5px", 6))
         self.adversary_export_btn.setToolTip('Экспортировать отчёт в Markdown')
         self.adversary_export_btn.clicked.connect(self._export_adversary)
         actions.addWidget(self.adversary_export_btn)
 
         self.adversary_ai_btn = QtWidgets.QPushButton('ИИ')
-        self.adversary_ai_btn.setStyleSheet(secondary_button_qss("4px 8px", 6))
+        self.adversary_ai_btn.setStyleSheet(secondary_button_qss("3px 5px", 6))
         self.adversary_ai_btn.setToolTip(
             '«Спросить ИИ»: отправить находку ИИ-агенту на разбор')
         self.adversary_ai_btn.clicked.connect(self._ask_ai_about_adversary)
@@ -1424,6 +1347,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         layout.addWidget(self.adversary_progress)
 
         self.adversary_tree = QtWidgets.QTreeWidget()
+        self.adversary_tree.setMinimumHeight(150)
         self.adversary_tree.setHeaderLabels(['Функция (вход)', 'Результат'])
         self.adversary_tree.setColumnWidth(0, 120)
         self.adversary_tree.header().setStretchLastSection(True)
@@ -1442,12 +1366,18 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.adversary_ai_btn.setEnabled(bool(enabled and has_report))
 
     def set_adversary_file(self, path: Optional[str]):
-        """Point the «Испытания» tab at the file opened in the editor."""
+        """Choose a file directly from project analysis or the editor."""
         if self._adversary_thread is not None:
             return
-        self._set_adversary_path(str(path) if path else None)
+        self._adversary_explicit_path = str(path) if path else None
+        self._set_adversary_path(self._adversary_explicit_path)
         if path:
-            self.tabs.setCurrentWidget(self.adversary_scroll)
+            self._scroll_to_section('tests')
+
+    def _use_editor_for_adversary(self):
+        if self._adversary_thread is None:
+            self._adversary_explicit_path = None
+            self._sync_adversary_file()
 
     def _current_editor_path(self) -> Optional[str]:
         """Path of the file open in the editor, if any."""
@@ -1460,17 +1390,12 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         except Exception:
             return None
         path = getattr(editor, "file_path", None) if editor else None
-        return str(path) if path else None
+        return str(path) if path else self.editor_path_hint
 
     def _sync_adversary_file(self) -> Optional[str]:
-        """Pick up the editor's file automatically.
-
-        The tab used to demand a file chosen through a separate command, so
-        pressing «Испытать» only produced a "open a file first" warning even
-        with a file open right next to it.
-        """
+        """Use the chosen file, or follow the editor when no file is pinned."""
         if self._adversary_thread is None:
-            self._set_adversary_path(self._current_editor_path())
+            self._set_adversary_path(self._adversary_explicit_path or self._current_editor_path())
         return self._adversary_path
 
     def _set_adversary_path(self, path):
@@ -1487,11 +1412,6 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
                 f'color: {Palette.TEXT_MUTED}; font-size: 12px;')
         self.adversary_file_label.setText(Path(path).name if path else 'Файл не выбран')
         self.adversary_file_label.setToolTip(path or '')
-
-    def _on_tab_changed(self, index: int):
-        page = self.tabs.widget(index)
-        if page is getattr(self, "adversary_scroll", None):
-            self._sync_adversary_file()
 
     def _run_adversary(self):
         if self._adversary_thread is not None:
@@ -1511,29 +1431,30 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.adversary_summary.setText('Испытание выполняется…')
         self.adversary_progress.show()
         self.adversary_btn.setEnabled(False)
+        self.adversary_editor_btn.setEnabled(False)
 
         worker = AdversaryWorker(self._adversary_path)
-        thread = QtCore.QThread(self)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
         worker.finished.connect(self._on_adversary_finished)
-        worker.finished.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(self._on_adversary_thread_finished)
-        thread.finished.connect(thread.deleteLater)
-        self._adversary_thread = thread
         self._adversary_worker = worker
-        thread.start()
+        # The run itself goes to the shared Python pool; the returned handle is
+        # kept so the panel knows a test is in flight and can be polled by callers.
+        self._adversary_thread = run_async(
+            worker.run,
+            parent=self,
+            on_done=lambda _result: self._on_adversary_thread_finished(),
+            on_error=lambda _message: self._on_adversary_thread_finished())
 
-    @QtCore.pyqtSlot()
     def _on_adversary_thread_finished(self):
         self._adversary_thread = None
         self._adversary_worker = None
         self.adversary_btn.setEnabled(True)
+        self.adversary_editor_btn.setEnabled(True)
 
     @QtCore.pyqtSlot(object)
     def _on_adversary_finished(self, report):
         self.adversary_progress.hide()
+        if self._adversary_path is None:
+            return
         self._adversary_report = report
         if report is None:
             self.adversary_summary.setText('Испытание не удалось.')
@@ -1630,39 +1551,34 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         panel = getattr(win, "ai_panel", None)
         if panel is None:
             return
-        try:
-            win.show_ai_agent()
-            panel.input.setPlainText(prompt)
-            panel.input.setFocus()
-        except Exception:
-            pass
+        if win.extension_enabled("ai"):
+            panel.send_quick_action(prompt)
 
     def _build_impact_tab(self):
         layout = QtWidgets.QVBoxLayout(self.impact_page)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        hint = QtWidgets.QLabel('Что сломается, если изменить этот файл: зависимые модули, файлы и сложность.')
-        hint.setWordWrap(True)
-        hint.setStyleSheet('color: #8B949E; font-size: 11px;')
-        layout.addWidget(hint)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
         row = QtWidgets.QHBoxLayout()
         self.impact_combo = QtWidgets.QComboBox()
+        self.impact_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.impact_combo.setMinimumContentsLength(4)
         self.impact_combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         row.addWidget(self.impact_combo, 1)
-        self.impact_btn = QtWidgets.QPushButton('Проверить влияние')
+        self.impact_btn = QtWidgets.QPushButton('Проверить')
         self.impact_btn.setStyleSheet(primary_button_qss("5px 12px", 6))
         self.impact_btn.clicked.connect(self._run_impact_analysis)
         row.addWidget(self.impact_btn)
         layout.addLayout(row)
 
         self.impact_status_label = QtWidgets.QLabel('Выберите файл, чтобы увидеть зависимости.')
+        self.impact_status_label.setWordWrap(True)
         self.impact_status_label.setStyleSheet(
             f'color: {Palette.TEXT_MUTED}; font-size: 12px;')
         layout.addWidget(self.impact_status_label)
 
         self.impact_tree = QtWidgets.QTreeWidget()
+        self.impact_tree.setMinimumHeight(150)
         self.impact_tree.setHeaderLabels(['Модуль', 'Файл', 'Сложность'])
         self.impact_tree.itemDoubleClicked.connect(self._open_impact_item)
         layout.addWidget(self.impact_tree, 1)
@@ -1696,6 +1612,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             self.set_project(str(Path(folder).resolve()))
 
     def set_project(self, root: Optional[str], analyzers=None):
+        if str(root) != str(getattr(self.engine, 'root', None)):
+            self.editor_path_hint = None
         self.enabled_analyzers = set({'structure', 'dependencies', 'health'} if analyzers is None else analyzers)
         # Invalidate any analysis still running for the previous project: its
         # result must never be painted for the newly opened one.
@@ -1705,8 +1623,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.engine = ProjectIntelligenceEngine(root, self.enabled_analyzers) if root else None
         self._worker_engine = None
         self._rendered_analysis = None
-        if self._thread is not None:
-            self._thread.requestInterruption()
+        # A running analysis notices the raised generation on its next progress
+        # tick and stops; its stale result is dropped by _is_stale().
         self.analysis = None
         if self._task_store:
             try:
@@ -1746,12 +1664,18 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             self.grade_score.setText('Оценка: —')
         if hasattr(self, 'grade_desc'):
             self.grade_desc.setText('Откройте проект')
-        if hasattr(self, 'open_folder_btn'):
-            self.open_folder_btn.hide()
+        self.student_tips = []
         self.tips_tree.clear()
+        self.tips_tree.setFixedHeight(100)
+        self.structure_summary.setText('Нет данных о структуре проекта.')
         self.structure_tree.clear()
         self.impact_tree.clear()
         self.impact_combo.clear()
+        self.impact_status_label.setText('Выберите файл, чтобы увидеть зависимости.')
+        self.impact_status_label.setStyleSheet(f'color: {Palette.TEXT_MUTED}; font-size: 12px;')
+        self._adversary_explicit_path = None
+        self._set_adversary_path(None)
+        self.analysis_scroll.verticalScrollBar().setValue(0)
         self.open_graph_button.setEnabled(True)
 
     def refresh(self):
@@ -1782,13 +1706,11 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.progress.show()
         self.refresh_button.setEnabled(False)
 
-        thread = QtCore.QThread(self)
-        worker = AnalysisWorker(self._worker_engine)
-        worker.moveToThread(thread)
-        self._thread = thread
+        worker = AnalysisWorker(
+            self._worker_engine,
+            should_stop=lambda gen=generation: self._is_stale(gen))
         self._worker = worker
 
-        thread.started.connect(worker.run)
         worker.progress.connect(
             lambda current, total, name, gen=generation:
             self._on_progress(current, total, name, gen))
@@ -1796,12 +1718,11 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             lambda result, gen=generation: self._on_finished(result, gen))
         worker.failed.connect(
             lambda message, gen=generation: self._on_failed(message, gen))
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(self._analysis_thread_finished)
-        thread.finished.connect(thread.deleteLater)
-        thread.start()
+        self._thread = run_async(
+            worker.run,
+            parent=self,
+            on_done=lambda _result, gen=generation: self._analysis_job_finished(gen),
+            on_error=lambda _message, gen=generation: self._analysis_job_finished(gen))
 
     def _is_stale(self, generation) -> bool:
         """True for results that belong to a project the user already left."""
@@ -1821,37 +1742,30 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.loading_overlay.update_progress(current, total, f"Файл: {name}")
         self.status.setText(f'Анализ: {name}…')
 
-    def _analysis_thread_finished(self):
-        sender = self.sender()
-        if sender is self._thread:
-            self._thread = None
-            self._worker = None
-            if getattr(self, "_refresh_pending", False) and self.engine:
-                # A newer project was requested while this analysis was running.
-                self._refresh_pending = False
-                generation = self._analysis_generation
-                QtCore.QTimer.singleShot(0, lambda: None if self._is_stale(generation) else self.refresh())
+    def _analysis_job_finished(self, generation=None):
+        if self._is_stale(generation):
+            return
+        self._thread = None
+        self._worker = None
+        if getattr(self, "_refresh_pending", False) and self.engine:
+            # A newer project was requested while this analysis was running.
+            self._refresh_pending = False
+            pending = self._analysis_generation
+            QtCore.QTimer.singleShot(0, lambda: None if self._is_stale(pending) else self.refresh())
 
     def shutdown(self):
-        """Stop background threads before the window is destroyed.
+        """Detach the panel from any background job before it is destroyed.
 
-        Without this the analysis/adversary workers could be deleted while
-        their threads were still running, which ends in a hard crash.
+        The analysis and adversary runs live on the shared Python pool, so they
+        cannot be waited for here (that would block the GUI); instead the
+        generation counter makes their results stale and their signals are
+        dropped once this widget is gone.
         """
         self._refresh_pending = False
-        for attr in ("_thread", "_adversary_thread"):
-            thread = getattr(self, attr, None)
-            if thread is None:
-                continue
-            try:
-                if thread.isRunning():
-                    thread.requestInterruption()
-                    thread.quit()
-                    thread.wait()
-            except RuntimeError:
-                pass
-            setattr(self, attr, None)
+        self._analysis_generation += 1
+        self._thread = None
         self._worker = None
+        self._adversary_thread = None
         self._adversary_worker = None
 
     def closeEvent(self, event):
@@ -1933,8 +1847,6 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             self.grade_score.setText(f"Оценка {int(round(health_score))} из 100")
         if hasattr(self, 'grade_desc'):
             self.grade_desc.setText(grade_info['summary'])
-        if hasattr(self, 'open_folder_btn'):
-            self.open_folder_btn.hide()
 
         # 2. Update Metric cards
         self.metric_widgets['files'].setText(str(len(a.files)))
@@ -2034,10 +1946,14 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
 
         # Resizing every column for hundreds of rows is itself several hundred
         # milliseconds; fixed widths are cheaper and stable while scrolling.
-        self.tips_tree.setColumnWidth(0, 300)
+        self.tips_tree.setColumnWidth(0, 156)
         self.tips_tree.setColumnWidth(1, 80)
         self.tips_tree.setColumnWidth(2, 180)
         self.tips_tree.setColumnWidth(3, 60)
+        visible_rows = min(max(len(items), 2), 7)
+        row_height = max(self.tips_tree.sizeHintForRow(0), self.tips_tree.fontMetrics().height() + 8)
+        header_height = self.tips_tree.header().sizeHint().height()
+        self.tips_tree.setFixedHeight(max(100, header_height + visible_rows * row_height + 14))
 
     def _populate_structure_tree(self, a: ProjectAnalysis):
         # Creating a tree item for every symbol froze the panel for seconds on a
@@ -2184,10 +2100,15 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
 
     def set_impact_file(self, path: Optional[str]):
         if path:
-            idx = self.impact_combo.findData(path)
-            if idx >= 0:
-                self.impact_combo.setCurrentIndex(idx)
-            self.tabs.setCurrentWidget(self.impact_scroll)
+            self._scroll_to_section('impact')
+            idx = self.impact_combo.findData(str(path))
+            if idx < 0:
+                self.impact_combo.setCurrentIndex(-1)
+                self.impact_tree.clear()
+                self.impact_status_label.setText('Файл ещё не попал в результаты анализа.')
+                self.impact_status_label.setStyleSheet(f'color: {Palette.TEXT_MUTED}; font-size: 12px;')
+                return
+            self.impact_combo.setCurrentIndex(idx)
             self._run_impact_analysis()
 
 

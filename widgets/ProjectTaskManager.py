@@ -4,51 +4,46 @@ import time
 import psutil
 from PyQt6 import QtCore, QtWidgets
 
+from services.background import run_async
 
-class ProcessSnapshot(QtCore.QThread):
-    ready = QtCore.pyqtSignal(object)
 
-    def __init__(self, roots, previous, parent=None):
-        super().__init__(parent)
-        self.roots = roots
-        self.previous = previous
+def collect_snapshot(roots, previous):
+    """Sample CPU/RAM per process and thread (runs on a Python worker thread)."""
+    now = time.monotonic()
+    rows, samples, processes = [], {}, {}
+    for pid in roots:
+        try:
+            root = psutil.Process(pid)
+            processes[pid] = root
+            for child in root.children(recursive=True):
+                processes[child.pid] = child
+        except (psutil.Error, OSError):
+            continue
+    cores = psutil.cpu_count() or 1
 
-    def run(self):
-        now = time.monotonic()
-        rows, samples, processes = [], {}, {}
-        for pid in self.roots:
-            try:
-                root = psutil.Process(pid)
-                processes[pid] = root
-                for child in root.children(recursive=True):
-                    processes[child.pid] = child
-            except (psutil.Error, OSError):
-                continue
-        cores = psutil.cpu_count() or 1
+    def usage(key, seconds):
+        samples[key] = (now, seconds)
+        before = previous.get(key)
+        if before is None or now <= before[0]:
+            return None
+        return max(0.0, (seconds - before[1]) / (now - before[0]) * 100 / cores)
 
-        def usage(key, seconds):
-            samples[key] = (now, seconds)
-            before = self.previous.get(key)
-            if before is None or now <= before[0]:
-                return None
-            return max(0.0, (seconds - before[1]) / (now - before[0]) * 100 / cores)
-
-        for pid, process in processes.items():
-            try:
-                with process.oneshot():
-                    born = process.create_time()
-                    key = (pid, born)
-                    cpu = process.cpu_times()
-                    row = dict(key=key, pid=pid, parent=process.ppid(), name=process.name(),
-                               status=process.status(), memory=process.memory_info().rss,
-                               cpu=usage(key, cpu.user + cpu.system), threads=[])
-                for thread in process.threads():
-                    row["threads"].append((thread.id, usage(
-                        (pid, born, thread.id), thread.user_time + thread.system_time)))
-                rows.append(row)
-            except (psutil.Error, OSError):
-                continue
-        self.ready.emit((rows, samples))
+    for pid, process in processes.items():
+        try:
+            with process.oneshot():
+                born = process.create_time()
+                key = (pid, born)
+                cpu = process.cpu_times()
+                row = dict(key=key, pid=pid, parent=process.ppid(), name=process.name(),
+                           status=process.status(), memory=process.memory_info().rss,
+                           cpu=usage(key, cpu.user + cpu.system), threads=[])
+            for thread in process.threads():
+                row["threads"].append((thread.id, usage(
+                    (pid, born, thread.id), thread.user_time + thread.system_time)))
+            rows.append(row)
+        except (psutil.Error, OSError):
+            continue
+    return rows, samples
 
 
 class ProjectTaskManager(QtWidgets.QWidget):
@@ -103,15 +98,19 @@ class ProjectTaskManager(QtWidgets.QWidget):
                     if pid:
                         roots.append(pid)
         self.summary.setText("Процессы терминалов и запусков проекта · " + session)
-        # The application owns an in-flight query so closing the panel cannot destroy a running thread.
-        worker = ProcessSnapshot(roots, self.previous, QtWidgets.QApplication.instance())
-        worker.project_session = session
-        self.worker = worker
-        worker.ready.connect(self.accept_snapshot)
-        worker.finished.connect(self.query_finished)
-        worker.finished.connect(worker.deleteLater)
-        QtWidgets.QApplication.instance().aboutToQuit.connect(worker.wait)
-        worker.start()
+        # The snapshot is sampled on the shared Python pool, never on a Qt thread.
+        previous = self.previous
+        self.worker = run_async(
+            lambda: collect_snapshot(roots, previous),
+            parent=None,
+            on_done=lambda result, sess=session: self._snapshot_ready(result, sess),
+            on_error=lambda _message: self.query_finished())
+
+    def _snapshot_ready(self, result, session):
+        self.query_finished()
+        if session != self.terminal._session_key:
+            return
+        self.accept_snapshot(result)
 
     def query_finished(self):
         self.worker = None
@@ -121,9 +120,6 @@ class ProjectTaskManager(QtWidgets.QWidget):
         return "…" if value is None else f"{value:.1f}%"
 
     def accept_snapshot(self, result):
-        session = self.sender().project_session
-        if session != self.terminal._session_key:
-            return
         rows, self.previous = result
         expanded = set()
         selected = self.tree.currentItem()

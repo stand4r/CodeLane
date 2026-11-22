@@ -11,7 +11,6 @@ from core.activity_log import record_action
 from core.logging_config import get_logger
 from core.project_state import project_state_file, sync_project_config
 from utils.programs import load_session_state
-from widgets.AnalysisProfilesDialog import ProjectAnalyzerDialog
 from widgets.ProjectDialog import ProjectDialog
 
 if TYPE_CHECKING:
@@ -30,37 +29,19 @@ class ProjectHandler:
         if result == QDialog.DialogCode.Accepted and dialog.selected_project is not None:
             self.on_project_opened(dialog.selected_project)
 
-    def _choose_analyzers(self, project_config):
-        current = getattr(project_config, 'analyzers', None)
-        if current is None and isinstance(project_config, dict):
-            current = project_config.get('analyzers')
-        if current is None:
-            current = ['structure', 'dependencies']
+    def apply_analyzers(self, project_config, selected):
+        from widgets.ProjectManager import project_manager
+
+        current = project_config.analyzers
+        project_config.analyzers = list(selected)
         try:
-            dialog = ProjectAnalyzerDialog(project_config, current=current, parent=self.main_window)
-        except Exception:
-            logger.exception("Не удалось открыть выбор профилей анализа")
-            return current
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return None
-        if isinstance(project_config, dict):
-            project_config['analyzers'] = dialog.selected_analyzers
-        else:
-            project_config.analyzers = dialog.selected_analyzers
-        try:
-            from widgets.ProjectManager import project_manager
-            if isinstance(project_config, dict):
-                sync_project_config(project_config, self._normalize_root(project_config), save=True)
-            else:
-                project_manager.update_project_config(project_config)
+            project_manager.update_project_config(project_config)
         except OSError as exc:
-            if isinstance(project_config, dict):
-                project_config["analyzers"] = current
-            else:
-                project_config.analyzers = current
+            project_config.analyzers = current
             QMessageBox.warning(self.main_window, "Не удалось сохранить анализаторы", str(exc))
-            return current
-        return dialog.selected_analyzers
+            return False
+        self.main_window.intelligence_panel.set_project(project_config.root_path, selected)
+        return True
 
     def _normalize_root(self, project_config) -> str:
         if hasattr(project_config, "root_path"):
@@ -71,13 +52,8 @@ class ProjectHandler:
             return str(Path(project_config).resolve())
         return ""
 
-    def on_project_opened(self, project_config, choose_analyzers: bool = True):
-        """Open a project.
-
-        ``choose_analyzers=False`` is used by the command line / Explorer
-        integration: the user double-clicked a folder and expects the project to
-        open immediately, without the analysis-profile dialog.
-        """
+    def on_project_opened(self, project_config):
+        """Open a project with its saved analyzer profile."""
         norm_root = self._normalize_root(project_config)
         record_action("project_open_requested")
         if not norm_root:
@@ -89,13 +65,11 @@ class ProjectHandler:
         sync_project_config(project_config, norm_root)
         enabled = getattr(self.main_window, "extension_enabled", lambda key: True)
         analyze = enabled("intelligence")
-        analyzers = self._choose_analyzers(project_config) if choose_analyzers and analyze else None
+        analyzers = getattr(project_config, 'analyzers', None)
+        if analyzers is None and isinstance(project_config, dict):
+            analyzers = project_config.get('analyzers')
         if analyzers is None:
-            analyzers = getattr(project_config, 'analyzers', None)
-            if analyzers is None and isinstance(project_config, dict):
-                analyzers = project_config.get('analyzers')
-            if analyzers is None:
-                analyzers = ['structure', 'dependencies', 'health']
+            analyzers = ['structure', 'dependencies', 'health']
 
         if self.main_window.close_all_editor_tabs() is False:
             from widgets.ProjectManager import project_manager
@@ -125,7 +99,7 @@ class ProjectHandler:
                 self.main_window.intelligence_panel.set_project(norm_root, analyzers)
             except Exception:
                 logger.exception("PyScribe operation failed")
-        self.main_window.extension_manager.set_project_root(norm_root)
+        self.main_window.extension_manager.set_project_root(norm_root, confirm=self._confirm_project_extensions)
         try:
             from core.code_analysis.service import UnifiedCodeAnalysisService
             UnifiedCodeAnalysisService.get_instance().set_project_root(norm_root)
@@ -279,6 +253,14 @@ class ProjectHandler:
             if p.is_file():
                 return str(p)
         return None
+
+    def _confirm_project_extensions(self, root):
+        buttons = QMessageBox.StandardButton
+        return QMessageBox.question(
+            self.main_window, "Доверие к расширениям проекта",
+            f"В папке {root} есть Python-расширения. Разрешить выполнить их код для текущего сеанса проекта?",
+            buttons.Yes | buttons.No, buttons.No,
+        ) == buttons.Yes
 
     def open_project_files(self, project_config):
         """Open a useful entry document (README, main.py, index.js, etc.)"""

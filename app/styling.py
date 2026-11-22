@@ -128,7 +128,8 @@ def _load_design_qss(base_path: Path) -> str:
         # This keeps every widget on the same surface when the user changes theme.
         sm = get_settings_manager()
         settings = sm.get_all_settings()
-        preset = THEMES.get(str(settings.get("theme", "dark")), THEMES["dark"])
+        theme = str(settings.get("theme", "dark"))
+        preset = THEMES.get(theme, THEMES["dark"])
         colors = {key: settings.get(key, value) for key, value in preset.items()}
         token_map = {
             "#181818": colors.get("app_background", "#181818"),
@@ -142,8 +143,6 @@ def _load_design_qss(base_path: Path) -> str:
             "#D4D4D4": colors.get("text_primary", "#D4D4D4"),
             "#A8A8A8": colors.get("text_secondary", "#A8A8A8"),
         }
-        for source, target in token_map.items():
-            qss = qss.replace(source, target)
         # Flat surfaces derived from the active palette keep both light and
         # dark themes readable without gradients or decorative highlights.
         surface = QColor(colors.get("panel_background", "#252526"))
@@ -155,9 +154,26 @@ def _load_design_qss(base_path: Path) -> str:
                 for a, b in zip(surface.getRgb()[:3], foreground.getRgb()[:3])
             ]).name()
 
+        light = theme == "light"
+        if light:
+            # Older rules still use literal colors for neutral surfaces and text.
+            for literals, target in (
+                (("#151517", "#141416"), colors["panel_background"]),
+                (("#1F1F22", "#18181B"), colors["input_background"]),
+                (("#313131",), tint(0.12)),
+                (("#252526", "#202024"), tint(0.045)),
+                (("#232325", "#2C2C2E", "#2C2C30", "#343436", "#3A3A3A"), tint(0.12)),
+                (("#2A2A2C", "#2E2E32", "#353539", "#454545", "#4A4A4C"), tint(0.27)),
+                (("#CCCCCC", "#E7E7E7", "#EDEDED", "#F0F0F0", "#E6E6E8", "#D8D8DA"), colors["text_primary"]),
+                (("#BBBBBB", "#8C8C8C", "#9D9D9D", "#868686", "#A0A0A2", "#AAAAAD", "#8A8A8E", "#8B949E"), colors["text_secondary"]),
+                (("#7FB3E8", "#8FB4D9"), "#245580"),
+            ):
+                token_map.update(dict.fromkeys(literals, target))
+        qss = re.sub(r"#[0-9A-Fa-f]{6}\b", lambda match: token_map.get(match[0], match[0]), qss)
+
         glass_tokens = {
             "@glass_surface@": tint(0.035),
-            "@glass_border@": tint(0.18),
+            "@glass_border@": tint(0.32 if light else 0.18),
             "@glass_hover@": tint(0.14),
             "@glass_menu@": tint(0.025),
             "@glass_text@": foreground.name(),
@@ -165,8 +181,12 @@ def _load_design_qss(base_path: Path) -> str:
             "@markdown_paper@": tint(0.075),
             "@markdown_text@": tint(0.83),
             "@glass_focus@": colors.get("accent_color", "#0078D4"),
-            "@soft_border@": tint(0.10),
+            "@soft_border@": tint(0.25 if light else 0.10),
+            "@splitter_border@": tint(0.32) if light else colors["border_color"],
             "@muted_text@": colors.get("text_secondary", "#9DAEC1"),
+            "@interaction_text@": foreground.name() if light else "#FFFFFF",
+            "@tab_indicator@": colors["accent_color"] if light else colors["editor_background"],
+            "@ai_panel_background@": colors["panel_background"] if light else colors["app_background"],
         }
         for token, value in glass_tokens.items():
             qss = qss.replace(token, value)

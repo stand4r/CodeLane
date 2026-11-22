@@ -1,4 +1,5 @@
 """GitHub integration and authentication service for CodeLane."""
+import base64
 import json
 import os
 import re
@@ -192,24 +193,39 @@ class GitHubService:
             return False, None, f"Ошибка: {e}"
 
     def get_auth_git_env(self) -> Dict[str, str]:
-        """Returns environment variables to disable prompts and pass token if possible."""
-        env = dict(os.environ)
-        token = self.get_token()
-        if token:
-            env["GITHUB_TOKEN"] = token
-            env["GH_TOKEN"] = token
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        return env
+        """Environment for git: no interactive prompts, token passed out of band.
 
-    def inject_token_into_url(self, url: str) -> str:
-        """Inject GitHub token into https URL for transparent Git operations."""
+        Токен передаётся только через переменные окружения (GIT_CONFIG_* →
+        http.extraheader), поэтому он не попадает ни в аргументы процесса,
+        ни в `.git/config`, ни в вывод git. GITHUB_TOKEN/GH_TOKEN оставлены
+        для совместимости с gh CLI.
+        """
+        env = dict(os.environ)
+        env["GIT_TERMINAL_PROMPT"] = "0"
         token = self.get_token()
         if not token:
-            return url
-        # If url is https://github.com/owner/repo or https://user@github.com/...
-        pattern = r"^https://(?:[^@/]+@)?github\.com/(.+)$"
-        match = re.match(pattern, url.strip())
-        if match:
-            path = match.group(1)
-            return f"https://{token}@github.com/{path}"
-        return url
+            return env
+        env["GITHUB_TOKEN"] = token
+        env["GH_TOKEN"] = token
+        # git >= 2.31 читает конфиг из окружения: секрет не пишется в файл.
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader"
+        env["GIT_CONFIG_VALUE_0"] = "Authorization: Basic " + self._basic_auth_value(token)
+        return env
+
+    @staticmethod
+    def _basic_auth_value(token: str) -> str:
+        """base64 от 'x-access-token:<token>' для заголовка Authorization."""
+        return base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+
+    def mask_secrets(self, text: str) -> str:
+        """Маскирует токен в произвольном тексте (вывод git, ошибки, логи)."""
+        if not text:
+            return text
+        masked = str(text)
+        token = self.get_token()
+        if token:
+            masked = masked.replace(token, "***")
+            masked = masked.replace(self._basic_auth_value(token), "***")
+        # https://<user>:<pass>@host и https://<token>@host
+        return re.sub(r"(https?://)[^/\s@]+@", r"\1***@", masked)

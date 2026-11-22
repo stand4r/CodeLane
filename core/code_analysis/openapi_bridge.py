@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -107,45 +108,115 @@ class OpenApiBridge:
         self.client_calls: List[ClientApiCall] = []
         self.server_handlers: List[ServerRouteHandler] = []
         self._indexed = False
+        # Index scans run in a worker thread ("openapi-indexer").  ``_generation``
+        # invalidates a running scan as soon as the project root changes, so a
+        # stale scan never walks a root that has already been cleared (that used
+        # to raise TypeError: expected str, bytes or os.PathLike, not NoneType).
+        self._generation = 0
+        self._index_thread: Optional[threading.Thread] = None
+        self._lock = threading.RLock()
+        # Per-thread scan buffers: a cancelled scan collects into its own lists and
+        # only the still-current scan publishes them (see ``rebuild_index``).
+        self._scan_state = threading.local()
 
     def set_root(self, root_path: Optional[str]):
-        self.root_path = Path(root_path).resolve() if root_path else None
-        self.clear()
+        """Retarget the bridge at ``root_path`` and cancel any running scan."""
+        root = Path(root_path).resolve() if root_path else None
+        with self._lock:
+            self._generation += 1
+            self.root_path = root
+            self._reset_index_unlocked()
+
+    def cancel_indexing(self):
+        """Ask a running background scan to stop without clearing the index."""
+        with self._lock:
+            self._generation += 1
 
     def clear(self):
+        with self._lock:
+            self._generation += 1
+            self._reset_index_unlocked()
+
+    def _reset_index_unlocked(self):
         self.operations.clear()
         self.client_calls.clear()
         self.server_handlers.clear()
         self._indexed = False
 
+    def _buckets(self) -> Tuple[list, list, list]:
+        """Scan target lists: the calling thread's buffers or the live index."""
+        buckets = getattr(self._scan_state, "buckets", None)
+        if buckets is None:
+            return (self.operations, self.client_calls, self.server_handlers)
+        return buckets
+
+    def start_indexing(self) -> Optional[threading.Thread]:
+        """Rebuild the index in the background, replacing any previous scan."""
+        with self._lock:
+            generation = self._generation
+            root = self.root_path
+            if root is None or not root.is_dir():
+                self._indexed = True
+                return None
+            thread = threading.Thread(
+                target=self.rebuild_index, args=(generation,),
+                name="openapi-indexer", daemon=True,
+            )
+            self._index_thread = thread
+        thread.start()
+        return thread
+
     def ensure_indexed(self):
         if not self._indexed and self.root_path and self.root_path.exists():
             self.rebuild_index()
 
-    def rebuild_index(self):
-        """Scan project workspace for OpenAPI specs, client calls, and backend handlers."""
-        self.operations.clear()
-        self.client_calls.clear()
-        self.server_handlers.clear()
-        if not self.root_path or not self.root_path.exists():
-            self._indexed = True
+    def rebuild_index(self, generation: Optional[int] = None):
+        """Scan project workspace for OpenAPI specs, client calls, and backend handlers.
+
+        Safe from a worker thread: the root is snapshotted once, the scan stops as
+        soon as a newer root/cancellation arrives, and results are published only
+        while this scan is still the current one.
+        """
+        with self._lock:
+            if generation is None:
+                generation = self._generation
+            root = self.root_path
+        if root is None or not root.is_dir():
+            with self._lock:
+                if generation == self._generation:
+                    self._indexed = True
             return
 
-        for root, dirs, files in os.walk(self.root_path):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
-            for file in files:
-                p = Path(root) / file
-                suffix = p.suffix.lower()
+        buckets: Tuple[list, list, list] = ([], [], [])
+        self._scan_state.buckets = buckets
+        try:
+            for current, dirs, files in os.walk(root):
+                if generation != self._generation:
+                    return
+                dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+                for file in files:
+                    if generation != self._generation:
+                        return
+                    p = Path(current) / file
+                    suffix = p.suffix.lower()
 
-                # 1. OpenAPI Specs
-                if suffix in (".yaml", ".yml", ".json"):
-                    self._check_and_index_spec(p)
+                    # 1. OpenAPI Specs
+                    if suffix in (".yaml", ".yml", ".json"):
+                        self._check_and_index_spec(p)
 
-                # 2. Source Code (Client & Server routes)
-                elif suffix in (".js", ".jsx", ".ts", ".tsx", ".py", ".cs", ".go", ".java"):
-                    self._index_source_file(p)
+                    # 2. Source Code (Client & Server routes)
+                    elif suffix in (".js", ".jsx", ".ts", ".tsx", ".py", ".cs", ".go", ".java"):
+                        self._index_source_file(p)
+        finally:
+            self._scan_state.buckets = None
 
-        self._indexed = True
+        with self._lock:
+            if generation != self._generation:
+                return
+            self.operations[:] = buckets[0]
+            self.client_calls[:] = buckets[1]
+            self.server_handlers[:] = buckets[2]
+            self._indexed = True
         logger.info(
             "OpenAPI index ready: %d operations, %d client calls, %d server handlers",
             len(self.operations), len(self.client_calls), len(self.server_handlers)
@@ -200,7 +271,7 @@ class OpenApiBridge:
 
                 line_no = self._find_spec_line(lines, route_path, method)
 
-                self.operations.append(OpenApiOperation(
+                self._buckets()[0].append(OpenApiOperation(
                     path=route_path,
                     method=m_lower,
                     operation_id=op_id,
@@ -252,12 +323,12 @@ class OpenApiBridge:
             # Check Client API calls
             client_call = self._extract_client_call(stripped, str(path.resolve()), line_no)
             if client_call:
-                self.client_calls.append(client_call)
+                self._buckets()[1].append(client_call)
 
             # Check Server Route Handlers
             handler = self._extract_server_handler(stripped, str(path.resolve()), line_no)
             if handler:
-                self.server_handlers.append(handler)
+                self._buckets()[2].append(handler)
 
     def _extract_client_call(self, line: str, file_path: str, line_no: int) -> Optional[ClientApiCall]:
         # fetch('/api/...')

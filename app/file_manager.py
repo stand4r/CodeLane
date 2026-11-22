@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from utils.programs import saveRecent, backup
 from core.activity_log import record_action
@@ -104,22 +104,28 @@ class FileManager:
         except (OSError, TypeError):
             return False
 
-    def _find_in_group(self, group, path_str: str):
-        for i in range(group.count()):
-            widget = group.widget(i)
-            if not widget.property("pyscribeHtmlPreview") and self._match_tab_path(widget, path_str):
-                return i
+    def _find_tab(self, matches):
+        for group in self.main_window.editor_groups():
+            for index in range(group.count()):
+                widget = group.widget(index)
+                if widget is not None and matches(widget):
+                    return group, index, widget
         return None
 
+    def _focus_tab(self, tab):
+        if tab is None:
+            return None
+        group, index, widget = tab
+        group.setCurrentIndex(index)
+        self.main_window._set_active_group(group)
+        return widget
+
     def _find_and_focus_open_tab(self, path_str: str) -> bool:
-        """Find an already-open tab matching path_str and switch to it."""
-        for group in self.main_window.editor_groups():
-            idx = self._find_in_group(group, path_str)
-            if idx is not None:
-                group.setCurrentIndex(idx)
-                self.main_window._set_active_group(group)
-                return True
-        return False
+        tab = self._find_tab(
+            lambda widget: not widget.property("pyscribeHtmlPreview")
+            and self._match_tab_path(widget, path_str)
+        )
+        return self._focus_tab(tab) is not None
 
     def _is_binary_file(self, file_path_obj: Path, suffix: str) -> bool:
         """Check if file should be treated as binary."""
@@ -160,11 +166,14 @@ class FileManager:
         try:
             from widgets.TableViewerWidget import TableViewerWidget
             path_str = str(Path(file_path).resolve())
-            if self._find_and_focus_table_tab(path_str):
+            tab = self._find_tab(
+                lambda widget: isinstance(widget, TableViewerWidget) and widget.file_path == path_str
+            )
+            if self._focus_tab(tab) is not None:
                 return
 
             viewer = TableViewerWidget(path_str, self.main_window)
-            viewer.open_editor_requested.connect(lambda fp: self.open_text_editor(fp))
+            viewer.open_editor_requested.connect(self.open_text_editor)
             name = Path(file_path).name
             tab_index = self.main_window.active_tab_widget.addTab(viewer, f"Таблица: {name}")
             self.main_window.active_tab_widget.setCurrentIndex(tab_index)
@@ -172,23 +181,6 @@ class FileManager:
             self.app_manager.logger.info("Opened table file: %s", file_path)
         except Exception as e:
             CustomDialog(f"Ошибка открытия таблицы: {str(e)}").exec()
-
-    def _find_table_in_group(self, group, path_str: str, cls):
-        for i in range(group.count()):
-            w = group.widget(i)
-            if isinstance(w, cls) and getattr(w, "file_path", None) == path_str:
-                return i
-        return None
-
-    def _find_and_focus_table_tab(self, path_str: str) -> bool:
-        from widgets.TableViewerWidget import TableViewerWidget
-        for group in self.main_window.editor_groups():
-            idx = self._find_table_in_group(group, path_str, TableViewerWidget)
-            if idx is not None:
-                group.setCurrentIndex(idx)
-                self.main_window._set_active_group(group)
-                return True
-        return False
 
     def open_document_file(self, file_path: str):
         """Open a native Office document tab."""
@@ -202,13 +194,11 @@ class FileManager:
         """Open a binary file in a read-only hex editor tab."""
         try:
             path_str = str(Path(file_path).resolve())
-            for group in self.main_window.editor_groups():
-                for i in range(group.count()):
-                    w = group.widget(i)
-                    if isinstance(w, HexViewer) and getattr(w, "file_path", None) == Path(path_str):
-                        group.setCurrentIndex(i)
-                        self.main_window._set_active_group(group)
-                        return
+            tab = self._find_tab(
+                lambda widget: isinstance(widget, HexViewer) and widget.file_path == Path(path_str)
+            )
+            if self._focus_tab(tab) is not None:
+                return
 
             viewer = HexViewer(self.main_window)
             viewer.file_path = Path(file_path)
@@ -283,13 +273,19 @@ class FileManager:
             path_str = str(Path(file_path).resolve())
             is_html = Path(path_str).suffix.lower() in HTML_SUFFIXES
             if source is None and is_html:
-                for group in self.main_window.editor_groups():
-                    index = self._find_text_in_group(group, path_str)
-                    if index is not None:
-                        source = getattr(group.widget(index), "editor", None)
-                        break
+                editor_tab = self._find_text_tab(path_str)
+                if editor_tab is not None:
+                    source = getattr(editor_tab[2], "editor", None)
 
-            if self._find_and_focus_markdown_tab(path_str, source):
+            tab = self._find_tab(
+                lambda widget: isinstance(widget, MarkdownViewerWidget) and widget.file_path == path_str
+            )
+            viewer = self._focus_tab(tab)
+            if viewer is not None:
+                if source is not None:
+                    viewer.bind_source(source)
+                else:
+                    viewer.reload()
                 return
 
             viewer = MarkdownViewerWidget(file_path=path_str, parent=self.main_window)
@@ -308,33 +304,11 @@ class FileManager:
         except Exception as e:
             CustomDialog(f"Ошибка предпросмотра: {e}").exec()
 
-    def _find_markdown_in_group(self, group, path_str: str, cls):
-        for i in range(group.count()):
-            w = group.widget(i)
-            if isinstance(w, cls) and getattr(w, "file_path", None) == path_str:
-                return i
-        return None
-
-    def _find_and_focus_markdown_tab(self, path_str: str, source=None) -> bool:
-        from widgets.MarkdownViewerWidget import MarkdownViewerWidget
-        for group in self.main_window.editor_groups():
-            idx = self._find_markdown_in_group(group, path_str, MarkdownViewerWidget)
-            if idx is not None:
-                group.setCurrentIndex(idx)
-                self.main_window._set_active_group(group)
-                viewer = group.widget(idx)
-                if source is not None:
-                    viewer.bind_source(source)
-                else:
-                    viewer.reload()
-                return True
-        return False
-
     def open_text_editor(self, file_path: str):
         """Force open a file in code/text editor mode."""
         try:
             path_str = str(Path(file_path).resolve())
-            if self._find_and_focus_text_tab(path_str):
+            if self._focus_tab(self._find_text_tab(path_str)) is not None:
                 return
 
             content, snapshot, text_format = self._read_text(Path(file_path))
@@ -343,20 +317,13 @@ class FileManager:
         except Exception as e:
             CustomDialog(f"Ошибка открытия в редакторе: {str(e)}").exec()
 
-    def _find_text_in_group(self, group, path_str: str):
-        for i in range(group.count()):
-            w = group.widget(i)
-            if isinstance(w, (HexViewer, DiagramViewerWidget)) or hasattr(w, "browser"):
-                continue
-            if callable(getattr(w, "get_code", None)) and self._match_tab_path(w, path_str):
-                return i
-        return None
+    def _find_text_tab(self, path_str: str):
+        def matches(widget):
+            return (
+                not isinstance(widget, (HexViewer, DiagramViewerWidget))
+                and not hasattr(widget, "browser")
+                and callable(getattr(widget, "get_code", None))
+                and self._match_tab_path(widget, path_str)
+            )
 
-    def _find_and_focus_text_tab(self, path_str: str) -> bool:
-        for group in self.main_window.editor_groups():
-            idx = self._find_text_in_group(group, path_str)
-            if idx is not None:
-                group.setCurrentIndex(idx)
-                self.main_window._set_active_group(group)
-                return True
-        return False
+        return self._find_tab(matches)

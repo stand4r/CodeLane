@@ -265,7 +265,7 @@ class LocalToolbox:
             raise ToolError(f"Файл не найден: {path}")
         from services.workbench_documents import DOCUMENT_SUFFIXES
         if target.suffix.lower() in DOCUMENT_SUFFIXES:
-            raise ToolError("Для PDF, DOCX и ODT используй read_document.")
+            raise ToolError("Для PDF, DOCX, ODT и XLSX используй read_document.")
         text = None
         if self.ui_action is not None:
             try:
@@ -676,7 +676,7 @@ class LocalToolbox:
         if access == "write":
             self._ask(name, json.dumps(payload, ensure_ascii=False), description)
         if name.startswith(("explorer_", "analysis_", "dependency_", "lsp_", "todo_", "project_config", "git_")) or (
-            name in ("terminal_execute", "editor_save") or "path" in payload
+            name in ("terminal_execute", "editor_save", "test_results") or "path" in payload
         ):
             payload["_project_root"] = str(self.root) if self.root else None
         return self.ui_action(name, payload)

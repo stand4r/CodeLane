@@ -35,6 +35,26 @@ from services.mcp_client import MCPClient, MCPServerConfig, parse_servers, run_t
 logger = get_logger("ai_agent")
 _detached_workers = set()
 
+
+def _detach_worker(worker):
+    """Let a cancelling network request finish without keeping its UI alive."""
+    try:
+        worker.stop()
+    except RuntimeError:
+        return
+    for signal in (worker.chunk, worker.reasoning, worker.tool_started, worker.tool_finished,
+                   worker.finished_ok, worker.failed, worker.finished):
+        try:
+            signal.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+    worker.setParent(None)
+    _detached_workers.add(worker)
+    worker.finished.connect(worker.deleteLater)
+    worker.destroyed.connect(lambda: _detached_workers.discard(worker))
+    if worker.isFinished():
+        worker.deleteLater()
+
 SCOPE_LABELS = {
     "none": "без контекста",
     "file": "текущий файл",
@@ -123,6 +143,7 @@ class AIWorker(QtCore.QThread):
         self.prompt = prompt
         self.history = history or []
         self.context = context
+        self.attachment_paths = ()
         self.tools = tools or []
         self.tool_runner = tool_runner
         self.on_tool = on_tool
@@ -165,7 +186,9 @@ class AIWorker(QtCore.QThread):
                 AIMessage("assistant", answer),
             ]
             retry = self.service.converse(
-                TEACHING_RETRY_NUDGE, history, self.context)
+                TEACHING_RETRY_NUDGE, history, self.context,
+                **({"attachment_paths": self.attachment_paths} if self.attachment_paths else {}),
+            )
         except Exception:  # noqa: BLE001 - fall back to filtering the first answer
             retry = ""
         if retry and not has_forbidden_solution(retry):
@@ -190,6 +213,14 @@ class AIWorker(QtCore.QThread):
                     pass
                 self.mcp_clients.pop(config.name, None)
                 client = None
+            if client is not None:
+                from services.mcp_client import MCPError
+
+                try:
+                    client.refresh_tools()
+                except MCPError:
+                    self.mcp_clients.pop(config.name).close()
+                    client = None
             if client is None:
                 client = MCPClient(config, timeout=15)
                 try:
@@ -293,12 +324,6 @@ class AIWorker(QtCore.QThread):
                 root, mentions = project_context
                 rendered = render_project_context(Path(root), mentions)
                 context = "\n\n".join(part for part in (context, rendered) if part)
-            if self.local_tools is not None and self.local_tools.access_mode != "write_only":
-                try:
-                    state = self.local_tools.workspace_state()
-                    context = ((context or "") + "\n\nАктуальное состояние CodeLane перед запросом:\n" + state)
-                except Exception as exc:
-                    logger.debug("Workspace context unavailable: %s", exc)
             answer = self.service.converse(
                 self.prompt, self.history, context,
                 tools=tools or None,
@@ -308,6 +333,7 @@ class AIWorker(QtCore.QThread):
                 on_tool_end=lambda run: self.tool_finished.emit(run),
                 on_reasoning=emit_reasoning,
                 should_stop=lambda: self._stop,
+                **({"attachment_paths": self.attachment_paths} if self.attachment_paths else {}),
             )
             if self.service.is_teaching and not self._stop:
                 answer = self._enforce_teaching(answer)
@@ -325,6 +351,105 @@ class AIWorker(QtCore.QThread):
         except Exception as exc:  # noqa: BLE001 - never crash the UI thread
             logger.exception("AI request failed")
             self.failed.emit(f"Ошибка ИИ-запроса: {exc}")
+
+
+class _QuickAIResult(QtWidgets.QDialog):
+    """Show an independent, single-agent request outside the team chat."""
+
+    answered = QtCore.pyqtSignal(str)
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        from widgets.ChatMessage import AssistantMessage
+
+        self.setWindowTitle("Быстрое действие ИИ")
+        self.worker = None
+        layout = QtWidgets.QVBoxLayout(self)
+        self.status = QtWidgets.QLabel(self)
+        self.status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        self.scroll = QtWidgets.QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.answer = AssistantMessage()
+        self.scroll.setWidget(self.answer)
+        layout.addWidget(self.scroll, 1)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+        self.copy = buttons.addButton("Копировать ответ", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
+        self.stop = buttons.addButton("Остановить", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
+        self.copy.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(self.answer.text()))
+        self.stop.clicked.connect(self.cancel)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.resize(680, 520)
+
+    def start(self, service, prompt, context):
+        if self.worker is not None:
+            self._present()
+            return False
+        problem = service.configuration_problem()
+        if problem:
+            self.show_problem(problem)
+            return False
+        self.answer.set_markdown("")
+        self.copy.setEnabled(False)
+        self.status.setText("Ожидаем ответ модели…")
+        self.stop.setEnabled(True)
+        self._present()
+        self.worker = AIWorker(service, prompt, context=context, parent=self)
+        self.worker.finished_ok.connect(self._show_answer)
+        self.worker.failed.connect(self._show_failure)
+        self.worker.finished.connect(self._finished)
+        self.worker.start()
+        return True
+
+    def _present(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def show_problem(self, message):
+        if self.worker is None:
+            self.answer.set_markdown("")
+            self.copy.setEnabled(False)
+            self.stop.setEnabled(False)
+            self.status.setText(message)
+        self._present()
+
+    def _show_answer(self, answer):
+        if self.worker is None or self.sender() is not self.worker:
+            return
+        self.status.setText("" if answer else "Модель вернула пустой ответ.")
+        self.answer.set_markdown(answer)
+        self.copy.setEnabled(bool(answer))
+        if answer:
+            self.answered.emit(answer)
+
+    def _show_failure(self, message):
+        if self.worker is not None and self.sender() is self.worker:
+            self.status.setText(message)
+
+    def _finished(self):
+        if self.worker is None or self.sender() is not self.worker:
+            return
+        self.worker.deleteLater()
+        self.worker = None
+        self.stop.setEnabled(False)
+
+    def cancel(self):
+        if self.worker is not None:
+            worker, self.worker = self.worker, None
+            _detach_worker(worker)
+            self.status.setText("Запрос остановлен.")
+            self.stop.setEnabled(False)
+
+    def done(self, result):
+        self.cancel()
+        super().done(result)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.answer.set_width(self.scroll.viewport().width() - 18)
 
 
 class _WidgetDocumentInterface(QtCore.QObject):
@@ -477,6 +602,30 @@ class _ComposerInput(QtWidgets.QPlainTextEdit):
     """Auto-growing multi-line input (Enter sends, Shift+Enter inserts a line)."""
 
     submitted = QtCore.pyqtSignal()
+    files_dropped = QtCore.pyqtSignal(object)
+
+    def dragEnterEvent(self, event):
+        if any(url.isLocalFile() for url in event.mimeData().urls()):
+            event.setDropAction(QtCore.Qt.DropAction.CopyAction)
+            event.accept()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if any(url.isLocalFile() for url in event.mimeData().urls()):
+            event.setDropAction(QtCore.Qt.DropAction.CopyAction)
+            event.accept()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if paths:
+            event.setDropAction(QtCore.Qt.DropAction.CopyAction)
+            event.accept()
+            self.files_dropped.emit(paths)
+        else:
+            super().dropEvent(event)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -594,12 +743,14 @@ class AIAgentPanel(QtWidgets.QWidget):
         self.setObjectName("aiAgentPanel")
         self._history: List[AIMessage] = []
         self._worker: Optional[AIWorker] = None
+        self._quick_result = None
         self._models_worker: Optional[_ModelsWorker] = None
         self._current_answer: List[str] = []
         self._stream_open = False
         # Queued prompts, connected MCP clients and added bubbles.
         self._queue: list = []
         self._mcp_clients: dict = {}
+        self._attachments = []
         self._bubbles: list = []
         self._last_request = None
         self._history_before_request = 0
@@ -968,11 +1119,15 @@ class AIAgentPanel(QtWidgets.QWidget):
         self.input = _ComposerInput(self.composer)
         self.input.setPlaceholderText("Сообщение")
         self.input.submitted.connect(self.send_message)
+        self.input.files_dropped.connect(self._attach_files)
         self.input.textChanged.connect(self._on_composer_text_changed)
         self.input.installEventFilter(self)
         self.input.customContextMenuRequested.connect(
             lambda pos: self._show_context_menu(self.input.mapToGlobal(pos))
         )
+        self.attachment_layout = QtWidgets.QVBoxLayout()
+        self.attachment_layout.setSpacing(2)
+        box.addLayout(self.attachment_layout)
         box.addWidget(self.input)
         # Inline completion for "/" commands and "@" mentions.
         self.completion = _CompletionPopup(self)
@@ -981,6 +1136,13 @@ class AIAgentPanel(QtWidgets.QWidget):
         toolbar = QtWidgets.QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(6)
+        attach = QtWidgets.QToolButton(self.composer)
+        attach.setObjectName("aiAttachButton")
+        attach.setText("+")
+        attach.setAccessibleName("Прикрепить файлы")
+        attach.setToolTip("Прикрепить фото или документ")
+        attach.clicked.connect(self._choose_attachments)
+        toolbar.addWidget(attach)
 
         # Context flags stay available to the code, but no longer occupy the
         # composer: they are toggled from the right-click menu.
@@ -1106,6 +1268,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         if role == "user":
             self._append_user(text)
         else:
+            self._current_answer[:] = [text]
             self._append_assistant(text, mark_thinking=False)
         self.save_chat_session()
 
@@ -2233,6 +2396,7 @@ class AIAgentPanel(QtWidgets.QWidget):
 
     def clear_conversation(self):
         """Start a new chat while keeping earlier project conversations."""
+        self._clear_attachments()
         self.save_chat_session()
         self.stop_request()
         # A worker that was running for the old dialog must not deliver its
@@ -2437,6 +2601,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                        if str(item.get("id")) == str(session_id)), None)
         if target is None:
             return False
+        self._clear_attachments()
         self.stop_request()
         self._discard_worker()
         self._restore_composer_after_request()
@@ -2496,31 +2661,11 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._clear_activity()
         worker = self._worker
         self._worker = None
-        if worker is None:
-            return
-        try:
-            worker.stop()
-        except RuntimeError:
-            return
-        for signal in (worker.chunk, worker.reasoning, worker.tool_started,
-                       worker.tool_finished, worker.finished_ok, worker.failed):
-            try:
-                signal.disconnect()
-            except (TypeError, RuntimeError):
-                pass
-        try:
-            worker.finished.disconnect()
-        except (TypeError, RuntimeError):
-            pass
-        # QThread must outlive run(), including an outstanding network call.
-        worker.setParent(None)
-        _detached_workers.add(worker)
-        worker.finished.connect(worker.deleteLater)
-        worker.destroyed.connect(lambda: _detached_workers.discard(worker))
-        if worker.isFinished():
-            worker.deleteLater()
+        if worker is not None:
+            _detach_worker(worker)
 
     def shutdown(self):
+        self._close_quick_result()
         self._planner_timer.stop()
         self._stop_agent_team()
         """Stop the worker and terminate every MCP server this panel started."""
@@ -2641,8 +2786,48 @@ class AIAgentPanel(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Sending
     # ------------------------------------------------------------------
-    def send_with_context(self, prompt: str):
-        self._send(prompt, self._context_for(None))
+    def _quick_result_dialog(self):
+        if self._quick_result is None:
+            parent = self.main_window if isinstance(self.main_window, QtWidgets.QWidget) else self
+            self._quick_result = _QuickAIResult(parent)
+            self._quick_result.answered.connect(self._remember_quick_answer)
+        return self._quick_result
+
+    def _remember_quick_answer(self, answer):
+        self._current_answer[:] = [answer]
+
+    def _close_quick_result(self):
+        if self._quick_result is not None:
+            self._quick_result.close()
+
+    def send_quick_action(self, prompt: str, *, context=""):
+        """Run a focused request with no chat history, delegation or tool catalogue."""
+        result = self._quick_result_dialog()
+        if self._access_mode() == "write_only":
+            result.show_problem("Включите чтение в разрешениях агента для быстрых действий.")
+            return False
+        return result.start(self._service(), prompt, context)
+
+    def send_with_context(self, prompt: str, *, editor=None):
+        if self._access_mode() == "write_only":
+            return self.send_quick_action(prompt)
+        if not callable(getattr(editor, "get_code", None)):
+            editor = self._editor_for_chat()
+        get_code = getattr(editor, "get_code", None)
+        if not callable(get_code):
+            self._quick_result_dialog().show_problem("Откройте исходный файл в редакторе.")
+            return False
+        text_editor = getattr(editor, "editor", None)
+        cursor = text_editor.textCursor() if text_editor is not None else None
+        selection = cursor.selectedText().replace("\u2029", "\n") if cursor and cursor.hasSelection() else None
+        file_path = getattr(editor, "file_path", None)
+        context = AIService.build_context_block(
+            file_path=str(file_path) if file_path else None,
+            language=getattr(editor, "language", ""),
+            selection=selection,
+            code=None if selection else get_code(),
+        )
+        return self.send_quick_action(prompt, context=context)
 
     # ------------------------------------------------------------------
     # Commands, mentions and scoped context
@@ -2686,6 +2871,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._entries_cache = None
         # Restore the saved conversation once per project.
         if root and str(root) != getattr(self, "_session_root", None):
+            self._close_quick_result()
             if self._worker is not None:
                 self.stop_request()
                 self._discard_worker()
@@ -2726,6 +2912,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._refresh_menus()
 
     def close_project_context(self):
+        self._close_quick_result()
+        self._clear_attachments()
         self._stop_agent_team()
         self._discard_worker()
         self._restore_composer_after_request()
@@ -2774,14 +2962,69 @@ class AIAgentPanel(QtWidgets.QWidget):
         from services.ai_context import render_project_context
         return render_project_context(root, mentions)
 
+    def _choose_attachments(self):
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "Прикрепить файлы", "",
+            "Фото и документы (*.jpg *.jpeg *.png *.webp *.gif *.pdf *.md *.markdown *.docx *.xlsx *.odt);;Все файлы (*)",
+        )
+        self._attach_files(paths)
+
+    def _attach_files(self, paths):
+        if not paths:
+            return
+        if self._access_mode() == "write_only":
+            self._append_notice("Вложения доступны в режиме с разрешённым чтением.", "warn")
+            return
+        for filename in paths:
+            try:
+                path = Path(filename).resolve()
+                if not path.is_file():
+                    raise ValueError("выберите обычный файл")
+            except (OSError, RuntimeError, ValueError) as exc:
+                self._append_notice(f"{Path(filename).name}: {exc}", "warn")
+                continue
+            if path not in self._attachments:
+                if len(self._attachments) == 8:
+                    self._append_notice("Можно прикрепить до восьми файлов.", "warn")
+                    break
+                self._attachments.append(path)
+        self._render_attachments()
+
+    def _render_attachments(self):
+        while self.attachment_layout.count():
+            self.attachment_layout.takeAt(0).widget().deleteLater()
+        for path in self._attachments:
+            button = QtWidgets.QPushButton(f"{path.name}  ×", self.composer)
+            button.setToolTip(f"Удалить вложение\n{path}")
+            button.clicked.connect(lambda _, selected=path: self._remove_attachment(selected))
+            self.attachment_layout.addWidget(button)
+
+    def _remove_attachment(self, path):
+        self._attachments.remove(path)
+        self._render_attachments()
+
+    def _clear_attachments(self):
+        self._attachments.clear()
+        self._render_attachments()
+
     def send_message(self):
         raw = self.input.toPlainText().strip()
-        if not raw:
+        attachments = tuple(getattr(self, "_attachments", ()))
+        if not raw and not attachments:
             return
         parsed = parse_input(raw)
         if parsed.is_command and self._run_command(parsed):
             self.input.clear()
             return
+        options = {}
+        label = ""
+        if attachments:
+            if self._access_mode() == "write_only":
+                self._append_notice("Удалите вложения или включите чтение в разрешениях агента.", "warn")
+                return
+            options["attachment_paths"] = attachments
+            label = "\n\nВложения: " + ", ".join(path.name for path in attachments)
+            raw = (raw or "Ознакомься с вложениями и кратко опиши их содержимое.") + label
         find = getattr(self.main_window, "_find_special_tab", None)
         host = find("agentTeam") if callable(find) else None
         if host is not None:
@@ -2792,24 +3035,30 @@ class AIAgentPanel(QtWidgets.QWidget):
             if self._worker is not None:
                 self._append_notice("Дождитесь завершения текущего ответа.", "warn")
             elif team.busy:
-                if team.enqueue(raw):
+                if team.enqueue(raw, **options):
                     self.input.clear()
-            elif team.submit(raw):
+                    if attachments:
+                        self._clear_attachments()
+            elif team.submit(raw, **options):
                 self.input.clear()
+                if attachments:
+                    self._clear_attachments()
             return
         mentions = parsed.mentions
-        text = parsed.text or raw
-        self.input.clear()
+        text = parsed.text + label if parsed.text else raw
         self._clear_welcome()
         self._pending_project_context = None
         self._defer_project_context = True
         try:
-            context = self._context_for(mentions)
+            context = self._context_for(mentions) if mentions or not attachments else ""
         finally:
             self._defer_project_context = False
         if self._pending_project_context is not None:
             context = (context, self._pending_project_context)
-        self._send(text, context, mentions=mentions)
+        if self._send(text, context, mentions=mentions, **options) is not False:
+            self.input.clear()
+            if attachments:
+                self._clear_attachments()
 
     def _context_for(self, mentions=None) -> str:
         if self._access_mode() == "write_only":
@@ -2945,7 +3194,7 @@ class AIAgentPanel(QtWidgets.QWidget):
             "review": "Сделай короткое code review: сильные и слабые места.",
         }
         if command.name in prompts:
-            self._send(prompts[command.name], self._context_for(None))
+            self.send_with_context(prompts[command.name])
             return True
         return False
 
@@ -3059,19 +3308,22 @@ class AIAgentPanel(QtWidgets.QWidget):
         self.refresh_model_label()
         self._append_step(f"Провайдер: {spec.label} · модель {spec.default_model or '—'}")
 
-    def _send(self, prompt: str, context: str, mentions=None):
+    def _send(self, prompt: str, context: str, mentions=None, *, attachment_paths=()):
         # A message typed while the model is still answering is queued instead
         # of being rejected; it is sent automatically when the current answer
         # finishes (see _drain_queue).
         if self._worker is not None:
-            self._enqueue(prompt, context, mentions)
+            self._enqueue(prompt, context, mentions, attachment_paths=attachment_paths)
             return
         service = self._service()
         problem = service.configuration_problem()
         if problem:
             self._append_notice("⚠ " + problem, "warn")
             self.refresh_status()
-            return
+            return False
+        if attachment_paths and self._access_mode() == "write_only":
+            self._append_notice("Вложения доступны в режиме с разрешённым чтением.", "warn")
+            return False
         self._clear_welcome()
         self._append_user(prompt)
         self._clear_activity()
@@ -3094,6 +3346,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                           mcp_clients=getattr(self, "_mcp_clients", {}),
                           local_tools=None)
         worker.project_context = project_context
+        worker.attachment_paths = attachment_paths
         worker.local_tools = self._build_local_tools(should_stop=lambda: worker._stop)
         worker.chunk.connect(self._on_chunk)
         worker.reasoning.connect(self._on_reasoning)
@@ -3103,7 +3356,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         worker.failed.connect(self._on_failed)
         worker.finished.connect(self._cleanup_worker)
         saved_context = (context, project_context) if project_context is not None else context
-        self._last_request = (prompt, saved_context, mentions)
+        self._last_request = (prompt, saved_context, mentions, attachment_paths)
         self._history_before_request = len(self._history)
         self._worker = worker
         worker.start()
@@ -3111,10 +3364,10 @@ class AIAgentPanel(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Message queue
     # ------------------------------------------------------------------
-    def _enqueue(self, prompt: str, context: str, mentions=None):
+    def _enqueue(self, prompt: str, context: str, mentions=None, *, attachment_paths=()):
         if getattr(self, "_queue", None) is None:
             self._queue = []
-        self._queue.append((prompt, context, mentions))
+        self._queue.append((prompt, context, mentions, attachment_paths))
         self._render_queue_chip()
 
     def clear_queue(self) -> int:
@@ -3173,9 +3426,10 @@ class AIAgentPanel(QtWidgets.QWidget):
         if not queue:
             self._render_queue_chip()
             return
-        prompt, context, mentions = queue.pop(0)
+        prompt, context, mentions, paths = queue.pop(0)
         self._render_queue_chip()
-        QtCore.QTimer.singleShot(0, lambda: self._send(prompt, context, mentions))
+        options = {"attachment_paths": paths} if paths else {}
+        QtCore.QTimer.singleShot(0, lambda: self._send(prompt, context, mentions, **options))
 
     def pending_count(self) -> int:
         return len(getattr(self, "_queue", []) or [])
@@ -3302,7 +3556,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         if self._session_stats is None:
             self._session_stats = {"total": 0, "measured": 0, "unreported": 0}
         stats = self._session_stats
-        stats["last"] = {"total": total, "input": prompt, "output": output}
+        stats["last"] = {"total": total, "input": prompt, "output": output,
+                         "cached": tokens("cache_read_input_tokens")}
         if total is None:
             stats["unreported"] += 1
         else:
@@ -3329,6 +3584,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         suffix = "+" if known is not None and stats["unreported"] else ""
         label.setText(f"Токены · запрос {number(last['total'])} · диалог {number(known)}{suffix}")
         detail = f"Последний запрос · вход {number(last['input'])} · выход {number(last['output'])}"
+        if last.get("cached") is not None:
+            detail += f" · из кэша {number(last['cached'])}"
         if stats["unreported"]:
             detail += f"\nЗапросов без полного отчёта провайдера: {stats['unreported']}"
         label.setToolTip(detail)
@@ -3337,7 +3594,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._session_stats = None
         if isinstance(value, dict) and isinstance(value.get("last"), dict):
             counts = {key: value.get(key) for key in ("total", "measured", "unreported")}
-            last = {key: value["last"].get(key) for key in ("total", "input", "output")}
+            last = {key: value["last"].get(key) for key in ("total", "input", "output", "cached")}
             if (all(type(n) is int and n >= 0 for n in counts.values())
                     and all(n is None or type(n) is int and n >= 0 for n in last.values())):
                 self._session_stats = {**counts, "last": last}
@@ -3351,14 +3608,15 @@ class AIAgentPanel(QtWidgets.QWidget):
         request = getattr(self, "_last_request", None)
         if request is None or self._worker is not None:
             return False
-        prompt, context, mentions = request
+        prompt, context, mentions, paths = request
         # Truncate back to the point the request started from. Blindly popping
         # the last two entries would delete an earlier successful turn when the
         # previous attempt failed or was stopped before touching the history.
         keep = getattr(self, "_history_before_request", None)
         if isinstance(keep, int) and 0 <= keep <= len(self._history):
             del self._history[keep:]
-        self._send(prompt, context, mentions)
+        options = {"attachment_paths": paths} if paths else {}
+        self._send(prompt, context, mentions, **options)
         return True
 
     def _replace_stream_with_markdown(self, answer: str):

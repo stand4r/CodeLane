@@ -74,6 +74,7 @@ class ActivityBar(QtWidgets.QFrame):
         self.active_sidebar_key = None
         self.terminal_active = False
         self.settings_active = False
+        self.analysis_active = False
         self._build()
 
     def _build(self):
@@ -107,7 +108,7 @@ class ActivityBar(QtWidgets.QFrame):
 
     def _button(self, icon_name, tooltip):
         button = QtWidgets.QToolButton(self)
-        button.setIcon(self._icon_for(icon_name, "#868686"))
+        button.setIcon(self._icon_for(icon_name, self._icon_color(False)))
         button.setIconSize(QtCore.QSize(ICON_SIZE, ICON_SIZE))
         button.setToolTip(tooltip)
         button.setFixedSize(ITEM_SIZE, ITEM_SIZE)
@@ -151,15 +152,21 @@ class ActivityBar(QtWidgets.QFrame):
             return QtGui.QIcon(pixmap)
         return codicons.codicon_icon(name, size, color)
 
+    def _icon_color(self, highlighted: bool) -> str:
+        palette = QtWidgets.QApplication.palette()
+        if palette.window().color().lightness() >= 128:
+            role = QtGui.QPalette.ColorRole
+            return palette.color(role.WindowText).name() if highlighted else "#5A5A5A"
+        return "#FFFFFF" if highlighted else "#868686"
+
     def _set_hover(self, button, hovering: bool):
-        """VS Code behaviour: inactive icons are muted, they turn white on hover."""
         if button is None:
             return
         name = button.property("iconName")
         active = button.isChecked()
-        color = "#FFFFFF" if (active or hovering) else "#868686"
+        color = self._icon_color(active or hovering)
         try:
-            button.setIcon(self._icon_for(name, color))
+            button.setIcon(self._icon_for(name, color, button.iconSize().width()))
         except Exception:
             pass
 
@@ -170,8 +177,7 @@ class ActivityBar(QtWidgets.QFrame):
         icon_name = button.property("iconName")
         if not icon_name:
             return
-        color = "#FFFFFF" if active else "#868686"
-        button.setIcon(self._icon_for(icon_name, color))
+        button.setIcon(self._icon_for(icon_name, self._icon_color(active), button.iconSize().width()))
 
     def _move_indicator(self, button):
         if button is None or not button.isVisible():
@@ -183,7 +189,7 @@ class ActivityBar(QtWidgets.QFrame):
     def set_sidebar_active(self, key):
         self.active_sidebar_key = key
         for name, button in self.buttons.items():
-            self._update_button_visual(button, name == key)
+            self._update_button_visual(button, self.analysis_active if name == "intelligence" else name == key)
         if key in self.buttons:
             self._move_indicator(self.buttons[key])
         elif not self.terminal_active and not self.settings_active:
@@ -258,6 +264,9 @@ class ActivityBar(QtWidgets.QFrame):
             self.terminal_requested.emit()
 
     def _activate_or_toggle(self, key):
+        if key == "intelligence":
+            self.activity_changed.emit(key)
+            return
         if self.active_sidebar_key == key:
             self.set_sidebar_active(None)
             self.activity_changed.emit("toggle_sidebar")
@@ -273,11 +282,14 @@ class ActivityBar(QtWidgets.QFrame):
         else:
             self.set_sidebar_active(key)
 
-    def sync_special_state(self, terminal_visible=False, settings_open=False, browser_open=None):
+    def sync_special_state(self, terminal_visible=False, settings_open=False, browser_open=None, analysis_open=None):
         self.set_terminal_active(terminal_visible)
         self.set_settings_active(settings_open)
         if browser_open is not None:
             self._update_button_visual(self.browser_button, browser_open)
+        if analysis_open is not None:
+            self.analysis_active = analysis_open
+            self._update_button_visual(self.buttons.get("intelligence"), analysis_open)
 
     def set_activity(self, key):
         if key in self.buttons and self.buttons[key].isHidden():
@@ -286,6 +298,8 @@ class ActivityBar(QtWidgets.QFrame):
             self._activate_special("settings")
         elif key == "terminal":
             self._activate_special("terminal")
+        elif key == "intelligence":
+            self.activity_changed.emit(key)
         else:
             self.set_sidebar_active(key)
             self.activity_changed.emit(key)
@@ -306,6 +320,6 @@ class ActivityBar(QtWidgets.QFrame):
             button.setIconSize(QtCore.QSize(icon, icon))
             name = button.property("iconName")
             active = button.isChecked()
-            button.setIcon(self._icon_for(name, "#FFFFFF" if active else "#868686", icon))
+            button.setIcon(self._icon_for(name, self._icon_color(active), icon))
         if self.active_sidebar_key in self.buttons:
             self._move_indicator(self.buttons[self.active_sidebar_key])

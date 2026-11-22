@@ -121,3 +121,63 @@ def test_team_mode_toggle_removed_and_always_on():
     assert panel.input.placeholderText() == "Задача для команды"
     group.close()
     assert AIAgentPanel is not None
+
+
+def test_explain_shortcut_keeps_the_team_chat_closed():
+    from app.main_window import ModernMainWindow
+
+    editor = object()
+    requests = []
+    activity = []
+    owner = SimpleNamespace(
+        extension_enabled=lambda _: True,
+        get_current_editor=lambda: editor,
+        _handle_activity=activity.append,
+        ai_panel=SimpleNamespace(send_with_context=lambda prompt, **kwargs: requests.append(kwargs["editor"])),
+    )
+    ModernMainWindow.action_ai_explain_selection(owner)
+    assert requests == [editor]
+    assert activity == []
+
+    ModernMainWindow.show_ai_agent(owner)
+    assert activity == ["ai"]
+
+
+def test_quick_explain_from_team_chat_uses_only_the_selection(monkeypatch, qtbot):
+    source = QtWidgets.QPlainTextEdit("selected_code\nother_code")
+    qtbot.addWidget(source)
+    cursor = source.textCursor()
+    cursor.select(QtGui.QTextCursor.SelectionType.LineUnderCursor)
+    source.setTextCursor(cursor)
+    editor = SimpleNamespace(file_path="example.py", language="python", editor=source,
+                             get_code=source.toPlainText)
+    team_requests = []
+    team = SimpleNamespace(busy=False, submit=lambda text: team_requests.append(text) or True)
+    group = SimpleNamespace(widget=lambda _: team)
+    owner = SimpleNamespace(get_current_editor=lambda: editor, _find_special_tab=lambda _: (group, 0))
+    panel = _panel(owner)
+    qtbot.addWidget(panel)
+    monkeypatch.setattr(panel, "_access_mode", lambda: "full")
+    requests = []
+
+    def converse(prompt, history, context, **kwargs):
+        requests.append((history, context, kwargs["tools"]))
+        return "Краткое объяснение"
+
+    monkeypatch.setattr(panel, "_service", lambda: SimpleNamespace(
+        configuration_problem=lambda: None, is_teaching=False, converse=converse))
+    result = panel._quick_result_dialog()
+    panel.input.setPlainText("/explain")
+    with qtbot.waitSignal(result.answered, timeout=5000):
+        panel.send_message()
+    qtbot.waitUntil(lambda: result.worker is None)
+    history, context, tools = requests[0]
+    assert history == [] and tools is None
+    assert "selected_code" in context and "other_code" not in context
+    assert not panel._history and not team_requests
+    assert result.answer.text() == "Краткое объяснение"
+
+    panel.input.setPlainText("Продолжи работу над проектом")
+    panel.send_message()
+    assert team_requests == ["Продолжи работу над проектом"]
+    result.close()

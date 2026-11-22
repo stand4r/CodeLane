@@ -97,8 +97,8 @@ SYSTEM_PROMPT = (
     "Код в чате показывай только если пользователь прямо просит его увидеть или инструменты недоступны. "
     "Не выдумывай API: если данных не хватает, задай уточняющий вопрос. "
     "Перед изменением файла сначала прочитай его инструментом read_file. "
-    "Для диагностики опирайся на анализатор, LSP, граф, вывод терминала и журналы. "
-    "PDF, DOCX и ODT открывай и читай через read_document. Для правок используй открытые вкладки редактора "
+    "Для диагностики сначала вызывай analysis_details, lsp_query, dependency_graph или читай вывод терминала и журналы. "
+    "PDF, DOCX, ODT и XLSX читай через read_document. Для правок используй открытые вкладки редактора "
     "и сохраняй их через editor_save, если пользователь просит записать изменения. "
     "Для видимого запуска используй terminal_execute и terminal_output, для Git — git_read и git_change. "
     "Для независимой проверки кода, ревью или исследования документации используй delegate_task, "
@@ -875,7 +875,7 @@ class AIService:
                  on_tool_end: Optional[Callable[[Any], None]] = None,
                  should_stop: Optional[Callable[[], bool]] = None,
                  max_rounds: Optional[int] = None,
-                 unlimited_rounds: bool = False) -> str:
+                 unlimited_rounds: bool = False, *, attachment_paths=(), round_budget=None) -> str:
         """Run a chat turn through the agent harness.
 
         The harness owns the tool loop: it keeps calling tools until the model
@@ -889,12 +889,23 @@ class AIService:
         from services.agent_harness import AgentHarness
 
         messages = self.build_messages(user_prompt, history, context)
+        if attachment_paths:
+            from services.chat_attachments import build_attachment_content
+
+            try:
+                messages[-1]["content"] = build_attachment_content(
+                    messages[-1]["content"], attachment_paths,
+                    anthropic=self.is_anthropic, stopped=should_stop,
+                )
+            except ValueError as exc:
+                raise AIError(str(exc)) from exc
         harness = AgentHarness(
             self,
             tools=tools,
             tool_runner=tool_runner,
             max_rounds=max_rounds,
             unlimited_rounds=unlimited_rounds,
+            round_budget=round_budget,
             on_text=on_text,
             on_reasoning=on_reasoning,
             on_tool_start=(lambda name, args: on_tool(name, args)) if on_tool else None,
@@ -916,6 +927,8 @@ class AIService:
         self.last_reasoning = ""
         for event in self._stream_json(path, payload):
             usage = event.get("usage")
+            if self.is_anthropic and event.get("type") == "message_start":
+                usage = (event.get("message") or {}).get("usage", usage)
             if isinstance(usage, dict):
                 self.last_usage = {**self.last_usage, **usage}
             if self.is_anthropic:
@@ -970,7 +983,8 @@ class AIService:
                                on_reasoning: Optional[Callable[[str], None]] = None,
                                *,
                                on_usage: Optional[Callable[[Dict[str, Any]], None]] = None,
-                               should_stop: Optional[Callable[[], bool]] = None) -> str:
+                               should_stop: Optional[Callable[[], bool]] = None,
+                               before_request: Optional[Callable[[], bool]] = None) -> str:
         """Stream one answer, automatically continuing it if the model truncates.
 
         Providers stop with ``finish_reason == "length"`` when the output budget
@@ -982,6 +996,8 @@ class AIService:
         working = list(messages)
         for attempt in range(MAX_CONTINUATIONS + 1):
             if should_stop and should_stop():
+                break
+            if before_request and not before_request():
                 break
             for piece in self._stream_with(working, on_reasoning=on_reasoning):
                 if should_stop and should_stop():
@@ -1066,6 +1082,8 @@ class AIService:
         for event in self._stream_json("/messages", payload):
             etype = event.get("type")
             usage = event.get("usage")
+            if etype == "message_start":
+                usage = (event.get("message") or {}).get("usage", usage)
             if isinstance(usage, dict):
                 self.last_usage = {**self.last_usage, **usage}
             if etype == "error":

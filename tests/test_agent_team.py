@@ -19,6 +19,57 @@ class Supervisor:
         return self.script(tool_runner, should_stop)
 
 
+def test_supervisor_uses_mcp_and_attachment_without_delegation(monkeypatch, tmp_path):
+    from services.mcp_client import MCPClient, MCPServerConfig, MCPTool
+
+    path = tmp_path / "notes.md"
+    tool = MCPTool(server="docs", name="lookup")
+    closed = []
+
+    def connect(client):
+        client.tools = [tool]
+        client.capabilities = {"resources": {}}
+
+    monkeypatch.setattr(MCPClient, "connect", connect)
+    monkeypatch.setattr(MCPClient, "call_tool", lambda client, name, args: args["query"])
+    monkeypatch.setattr(MCPClient, "close", lambda client: closed.append(client.config.name))
+
+    class Lead:
+        last_usage = {}
+
+        def converse(self, _prompt, *, tools, tool_runner, attachment_paths, **_options):
+            assert attachment_paths == (path,)
+            names = {spec["function"]["name"] for spec in tools}
+            assert {tool.full_name, "mcp_list_resources", "mcp_read_resource"} <= names
+            return tool_runner(tool.full_name, {"query": "Found"})
+
+    result = agent_team.run_team(Lead(), Toolbox(), "Read notes", lambda *_: None, Event().is_set,
+                                 attachment_paths=(path,), mcp_servers=[MCPServerConfig(name="docs")])
+    assert result.complete and result.answer == "Found"
+    assert closed == ["docs"]
+
+
+def test_team_stops_with_a_continuable_result_at_the_shared_budget(monkeypatch, tmp_path):
+    from services.agent_tools import LocalToolbox
+    from services.ai_service import AIService, ToolCall
+
+    (tmp_path / "demo.py").write_text("value = 42", encoding="utf-8")
+    service = AIService(config={"ai_agent_round_budget": 1})
+    monkeypatch.setattr(service, "configuration_problem", lambda: None)
+    calls = []
+
+    def model_round(*_args):
+        calls.append(True)
+        return "Прочитаю файл", [ToolCall("read", "read_file", {"path": "demo.py"})]
+
+    monkeypatch.setattr(service, "_openai_tool_round", model_round)
+    result = agent_team.run_team(service, LocalToolbox(str(tmp_path)), "Проверка",
+                                 lambda *_: None, Event().is_set)
+    assert len(calls) == 1
+    assert not result.complete and result.budget_exhausted
+    assert "Прочитаю файл" in result.answer
+
+
 def test_supervisor_assigns_roles_and_collects_parallel_results(monkeypatch):
     ready = Barrier(4)
     events = []
@@ -375,7 +426,7 @@ def test_subagent_round_limit_preserves_its_proposals(tmp_path):
     assert result["proposed_edits"][0]["new_text"] == "b"
 
 
-def test_team_agent_can_use_editor_and_terminal_tools_without_call_limit(tmp_path):
+def test_bounded_team_agent_can_use_editor_and_terminal_tools(tmp_path):
     from services.agent_tools import LocalToolbox
     from services.team_cache import TeamCache
 
@@ -385,14 +436,13 @@ def test_team_agent_can_use_editor_and_terminal_tools_without_call_limit(tmp_pat
         last_usage = {}
 
         def converse(self, prompt, *, tools, tool_runner, should_stop, unlimited_rounds=False, **kwargs):
-            assert unlimited_rounds
+            assert not unlimited_rounds
             names = {tool["function"]["name"] for tool in tools}
             if prompt.startswith("Роль:"):
                 if "Постановка задачи" in prompt:
                     return "Критерии готовы"
                 assert {"edit_file", "run_terminal_command"} <= names
-                for _ in range(35):
-                    assert "before" in tool_runner("read_file", {"path": "demo.txt"})
+                assert "before" in tool_runner("read_file", {"path": "demo.txt"})
                 assert "Изменён" in tool_runner("edit_file", {
                     "path": "demo.txt", "old_text": "before", "new_text": "after"})
                 return "Файл изменён"

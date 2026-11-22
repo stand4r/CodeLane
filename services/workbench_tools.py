@@ -11,7 +11,9 @@ GRAPH_MODE = choice("modules", "classes", "functions", "variables", "binaries", 
 
 # Each entry declares its access level, model description, arguments and required arguments.
 TOOLS = {
-    "read_document": ("read", "Открыть PDF, DOCX или ODT во встроенном просмотрщике и прочитать текст. offset и limit считают страницы PDF или строки документа.",
+    "test_results": ("read", "Прочитать результаты последнего запуска pytest в панели тестов текущего проекта.",
+                     {"failed_only": {"type": "boolean"}, "offset": NUMBER, "limit": NUMBER}, []),
+    "read_document": ("read", "Прочитать PDF, DOCX, ODT или XLSX. offset и limit задают диапазон страниц PDF или строк документа/таблицы.",
                       {"path": TEXT, "offset": NUMBER, "limit": NUMBER}, ["path"]),
     "preview_document": ("read", "Открыть HTML или Markdown во встроенном предпросмотре. Учитывает правки в открытом редакторе.",
                          {"path": TEXT}, ["path"]),

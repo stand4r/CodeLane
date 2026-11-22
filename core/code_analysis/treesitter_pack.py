@@ -55,10 +55,58 @@ def pack_language(language: str) -> str:
 
 @lru_cache(maxsize=64)
 def pack_has_language(language: str) -> bool:
-    try:
-        from tree_sitter_language_pack import available_languages, downloaded_languages
+    """Report whether the language pack can provide a grammar for ``language``.
 
-        name = pack_language(language)
-        return name in available_languages() or name in downloaded_languages()
+    Important: ``available_languages()`` / ``downloaded_languages()`` only reflect
+    the local pack cache (grammars are fetched lazily, so a fresh environment
+    reports almost nothing).  The authoritative, cache-independent check is
+    ``has_language()``; the cache lists are kept only as a legacy fallback.
+    """
+    try:
+        from tree_sitter_language_pack import (
+            available_languages,
+            downloaded_languages,
+            has_language,
+        )
     except (ImportError, OSError, RuntimeError):
         return False
+
+    name = pack_language(language)
+    try:
+        if has_language(name) or has_language(language):
+            return True
+    except (OSError, RuntimeError):
+        pass
+
+    try:
+        # Older pack builds have no has_language(); accept either naming form.
+        candidates = {name, language}
+        return bool(candidates & set(available_languages())) or bool(
+            candidates & set(downloaded_languages())
+        )
+    except (ImportError, OSError, RuntimeError):
+        return False
+
+
+@lru_cache(maxsize=64)
+def pack_probe_language(language: str) -> bool:
+    """Verify that a usable parser can really be obtained (downloads if needed).
+
+    Unlike :func:`pack_has_language` this performs the lazy grammar fetch, so it
+    answers "is the backend physically usable right now?" (offline hosts return
+    ``False``).  Results are cached for the process lifetime.
+    """
+    try:
+        from tree_sitter_language_pack import get_parser
+
+        get_parser(pack_language(language))
+        return True
+    except ImportError:
+        return False
+    except Exception:  # noqa: BLE001 - pack raises its own error hierarchy
+        return False
+
+
+def pack_backend_available(language: str = "python") -> bool:
+    """True when Level 2 can parse ``language`` through the language pack."""
+    return pack_has_language(language)

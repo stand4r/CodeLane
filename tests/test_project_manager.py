@@ -58,6 +58,47 @@ def test_project_config_write_error_propagates(tmp_path):
         sync_project_config(config, str(tmp_path), save=True)
 
 
+def test_analyzers_workspace_applies_and_persists_an_empty_profile(tmp_path, monkeypatch, qtbot):
+    from types import SimpleNamespace
+
+    from PyQt6 import QtWidgets
+
+    from app.project_handler import ProjectHandler
+    from core.project_state import sync_project_config
+    from widgets.AnalysisProfilesDialog import AnalyzerProfilesEditor
+    from widgets.ProjectManager import ProjectConfig
+
+    project = ProjectConfig("Workspace", str(tmp_path), analyzers=["structure"])
+    monkeypatch.setattr(project_manager, "projects", {})
+    monkeypatch.setattr(project_manager, "current_project", project)
+    monkeypatch.setattr(project_manager, "projects_file", tmp_path / "projects.json")
+    applied = []
+    panel = SimpleNamespace(set_project=lambda root, selected: applied.append((root, selected)))
+    handler = ProjectHandler(SimpleNamespace(intelligence_panel=panel))
+    editor = AnalyzerProfilesEditor(project, current=project.analyzers)
+    qtbot.addWidget(editor)
+    editor.apply_requested.connect(lambda selected: handler.apply_analyzers(project, selected))
+    editor.profile_picker.setCurrentIndex(editor.profile_picker.findData("none"))
+    assert project.analyzers == ["structure"]
+    editor.findChild(type(editor.view_button), "primary").click()
+    assert project.analyzers == [] and applied == [(str(tmp_path), [])]
+    reloaded = ProjectConfig("Workspace", str(tmp_path), analyzers=["structure"])
+    sync_project_config(reloaded, str(tmp_path))
+    assert reloaded.analyzers == []
+
+    editor._checks["metrics"].setChecked(True)
+    assert editor.profile_picker.currentData() == "custom"
+    assert editor.selected_analyzers == {"metrics"}
+    assert project.analyzers == []
+
+    panel = editor.findChild(QtWidgets.QFrame, "analysisChecksPanel")
+    editor.resize(950, 640)
+    editor.show()
+    qtbot.waitUntil(lambda: editor._wide)
+    editor.resize(440, 640)
+    qtbot.waitUntil(lambda: editor._wide is False and panel.width() <= editor.width())
+
+
 def test_project_delete_case_insensitive():
     """Verify projects can be deleted regardless of path casing on Windows."""
     test_dir = os.path.join(tempfile.gettempdir(), "py_scribe_del_test_case")

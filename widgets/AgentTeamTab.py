@@ -62,12 +62,13 @@ class AgentTeamTab(QtWidgets.QWidget):
         self._applying = None
         self._pending = []
         self._last_result = ""
+        self._run_attachments = ()
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         split.setObjectName("agentWorkspaceSplit")
-        split.setHandleWidth(4)
+        split.setHandleWidth(1)
         split.setChildrenCollapsible(False)
         split.addWidget(agent_panel)
         agent_panel.show()
@@ -91,6 +92,10 @@ class AgentTeamTab(QtWidgets.QWidget):
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop)
         controls.addWidget(self.stop_button)
+        self.continue_button = QtWidgets.QPushButton("Продолжить", self)
+        self.continue_button.hide()
+        self.continue_button.clicked.connect(self._continue_limited_run)
+        controls.addWidget(self.continue_button)
         right.addLayout(controls)
         self.activity = QtWidgets.QLabel("Готов к задаче")
         self.activity.setObjectName("agentWorkspaceActivity")
@@ -164,12 +169,12 @@ class AgentTeamTab(QtWidgets.QWidget):
         self.activity.setText(f"{status}\nРаботают {active} · ожидают {waiting} · ошибки {errors}")
         self.activity.setToolTip(f"{role}\n{goal}")
 
-    def enqueue(self, text):
+    def enqueue(self, text, *, attachment_paths=()):
         root = self._agent_panel._project_root()
         if root != self._root or not root:
             self._agent_panel._append_notice("Проект сменился. Дождитесь завершения текущего запуска.", "warn")
             return False
-        self._pending.append((root, text))
+        self._pending.append((root, text, attachment_paths))
         item = QtWidgets.QListWidgetItem(text.splitlines()[0])
         item.setToolTip(text)
         self.pending_list.addItem(item)
@@ -183,15 +188,16 @@ class AgentTeamTab(QtWidgets.QWidget):
         self.pending_list.setVisible(bool(self._pending))
 
     def _next_pending(self):
-        if self.busy or self._question or self._edits or not self._pending:
+        if self.busy or self._question or self._edits or not self.continue_button.isHidden() or not self._pending:
             return
-        root, text = self._pending[0]
+        root, text, paths = self._pending[0]
         if self._agent_panel._project_root() != root:
             self._pending.clear()
             self.pending_list.clear()
             self.pending_list.hide()
             return
-        if self.submit(text):
+        options = {"attachment_paths": paths} if paths else {}
+        if self.submit(text, **options):
             self._pending.pop(0)
             self.pending_list.takeItem(0)
             self.pending_list.setVisible(bool(self._pending))
@@ -258,11 +264,15 @@ class AgentTeamTab(QtWidgets.QWidget):
             row = rows[labels.index(choice)]
             self._journal_tab(row["title"], self.planner.cache.journal(project, row["run"], row["agent"]))
 
-    def submit(self, text, *, scheduled_role=None):
+    def submit(self, text, *, scheduled_role=None, attachment_paths=()):
         if self.busy:
             return False
         if not text:
             return
+        access_mode = getattr(self._agent_panel, "_access_mode", lambda: "full")()
+        if attachment_paths and access_mode == "write_only":
+            self._agent_panel._append_notice("Включите чтение для отправки вложений из очереди.", "warn")
+            return False
         root = self._agent_panel._project_root()
         if not root:
             self._agent_panel._append_notice("Сначала откройте проект.", "warn")
@@ -281,6 +291,8 @@ class AgentTeamTab(QtWidgets.QWidget):
             self._agent_panel._append_notice("Включите чтение файлов проекта в разрешениях агента.", "warn")
             return False
         self._root = root
+        self._run_attachments = attachment_paths
+        self.continue_button.hide()
         self._run_id = uuid4().hex
         toolbox.team_cache = self.planner.cache
         toolbox.team_run_id = self._run_id
@@ -301,13 +313,30 @@ class AgentTeamTab(QtWidgets.QWidget):
         self._agent_panel._record_team_message("user", text)
         context = ("\n\nПредыдущая задача и её итог (проверь актуальность по проекту):\n" + self._last_result
                    if self._last_result else "")
+        options = {"attachment_paths": attachment_paths} if attachment_paths else {}
+        server_configs = getattr(self._agent_panel, "_mcp_server_configs", None)
+        if access_mode == "full" and server_configs is not None:
+            configs = server_configs()
+            if configs:
+                options["mcp_servers"] = configs
         run_async(partial(run_team, service, toolbox, self._goal + context, self.agent_updated.emit, cancel.is_set,
                           report=self.report_updated.emit, trace=self.action_logged.emit,
-                          scheduled_role=scheduled_role, relationship=self.relationship_updated.emit),
+                          scheduled_role=scheduled_role, relationship=self.relationship_updated.emit, **options),
                   on_done=self._finish, on_error=self._finish)
         return True
 
+    def _continue_limited_run(self):
+        if self._agent_panel._project_root() != self._root:
+            self.continue_button.hide()
+            return
+        if self._edits:
+            self._agent_panel._append_notice("Сначала примените или отклоните подготовленные изменения.", "warn")
+            return
+        self.submit("Продолжи предыдущую задачу с достигнутого состояния.",
+                    attachment_paths=self._run_attachments)
+
     def stop(self):
+        self.continue_button.hide()
         self._pending.clear()
         self.pending_list.clear()
         self.pending_list.hide()
@@ -411,10 +440,21 @@ class AgentTeamTab(QtWidgets.QWidget):
         files.currentIndexChanged.connect(lambda index: diff.setPlainText(edits[index].diff()))
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
         apply = buttons.addButton("Применить к файлу", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
+        discard = buttons.addButton("Отклонить правку", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
         buttons.rejected.connect(dialog.reject)
         apply.clicked.connect(dialog.accept)
+        discard.clicked.connect(lambda: dialog.done(2))
         layout.addWidget(buttons)
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+        decision = dialog.exec()
+        if decision == 2:
+            edit = edits[files.currentIndex()]
+            self._log(0, f"Пользователь отклонил правку: {edit.path}")
+            self._archive()
+            self._set_edits([pending for pending in self._edits if pending is not edit])
+            dialog.deleteLater()
+            QtCore.QTimer.singleShot(0, self._next_pending)
+            return
+        if decision != QtWidgets.QDialog.DialogCode.Accepted:
             dialog.deleteLater()
             return
         edit = edits[files.currentIndex()]
@@ -492,6 +532,7 @@ class AgentTeamTab(QtWidgets.QWidget):
                 self._persist_chat_session()
             return
         self._question = result.question
+        self.continue_button.setVisible(result.budget_exhausted)
         self._set_edits(result.edits)
         self.applied_button.setText(f"Применено файлов · {len(result.changed_files)}")
         self.applied_button.setToolTip("\n".join(result.changed_files))

@@ -104,6 +104,41 @@ def test_ui_titlebar_facade():
     assert TITLE_BAR_HEIGHT == 40
 
 
+def test_window_control_icons_render_after_theme_changes(monkeypatch):
+    from PyQt6.QtGui import QColor, QPalette
+    from PyQt6.QtWidgets import QWidget
+
+    from app.top_bar import WorkbenchTopBar
+
+    app = QApplication.instance() or QApplication([])
+    old_palette = app.palette()
+    window = QWidget()
+    window.action_quick_open = lambda: None
+    window.show_ai_agent = lambda: None
+    monkeypatch.setattr(WorkbenchTopBar, "_definitions", lambda self: {})
+    bar = WorkbenchTopBar(window)
+    try:
+        for background, foreground in (("#181818", "#D4D4D4"), ("#F3F3F3", "#1F1F1F")):
+            palette = QPalette(old_palette)
+            palette.setColor(QPalette.ColorRole.Window, QColor(background))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(foreground))
+            app.setPalette(palette)
+            bar.on_ui_scale_changed(100)
+            for button in (bar.minimize_button, bar.maximize_button, bar.close_button):
+                pixmap = button.icon().pixmap(button.iconSize())
+                assert not pixmap.isNull()
+                image = pixmap.toImage()
+                pixels = [image.pixelColor(x, y) for x in range(image.width()) for y in range(image.height())]
+                assert any(pixel.alpha() > 128 for pixel in pixels)
+                assert all(
+                    (pixel.lightness() >= 128) != (QColor(background).lightness() >= 128)
+                    for pixel in pixels if pixel.alpha() > 128
+                )
+    finally:
+        app.setPalette(old_palette)
+        window.close()
+
+
 def test_workbench_scale_uses_logical_screen_size():
     from types import SimpleNamespace
 
@@ -277,3 +312,64 @@ if __name__ == "__main__":
     test_user_overrides_never_paint_text_surfaces()
     print("test_user_overrides_never_paint_text_surfaces: PASS")
     print("\nALL ARCHITECTURE AND EXPORT TESTS PASSED SUCCESSFULLY!")
+
+
+def test_run_target_keeps_debug_and_shared_compiler_on_run_channel(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from app import code_runner
+
+    run_file = Mock()
+    window = SimpleNamespace(
+        current_project=None,
+        get_current_editor=lambda: None,
+        load_launch_arguments=lambda path: "--flag",
+        terminal_visible=True,
+        console_widget=SimpleNamespace(
+            set_current_tab=Mock(), get_terminal=lambda: SimpleNamespace(run_file=run_file)
+        ),
+        status_bar=SimpleNamespace(showMessage=Mock()),
+    )
+    monkeypatch.setattr(code_runner, "get_settings_manager", lambda: SimpleNamespace(get_setting=lambda *args: {}))
+    monkeypatch.setattr(code_runner, "python_interpreter", lambda configured: "python")
+    monkeypatch.setattr(code_runner, "resolve_toolchain", lambda key, fallback, settings: fallback)
+    build_command = Mock(return_value=("compile-and-run", None))
+    monkeypatch.setattr(code_runner, "build_run_command_for_file", build_command)
+
+    runner = code_runner.CodeRunner(window)
+    python_file = tmp_path / "example file.py"
+    python_file.touch()
+    runner.run_target(python_file, debug=True)
+    run_file.assert_called_once_with(f'"python" -m pdb "{python_file.resolve()}" --flag', tmp_path)
+    build_command.assert_not_called()
+
+    run_file.reset_mock()
+    c_file = tmp_path / "main.c"
+    c_file.touch()
+    runner.run_target(c_file)
+    build_command.assert_called_once_with(str(c_file.resolve()), "--flag", {})
+    run_file.assert_called_once_with("compile-and-run", tmp_path)
+
+
+def test_file_lookup_distinguishes_html_preview_and_editor_in_split_groups(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from app.file_manager import FileManager
+
+    path = str((tmp_path / "index.html").resolve())
+    preview = SimpleNamespace(file_path=path, property=lambda name: name == "pyscribeHtmlPreview")
+    editor = SimpleNamespace(file_path=path, property=lambda name: None, get_code=lambda: "")
+    preview_group = SimpleNamespace(count=lambda: 1, widget=lambda index: preview, setCurrentIndex=Mock())
+    editor_group = SimpleNamespace(count=lambda: 1, widget=lambda index: editor, setCurrentIndex=Mock())
+    window = SimpleNamespace(
+        app_manager=None, editor_groups=lambda: [preview_group, editor_group], _set_active_group=Mock()
+    )
+
+    manager = FileManager(window)
+    assert manager._find_and_focus_open_tab(path)
+    editor_group.setCurrentIndex.assert_called_once_with(0)
+    preview_group.setCurrentIndex.assert_not_called()
+    window._set_active_group.assert_called_once_with(editor_group)
+    assert manager._find_text_tab(path) == (editor_group, 0, editor)

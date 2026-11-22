@@ -7,11 +7,13 @@ import pytest
 
 def test_planner_collapse_keeps_scheduling_active(panel):
     planner = panel.planner
-    planner._toggle_collapsed()
     assert planner.tree.isHidden()
     assert planner.timer.isActive()
-    planner._toggle_collapsed()
+    planner.collapse_button.click()
     assert not planner.tree.isHidden()
+    planner.collapse_button.click()
+    assert planner.tree.isHidden()
+    assert planner.timer.isActive()
 
 
 @pytest.fixture

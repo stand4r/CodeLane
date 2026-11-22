@@ -25,7 +25,7 @@ class ApplicationManager:
     Ключевые методы: colors, fonts, languages, supported_formats.
     """
 
-    def __init__(self, base_path: str):
+    def __init__(self, base_path: str, *, config_path=None):
         """
         Назначение и краткое описание функции `__init__`.
 
@@ -35,7 +35,7 @@ class ApplicationManager:
         self.base_path = Path(base_path)
         self.logger = configure_logging(self.base_path)
 
-        config_path = self._resolve_config_path(self.base_path)
+        config_path = config_path or self._resolve_config_path(self.base_path)
         init_settings_manager(str(config_path))
         self.settings = self._load_settings()
         self.recent_files = loadRecent()
@@ -162,7 +162,7 @@ def open_external_target(window, argument) -> str:
             root_path=str(path),
             analyzers=["structure", "dependencies"],
         )
-        window.project_handler.on_project_opened(config, choose_analyzers=False)
+        window.project_handler.on_project_opened(config)
         return "folder"
     if path.exists():
         window.file_manager.open_file(str(path))
@@ -195,9 +195,43 @@ def _initialize_browser(base_path: Path) -> str:
     return ""
 
 
+def _run_smoke_test(app, window, project, python):
+    """Exercise the frozen workbench and its real pytest entry point."""
+    def start():
+        try:
+            if open_external_target(window, project) != "folder":
+                app.exit(2)
+                return
+            current = getattr(window.current_project, "root_path", "")
+            if not current or Path(current).resolve() != Path(project).resolve():
+                app.exit(3)
+                return
+            panel = window.run_tests(python=python)
+            if panel is None:
+                app.exit(4)
+                return
+
+            def check(code):
+                passed = any(row["outcome"] == "passed" for row in panel.results)
+                app.exit(0 if code == 0 and passed else 5)
+
+            panel.run_finished.connect(check)
+            if panel.exit_code is not None:
+                check(panel.exit_code)
+        except Exception:
+            logger.exception("Ошибка проверки собранного приложения")
+            app.exit(6)
+
+    QtCore.QTimer.singleShot(0, start)
+    QtCore.QTimer.singleShot(60_000, lambda: app.exit(7))
+
+
 def main():
     """CodeLane main entry function."""
     _set_windows_app_identity()
+    smoke = sys.argv[2:] if sys.argv[1:2] == ["--smoke-test"] else None
+    if smoke is not None and (len(smoke) != 2 or not Path(smoke[0]).is_dir()):
+        sys.exit(2)
     QApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
@@ -217,13 +251,14 @@ def main():
     start_toolchain_detection()
 
     instance = SingleInstance("PyScribe")
-    if not instance.acquire(sys.argv[1:]):
+    if smoke is None and not instance.acquire(sys.argv[1:]):
         return
     app._pyscribe_instance = instance
 
     from core.logging_config import install_diagnostics
     install_diagnostics(base_path)
-    app_manager = ApplicationManager(str(base_path))
+    smoke_config = Path(smoke[0]) / ".smoke-settings.json" if smoke else None
+    app_manager = ApplicationManager(str(base_path), config_path=smoke_config)
     from core.activity_log import install_activity_log
     install_activity_log(app, base_path)
     setup_application_style(app, base_path)
@@ -233,13 +268,14 @@ def main():
     # тика планировщика; сбой восстановления не должен ломать запуск.
     from core.job_recovery import recover_interrupted, start_heartbeat
     try:
-        recovered = recover_interrupted()
+        recovered = recover_interrupted() if smoke is None else 0
         if recovered:
             logger.info("Восстановлено прерванных отложенных заданий: %s", recovered)
     except Exception:  # noqa: BLE001 - запуск важнее восстановления
         logger.exception("Не удалось восстановить прерванные отложенные задания")
     try:
-        app._pyscribe_heartbeat = start_heartbeat(app)
+        if smoke is None:
+            app._pyscribe_heartbeat = start_heartbeat(app)
     except Exception:  # noqa: BLE001 - без heartbeat задания просто приостановятся позже
         logger.exception("Не удалось запустить heartbeat отложенных заданий")
 
@@ -280,7 +316,9 @@ def main():
     handle.screenChanged.connect(window.apply_screen_metrics)
     window.apply_screen_metrics(handle.screen())
     QtCore.QTimer.singleShot(350, window.database_manager.discover_local_installations)
-    if len(sys.argv) > 1:
+    if smoke is not None:
+        _run_smoke_test(app, window, *smoke)
+    elif len(sys.argv) > 1:
         # Explorer passes the clicked path as an argument; open it once the
         # window is actually on screen (the layout is not ready before that).
         QtCore.QTimer.singleShot(60, lambda: handle_external(sys.argv[1:]))

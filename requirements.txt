@@ -37,6 +37,9 @@ flake8==7.5.0
 mypy==2.4.1
 # Project Intelligence - optional advanced analyzers
 # Tree-sitter language pack provides parsers for many programming languages.
+# Level 2 (AST) works with this pack alone: it ships its own parser bindings and
+# fetches grammars lazily, so the plain `tree_sitter` module + per-language
+# `tree_sitter_*` packages are an *alternative* backend, not a requirement.
 tree-sitter-language-pack==1.9.1
 # Executable format parsing: PE / ELF / Mach-O and related formats.
 lief>=0.16

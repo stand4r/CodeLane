@@ -739,6 +739,35 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_STRIP_RE.sub("", text)
 
 
+try:  # PyQt6 ships sip separately from the Qt bindings module itself.
+    from PyQt6 import sip as _sip
+except ImportError:  # pragma: no cover - binding without sip
+    _sip = None
+
+
+def object_alive(obj) -> bool:
+    """True while the C++ counterpart of *obj* still exists.
+
+    Deferred work (``QTimer`` callbacks, queued signals) can outlive the widget
+    it was scheduled for: the Python wrapper stays referenced, but the C++
+    object is already destroyed and *any* Qt call on it raises ``RuntimeError``
+    (or worse, crashes inside Qt). Every callback that may run later therefore
+    checks liveness first.
+    """
+    if obj is None:
+        return False
+    if _sip is not None:
+        try:
+            return not _sip.isdeleted(obj)
+        except (TypeError, RuntimeError):
+            pass
+    try:
+        obj.objectName()
+    except RuntimeError:
+        return False
+    return True
+
+
 class TerminalTab(QtWidgets.QWidget):
     """One shell session rendered inside the terminal panel."""
 
@@ -757,6 +786,11 @@ class TerminalTab(QtWidgets.QWidget):
         self.shell_program = None
         self.shell_args = None
         self._prompt_timer = None
+        # Timers that carry deferred work for this tab. They are children of the
+        # widget (so Qt cancels them on destruction) and are stopped explicitly
+        # on close/dispose.
+        self._deferred_timers: List[QtCore.QTimer] = []
+        self._destroyed = False
         self._busy = False
         self._last_command = ""
         self._command_running = False
@@ -1017,6 +1051,10 @@ class TerminalTab(QtWidgets.QWidget):
 
     def start_shell(self, shell_program=None, shell_args=None, *args, **kwargs):
         """Start or restart the background shell process without throwing exceptions."""
+        if not self._alive():
+            # A deferred start (timer/queued signal) outlived the tab: touching
+            # the C++ object now would raise RuntimeError inside Qt's event loop.
+            return
         if self._prompt_timer:
             try:
                 self._prompt_timer.stop()
@@ -1072,8 +1110,76 @@ class TerminalTab(QtWidgets.QWidget):
     def _shell_running(self) -> bool:
         return bool(self.process and self.process.state() == QtCore.QProcess.ProcessState.Running)
 
+    def _alive(self) -> bool:
+        """True while deferred work may still safely touch this tab."""
+        return not self._destroyed and object_alive(self)
+
+    def _defer(self, delay: int, callback, *args):
+        """Run *callback* later on the GUI thread, but only if the tab is alive.
+
+        ``QTimer.singleShot`` must not be used for that: such timers belong to
+        the application, so they outlive the closed tab (and even a re-created
+        ``QApplication``) and fire into a destroyed C++ object. A timer parented
+        to this widget is cancelled together with it.
+        """
+        if not self._alive():
+            return None
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self._fire_deferred(timer, callback, args))
+        timer.start(delay)
+        self._deferred_timers = [item for item in self._deferred_timers if object_alive(item)]
+        self._deferred_timers.append(timer)
+        return timer
+
+    def _fire_deferred(self, timer, callback, args):
+        """Timer slot: drop the timer, re-check liveness, then run the work."""
+        try:
+            timer.deleteLater()
+        except RuntimeError:
+            return
+        if timer in self._deferred_timers:
+            self._deferred_timers.remove(timer)
+        if not self._alive():
+            return
+        try:
+            callback(*args)
+        except RuntimeError:
+            # The underlying C++ object disappeared between the check and the
+            # call: treat the tab as disposed instead of leaking the error into
+            # Qt's event loop.
+            self._destroyed = True
+
+    def _cancel_deferred(self):
+        """Stop every pending deferred callback of this tab."""
+        for timer in list(self._deferred_timers):
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass
+        self._deferred_timers = []
+        prompt_timer = self._prompt_timer
+        self._prompt_timer = None
+        if prompt_timer is not None:
+            try:
+                prompt_timer.stop()
+            except RuntimeError:
+                pass
+
+    def dispose(self):
+        """Detach the tab so no deferred work can reach its C++ object."""
+        self._destroyed = True
+        self._closing = True
+        try:
+            self.stop_process()
+        except RuntimeError:
+            pass
+        self._cancel_deferred()
+
     def _schedule_prompt(self, delay: int = 260):
         """Re-render the prompt once the shell has had time to start."""
+        if not self._alive():
+            return
         if self._prompt_timer is not None:
             try:
                 self._prompt_timer.stop()
@@ -1086,6 +1192,8 @@ class TerminalTab(QtWidgets.QWidget):
         self._prompt_timer = timer
 
     def _reprompt_when_ready(self):
+        if not self._alive():
+            return
         if not self._shell_running():
             self._schedule_prompt(150)
             return
@@ -1165,7 +1273,7 @@ class TerminalTab(QtWidgets.QWidget):
                 self._set_busy(False)
         self.finished.emit()
         process = self.process
-        QtCore.QTimer.singleShot(150, lambda: self._restart_shell(process))
+        self._defer(150, self._restart_shell, process)
 
     def _restart_shell(self, process):
         if not self._closing and self.process is process:
@@ -1305,6 +1413,8 @@ class TerminalTab(QtWidgets.QWidget):
         return bool(self._RESULT_MARKERS.search(strip_ansi(text)))
 
     def write(self, text):
+        if not self._alive():
+            return False
         if self.process and self.process.state() == QtCore.QProcess.ProcessState.Running:
             try:
                 self.process.write(text.encode(self._get_encoding()))
@@ -1522,7 +1632,7 @@ class TerminalTab(QtWidgets.QWidget):
         if not (self.process and self.process.state() == QtCore.QProcess.ProcessState.Running):
             self.append_system_line("Оболочка не запущена. Перезапуск…")
             self.start_shell()
-            QtCore.QTimer.singleShot(400, lambda: self.write(cmd_stripped + self._eol()))
+            self._defer(400, self.write, cmd_stripped + self._eol())
             return
 
         from uuid import uuid4
@@ -1624,6 +1734,8 @@ class TerminalTab(QtWidgets.QWidget):
         return f"cd {shlex.quote(path)}"
 
     def submit_command(self, command: str):
+        if not self._alive():
+            return
         """Type *command* into the live shell and press Enter.
 
         ``run_command`` launches a standalone process, which is right for
@@ -1636,7 +1748,7 @@ class TerminalTab(QtWidgets.QWidget):
             return
         if not self._shell_running():
             self.start_shell()
-            QtCore.QTimer.singleShot(500, lambda: self.submit_command(command))
+            self._defer(500, self.submit_command, command)
             return
         screen = self.screen
         if screen.document().isEmpty():
@@ -1964,6 +2076,7 @@ class TerminalTab(QtWidgets.QWidget):
         self._start_timer.stop()
         self._stop_run_process(kill=True)
         self._closing = True
+        self._cancel_deferred()
         self._detach_shell()
 
     def _detach_shell(self):
@@ -2114,7 +2227,7 @@ class TerminalWidget(QtWidgets.QWidget):
             return
         self.save_session()
         for tab in list(self.tabs.values()):
-            tab.stop_process()
+            tab.dispose()
             tab.deleteLater()
         self.tab_widget.clear()
         self.tabs.clear()
@@ -2245,7 +2358,7 @@ class TerminalWidget(QtWidgets.QWidget):
         tab = self.tab_widget.widget(index)
         for tab_id, candidate in list(self.tabs.items()):
             if candidate is tab:
-                candidate.stop_process()
+                candidate.dispose()
                 del self.tabs[tab_id]
                 break
         self.tab_widget.removeTab(index)
@@ -2288,7 +2401,7 @@ class TerminalWidget(QtWidgets.QWidget):
         if tab:
             tab.append_system_line("Завершение процесса…")
             tab.kill()
-            QtCore.QTimer.singleShot(120, tab.start_shell)
+            tab._defer(120, tab.start_shell)
             tab.screen.setFocus()
 
     def interrupt_current(self):
@@ -2432,7 +2545,7 @@ class TerminalWidget(QtWidgets.QWidget):
         self._session_timer.stop()
         for tab in list(self.tabs.values()):
             try:
-                tab.stop_process()
+                tab.dispose()
             except Exception:
                 pass
         self.tabs.clear()

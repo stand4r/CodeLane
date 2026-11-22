@@ -25,7 +25,6 @@ from utils.programs import (
 from utils.settings_manager import init_settings_manager, get_settings_manager
 from utils.CSharpCompiler import *
 from widgets.ProjectDialog import ProjectDialog, ProjectConfigDialog
-from widgets.AnalysisProfilesDialog import ProjectAnalyzerDialog
 from widgets.KeyboardShortcutsDialog import KeyboardShortcutsDialog
 from widgets.ChangeCapsuleDialog import ChangeCapsuleDialog
 from widgets.Dialog import CustomDialog
@@ -500,27 +499,6 @@ class ModernMainWindow(QMainWindow):
     def _on_index_batch_failed(self, message):
         self._index_worker_busy = False
         logger.warning("Индексация автодополнения прервана: %s", message)
-
-    def _ensure_intelligence_width(self):
-        """Widen the sidebar enough that the analysis tabs are readable.
-
-        The analysis view has five tabs plus a header of its own; at the default
-        sidebar width they were clipped into each other.
-        """
-        from app.ui_scale import scale_px
-        try:
-            if not hasattr(self, "workspace_splitter"):
-                return
-            sizes = self.workspace_splitter.sizes()
-            if not sizes:
-                return
-            wanted = scale_px(460)
-            total = sum(sizes)
-            if sizes[0] >= wanted or total - wanted < scale_px(320):
-                return
-            self.workspace_splitter.setSizes([wanted, total - wanted])
-        except Exception:
-            logger.exception("Не удалось расширить панель анализа")
 
     def apply_accessibility_scale(self):
         """Resize fixed-size chrome (activity bar, icons, sidebar) to the UI scale."""
@@ -1032,16 +1010,10 @@ class ModernMainWindow(QMainWindow):
         if editor is None:
             CustomDialog("Нет активного редактора").exec()
             return
-        self.show_ai_agent()
         panel = getattr(self, "ai_panel", None)
         if panel is None:
             return
-        text_editor = getattr(editor, "editor", None)
-        cursor = text_editor.textCursor() if text_editor is not None else None
-        has_selection = bool(cursor and cursor.hasSelection())
-        panel.include_selection.setChecked(has_selection)
-        panel.include_file.setChecked(True)
-        panel.send_with_context("Объясни, что делает этот код, и подскажи, как его улучшить.")
+        panel.send_with_context("Объясни, что делает этот код, и подскажи, как его улучшить.", editor=editor)
 
     def action_ai_apply_code(self):
         """Apply the first code block of the AI answer to the editor."""
@@ -1076,12 +1048,14 @@ class ModernMainWindow(QMainWindow):
             "search": self.search_panel,
             "git": self.git_panel,
             "todo": getattr(self, "todo_panel", None),
-            "intelligence": self.intelligence_panel,
         }
         if key == "settings":
             self.action_open_settings()
             return
         if key in {"todo", "git", "intelligence"} and not self.extension_enabled(key):
+            return
+        if key == "intelligence":
+            self.show_project_analysis()
             return
         if key == "ai":
             if not self.extension_enabled("ai"):
@@ -1110,9 +1084,7 @@ class ModernMainWindow(QMainWindow):
     def _refresh_side_panel(self, key, panel):
         if not panel.isVisible():
             return
-        if key == "intelligence":
-            self._ensure_intelligence_panel_project()
-        elif key == "todo":
+        if key == "todo":
             panel.refresh_tasks()
         elif key == "search":
             panel.refresh_if_needed()
@@ -1128,6 +1100,52 @@ class ModernMainWindow(QMainWindow):
             detected = panel._resolve_root_path()
             if detected:
                 panel.set_project(detected)
+
+    def show_project_analysis(self):
+        if not self.extension_enabled("intelligence"):
+            return
+        self._ensure_intelligence_panel_project()
+        panel = self.intelligence_panel
+        source = getattr(self.get_current_editor(), "file_path", None)
+        if source:
+            panel.editor_path_hint = str(source)
+        self._show_analysis_workspace_tab("projectAnalysis", "Анализ проекта", panel)
+
+    def show_project_analyzers(self):
+        if not self.extension_enabled("intelligence"):
+            return
+        project = self.current_project
+        if project is None:
+            self.project_handler.show_no_project_message()
+            return
+        if self._find_special_tab("projectAnalyzers") is None:
+            from widgets.AnalysisProfilesDialog import AnalyzerProfilesEditor
+
+            editor = AnalyzerProfilesEditor(project, current=project.analyzers, parent=self)
+            editor.open_analysis_requested.connect(self.show_project_analysis)
+
+            def apply(selected):
+                current = self.current_project
+                if current is not None and current.root_path == project.root_path:
+                    if self.project_handler.apply_analyzers(current, selected):
+                        editor.result_hint.setText("Набор проверок сохранён для проекта.")
+
+            editor.apply_requested.connect(apply)
+        else:
+            editor = None
+        self._show_analysis_workspace_tab("projectAnalyzers", "Анализаторы", editor)
+
+    def _show_analysis_workspace_tab(self, kind, title, widget):
+        existing = self._find_special_tab(kind)
+        if existing:
+            group, index = existing
+        else:
+            group = self.active_tab_widget
+            index = group.addTab(widget, title)
+            widget.show()
+        self._set_active_group(group)
+        group.setCurrentIndex(index)
+        self._sync_special_activity()
 
     def show_command_palette(self):
         """Выполняет операцию show command palette.
@@ -1147,6 +1165,7 @@ class ModernMainWindow(QMainWindow):
             ("Вид: Архитектурный граф", "graph"),
             ("Вид: Предпросмотр Markdown / HTML", "preview_markdown"),
             ("Запуск: Запустить текущий файл", "run"),
+            ("Запуск: Запустить тесты проекта", "tests"),
             ("Проект: Открыть проект", "project"),
             ("Настройки: Параметры", "settings"),
             ("Окно: Закрыть активный редактор", "close"),
@@ -1154,6 +1173,7 @@ class ModernMainWindow(QMainWindow):
             ("Перейти к строке", "goto_line"),
             ("Переименовать символ", "rename"),
             ("Проект: Анализ проекта", "intelligence"),
+            ("Проект: Настроить анализаторы", "analyzers"),
             ("Проект: Анализ влияния текущего файла", "impact"),
             ("Проект: Изменить капсулу", "capsule"),
             ("Справка: Руководство пользователя (Документация)", "documentation"),
@@ -1183,10 +1203,12 @@ class ModernMainWindow(QMainWindow):
             "graph": lambda: self.open_graph_editor(self.intelligence_panel.engine, 'modules') if getattr(self.intelligence_panel, 'engine', None) else CustomDialog("Сначала откройте проект для просмотра графа").exec(),
             "preview_markdown": self.action_preview_markdown,
             "run": self.action_run_file, "project": self.action_open_project,
+            "tests": self.workbench.run_tests,
             "settings": self.action_open_settings, "close": self.action_close_file,
             "quick_open": self.action_quick_open, "goto_line": self.action_goto_line,
             "rename": self.action_rename_symbol,
-            "intelligence": lambda: self.activity_bar.set_activity("intelligence"),
+            "intelligence": self.show_project_analysis,
+            "analyzers": self.show_project_analyzers,
             "todo": lambda: self.activity_bar.set_activity("todo"),
             "impact": self.action_analyze_current_impact,
             "adversary": self.action_adversary_test,
@@ -1299,7 +1321,7 @@ class ModernMainWindow(QMainWindow):
             project = project_manager.open_project(root)
             if project is None:
                 return False
-            self.project_handler.on_project_opened(project, choose_analyzers=False)
+            self.project_handler.on_project_opened(project)
             return True
         except Exception:
             logger.exception("Failed to restore last project")
@@ -1368,7 +1390,6 @@ class ModernMainWindow(QMainWindow):
             ("explorer", self.explorer_panel),
             ("search", self.search_panel),
             ("git", self.git_panel),
-            ("intelligence", self.intelligence_panel),
         ]
         if hasattr(self, "todo_panel") and self.todo_panel:
             panels.append(("todo", self.todo_panel))
@@ -2131,6 +2152,7 @@ class ModernMainWindow(QMainWindow):
         if not browser_enabled:
             self.close_special_tab("browser")
         if not enabled["ai"]:
+            self.ai_panel._close_quick_result()
             self.ai_panel.clear_queue()
             self.ai_panel.stop_request()
 
@@ -2143,6 +2165,8 @@ class ModernMainWindow(QMainWindow):
             self.git_panel.set_root(root)
 
         if not enabled["intelligence"]:
+            self.close_special_tab("projectAnalysis")
+            self.close_special_tab("projectAnalyzers")
             if self.intelligence_panel.engine is not None:
                 self.intelligence_panel.set_project(None)
             for group in self.editor_groups():
@@ -2258,126 +2282,7 @@ class ModernMainWindow(QMainWindow):
             CustomDialog("Нет активного исходного файла для отладки").exec()
 
     def run_target(self, file_path, debug=False):
-        """Run/debug one source file in the integrated terminal.
-
-        All launches go through the terminal's dedicated run channel, which
-        streams stdout/stderr live, reports the exit code and supports stdin.
-        """
-        path = Path(str(file_path)).resolve()
-        if not path.exists():
-            CustomDialog(f"Файл не найден: {path}").exec(); return
-        editor = self.get_current_editor()
-        if path.suffix.lower() == ".sql":
-            if editor and Path(getattr(editor, "file_path", "") or "").resolve() == path:
-                cursor = editor.editor.textCursor()
-                source = cursor.selectedText().replace("\u2029", "\n") if cursor.hasSelection() else editor.get_code()
-                self._stage_database_sql(source, path)
-            else:
-                try:
-                    source = path.read_text(encoding="utf-8-sig")
-                except (OSError, UnicodeError) as exc:
-                    CustomDialog(str(exc)).exec()
-                    return
-                self._stage_database_sql(source, path)
-            return
-        if editor and str(getattr(editor, 'file_path', '')) == str(path) and hasattr(editor, 'save_file'):
-            if not editor.save_file():
-                CustomDialog("Не удалось сохранить файл перед выполнением").exec(); return
-        lang = path.suffix.lower().lstrip('.')
-        args = self.load_launch_arguments(str(path))
-
-        project_root = None
-        if self.current_project:
-            project_root = getattr(self.current_project, 'root_path', None)
-        cwd = Path(project_root) if project_root and Path(project_root).is_dir() else path.parent
-
-        from core.assembly import EXTENSIONS as ASSEMBLY_EXTENSIONS
-        if path.suffix.lower() in ASSEMBLY_EXTENSIONS:
-            if debug:
-                self.status_bar.showMessage("Для ассемблера доступна команда «Запустить файл».")
-                return
-            self.run_in_terminal(str(path), args, cwd)
-            return
-
-        def q(value):
-            return '"' + str(value).replace('"', '') + '"'
-
-        from utils.toolchain_detector import resolve_toolchain
-        toolchains = get_settings_manager().get_setting("toolchains", {}) or {}
-
-        def tool(key, fallback):
-            return q(resolve_toolchain(key, fallback, toolchains))
-
-        args = (args or "").strip()
-        stem = path.stem
-        command = None
-
-        # Build a single command string; the terminal runs it as its own
-        # process (compile-then-run chains are still executed by the shell).
-        if lang in {'py', 'pyw'}:
-            from utils.toolchain_detector import python_interpreter
-            tools = get_settings_manager().get_setting("toolchains", {}) or {}
-            configured = tools.get("python")
-            if isinstance(configured, dict):
-                configured = configured.get("command")
-            try:
-                executable = python_interpreter(resolve_toolchain("python", None, tools))
-            except RuntimeError as exc:
-                CustomDialog(str(exc)).exec()
-                return
-            command = f'{q(executable)}{" -m pdb" if debug else ""} {q(path)} {args}'.strip()
-        elif lang in {'js', 'mjs', 'cjs'}:
-            command = f'{tool("javascript", "node")} {"--inspect-brk " if debug else ""}{q(path)} {args}'.strip()
-        elif lang == 'ts':
-            command = f'{tool("typescript", "ts-node")} {q(path)} {args}'.strip()
-        elif lang in {'sh', 'bash', 'zsh'}:
-            command = f'{tool("shell", "bash")} {q(path)} {args}'.strip()
-        elif lang == 'go':
-            command = f'{tool("go", "go")} run {q(path)} {args}'.strip()
-        elif lang == 'rs':
-            command = f'{tool("rust", "rustc")} {q(path)} -o {q(path.with_suffix(""))} && {q(path.with_suffix(""))} {args}'.strip()
-        elif lang in {'c', 'h'}:
-            out = path.with_suffix('.pyscribe_run.exe' if os.name == 'nt' else '.pyscribe_run')
-            command = f'{tool("c", "gcc")} {q(path)} -o {q(out)} && {q(out)} {args}'.strip()
-        elif lang in {'cpp', 'cc', 'cxx', 'hpp'}:
-            out = path.with_suffix('.pyscribe_run.exe' if os.name == 'nt' else '.pyscribe_run')
-            command = f'{tool("cpp", "g++")} {q(path)} -std=c++17 -o {q(out)} && {q(out)} {args}'.strip()
-        elif lang == 'java':
-            command = f'{tool("java", "java")} {q(path)} {args}'.strip()
-        elif lang == 'cs':
-            proj_file = next(iter(Path(cwd).glob('*.csproj')), None)
-            command = f'{tool("csharp", "dotnet")} run --project {q(proj_file or path)}'.strip()
-        elif lang == 'php':
-            command = f'{tool("php", "php")} {q(path)} {args}'.strip()
-        elif lang == 'rb':
-            command = f'{tool("ruby", "ruby")} {q(path)} {args}'.strip()
-        elif lang == 'kt':
-            command = (f'kotlinc {q(path)} -include-runtime -d {q(path.with_suffix(".jar"))} '
-                       f'&& java -jar {q(path.with_suffix(".jar"))}').strip()
-        elif lang == 'swift':
-            command = f'swift {q(path)} {args}'.strip()
-        elif lang == 'lua':
-            command = f'{tool("lua", "lua")} {q(path)} {args}'.strip()
-        else:
-            # Unknown type: open it with the OS default handler.
-            try:
-                QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
-            except Exception:
-                logger.exception("Не удалось открыть файл")
-            self.status_bar.showMessage(f"Файл открыт системным приложением: {path.name}")
-            return
-
-        if lang in {'ts', 'c', 'cpp', 'cc', 'cxx', 'cs', 'rs', 'java'}:
-            from utils.toolchain_detector import build_run_command_for_file
-            command, _ = build_run_command_for_file(str(path), args, toolchains)
-        if lang in {'py', 'pyw', 'js', 'mjs', 'cjs', 'go', 'java', 'php', 'rb', 'lua', 'sh', 'bash', 'zsh', 'ts', 'c', 'cpp', 'cc', 'cxx', 'cs', 'rs'}:
-            if not self.terminal_visible:
-                self.toggle_terminal()
-            self.console_widget.set_current_tab("Terminal")
-            self.console_widget.get_terminal().run_file(command, cwd)
-        else:
-            self.run_in_terminal_command(command, cwd)
-        self.status_bar.showMessage(("Отладка " if debug else "Запуск ") + path.name)
+        self.code_runner.run_target(file_path, debug=debug)
 
     _ENTRY_CANDIDATES = (
         'main.py', 'app.py', 'run.py', '__main__.py', 'manage.py',
@@ -2394,27 +2299,12 @@ class ModernMainWindow(QMainWindow):
         if not root.is_dir():
             CustomDialog(f"Папка проекта не найдена:\n{root}").exec()
             return
-        candidates = []
-        for name in self._ENTRY_CANDIDATES:
-            p = root / name
-            if p.is_file():
-                candidates.append(p)
-        # A package layout (src/main.py, app/main.py, ...) is common too.
-        if not candidates:
-            for sub in ("src", "app", "package", "backend"):
-                base = root / sub
-                if not base.is_dir():
-                    continue
-                for name in self._ENTRY_CANDIDATES:
-                    p = base / name
-                    if p.is_file():
-                        candidates.append(p)
-                        break
-                if candidates:
-                    break
-        if candidates:
-            self.workbench.announce(f"Точка входа в проект: {candidates[0].name}")
-            self.run_target(str(candidates[0]), debug)
+        directories = (root, root / "src", root / "app", root / "package", root / "backend")
+        candidates = (directory / name for directory in directories for name in self._ENTRY_CANDIDATES)
+        entry = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if entry is not None:
+            self.workbench.announce(f"Точка входа в проект: {entry.name}")
+            self.run_target(str(entry), debug)
             return
         # Prefer the current editor if it belongs to this workspace.
         editor = self.get_current_editor()
@@ -2433,15 +2323,35 @@ class ModernMainWindow(QMainWindow):
             self.activity_bar.set_activity("intelligence")
             QtCore.QTimer.singleShot(1200, self.intelligence_panel.refresh)
 
-    def run_tests(self):
-        """Выполняет запуск рабочего процесса tests.
-        """
+    def run_tests(self, *, python=None):
+        """Open the Python test results tab or run the existing npm target."""
         if not self.current_project:
+            self.project_handler.show_no_project_message()
             return
         root = Path(self.current_project.root_path)
         if (root / 'pytest.ini').exists() or (root / 'pyproject.toml').exists() or (root / 'tests').exists():
-            self.workbench.announce(f"Тесты: pytest · cwd={root}")
-            self.run_in_terminal('pytest', '', root)
+            from utils.toolchain_detector import python_interpreter
+            from widgets.TestResultsPanel import TestResultsPanel
+
+            tools = get_settings_manager().get_setting("toolchains", {}) or {}
+            try:
+                executable = python or python_interpreter(resolve_toolchain("python", None, tools))
+            except RuntimeError as exc:
+                CustomDialog(str(exc)).exec()
+                return
+            location = self._find_special_tab("testResults")
+            if location:
+                group, index = location
+                panel = group.widget(index)
+                panel.executable = executable
+            else:
+                group = self.active_tab_widget
+                panel = TestResultsPanel(root, executable, self.open_analysis_location, group)
+                index = group.addTab(panel, "Тесты")
+            self._set_active_group(group)
+            group.setCurrentIndex(index)
+            panel.start()
+            return panel
         elif (root / 'package.json').exists():
             self.workbench.announce(f"Тесты: npm test · cwd={root}")
             self.run_in_terminal('npm', 'test', root)
@@ -2627,6 +2537,8 @@ class ModernMainWindow(QMainWindow):
         return reply != QMessageBox.StandardButton.Cancel
 
     def _remove_editor_tab(self, index, editor):
+        if editor.property("pyscribeSpecial") == "testResults":
+            editor.shutdown()
         if editor.property("pyscribeSpecial") == "agentTeam":
             editor.stop()
             self.ai_panel.hide()
@@ -2645,7 +2557,11 @@ class ModernMainWindow(QMainWindow):
             self._welcome_tab = None
 
         self.active_tab_widget.removeTab(index)
-        editor.deleteLater()
+        if editor.property("pyscribeSpecial") == "projectAnalysis":
+            editor.hide()
+            editor.setParent(self)
+        else:
+            editor.deleteLater()
         self.recalculate_unsaved_count()
         if not getattr(self, "_suspend_session_save", False):
             self._collapse_empty_editor_group()
@@ -3009,9 +2925,9 @@ class ModernMainWindow(QMainWindow):
         if not self.current_project:
             CustomDialog("Сначала откройте проект.").exec()
             return
-        self.activity_bar.set_activity("intelligence")
         editor = self.get_current_editor()
         path = getattr(editor, "file_path", None) if editor else None
+        self.show_project_analysis()
         if path:
             self.intelligence_panel.set_impact_file(path)
 
@@ -3074,6 +2990,9 @@ class ModernMainWindow(QMainWindow):
                 browser_open=any(group.currentWidget() is not None and
                                  group.currentWidget().property("pyscribeSpecial") == "browser"
                                  for group in self.editor_groups()),
+                analysis_open=any(group.currentWidget() is not None and
+                                  group.currentWidget().property("pyscribeSpecial") in {"projectAnalysis", "projectAnalyzers"}
+                                  for group in self.editor_groups()),
             )
 
     def _remove_special_tab_from_group(self, group, kind: str):
@@ -3087,7 +3006,10 @@ class ModernMainWindow(QMainWindow):
             widget = group.widget(i)
             if widget.property("pyscribeSpecial") == kind:
                 group.removeTab(i)
-                if kind == "browser":
+                if kind == "projectAnalysis":
+                    widget.hide()
+                    widget.setParent(self)
+                elif kind in {"browser", "projectAnalyzers"}:
                     widget.deleteLater()
 
     def close_special_tab(self, kind: str):
@@ -3648,6 +3570,10 @@ class ModernMainWindow(QMainWindow):
         """Выполняет операцию finalize application.
         """
         try:
+            location = self._find_special_tab("testResults")
+            if location:
+                group, index = location
+                group.widget(index).shutdown()
             if getattr(self, "search_panel", None) is not None:
                 self.search_panel.cancel_background()
             if hasattr(self, 'console_widget') and hasattr(self.console_widget, 'shutdown'):

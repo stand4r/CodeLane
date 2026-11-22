@@ -234,27 +234,20 @@ def test_report_survives_unreadable_file():
     assert report.findings == []
 
 
-def test_dashboard_can_repeat_adversary_run_and_clear_old_report(tmp_path, monkeypatch):
-    from PyQt6 import QtCore, QtTest, QtWidgets
+def test_dashboard_can_repeat_adversary_run_and_clear_old_report(tmp_path, monkeypatch, qtbot):
     from core.adversary import AdversaryReport
     from widgets.ProjectIntelligenceDashboard import ProjectIntelligenceDashboard
 
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     panel = ProjectIntelligenceDashboard()
+    qtbot.addWidget(panel)
     path = str(tmp_path / "original.py")
     monkeypatch.setattr(panel, "_current_editor_path", lambda: path)
     monkeypatch.setattr(AdversaryRunner, "run_file", lambda _, source: AdversaryReport(module_path=source))
     try:
         for _ in range(2):
             panel._run_adversary()
-            thread = panel._adversary_thread
-            finished = QtTest.QSignalSpy(thread.finished)
             panel.set_adversary_file(str(tmp_path / "other.py"))
-            if not len(finished):
-                assert finished.wait(3000)
-            app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents)
-            assert panel._adversary_thread is None
+            qtbot.waitUntil(lambda: panel._adversary_thread is None, timeout=3000)
             assert panel._adversary_report.module_path == path
             assert panel.adversary_export_btn.isEnabled()
         panel.set_adversary_file(None)
@@ -262,6 +255,49 @@ def test_dashboard_can_repeat_adversary_run_and_clear_old_report(tmp_path, monke
         assert not panel.adversary_export_btn.isEnabled()
     finally:
         panel.shutdown()
+
+
+def test_analysis_sections_share_one_page_and_follow_selected_file(tmp_path, monkeypatch, qtbot):
+    from core.project_intelligence import FileInfo, ProjectAnalysis, ProjectIntelligenceEngine
+    from widgets.ProjectIntelligenceDashboard import ProjectIntelligenceDashboard
+
+    selected = str(tmp_path / "selected.py")
+    active = str(tmp_path / "active.py")
+    panel = ProjectIntelligenceDashboard()
+    qtbot.addWidget(panel)
+    panel.resize(300, 480)
+    panel.show()
+    panel.engine = ProjectIntelligenceEngine(str(tmp_path))
+    report = ProjectAnalysis(str(tmp_path), files={
+        selected: FileInfo(selected, "selected", language="python"),
+        active: FileInfo(active, "active", language="python"),
+    })
+    panel.engine.analysis = report
+    panel._populate(report)
+    monkeypatch.setattr(panel, "_current_editor_path", lambda: active)
+    qtbot.waitUntil(lambda: panel.analysis_scroll.verticalScrollBar().maximum() > 0)
+
+    assert all(panel._analysis_body.isAncestorOf(widget) for widget in
+               (panel.tips_tree, panel.structure_tree, panel.impact_tree, panel.adversary_tree))
+    assert panel.tips_tree.isVisible() and panel.adversary_tree.isVisible()
+    panel.resize(1000, 580)
+    qtbot.waitUntil(lambda: panel._wide_layout)
+    tips = panel.section_grid.indexOf(panel._analysis_sections["tips"])
+    structure = panel.section_grid.indexOf(panel._analysis_sections["structure"])
+    assert panel.section_grid.getItemPosition(tips)[:2] == (0, 0)
+    assert panel.section_grid.getItemPosition(structure)[:2] == (0, 1)
+    panel.resize(300, 480)
+    qtbot.waitUntil(lambda: not panel._wide_layout)
+    panel.structure_tree.setCurrentItem(panel.structure_tree.topLevelItem(1))
+    panel.structure_impact_button.click()
+    assert panel.impact_combo.currentData() == selected
+    assert panel.analysis_scroll.verticalScrollBar().value() > 0
+
+    panel.structure_test_button.click()
+    assert panel._sync_adversary_file() == selected
+    panel.adversary_editor_btn.click()
+    assert panel._adversary_path == active
+    panel.shutdown()
 
 
 if __name__ == "__main__":

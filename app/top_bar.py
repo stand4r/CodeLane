@@ -145,6 +145,17 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         menu_layout.addWidget(self.menu_strip)
         menu_layout.addWidget(self.compact_menu)
         self.compact_menu.hide()
+
+        self.agent_button = QtWidgets.QToolButton(self.menu_group)
+        self.agent_button.setObjectName("topAgentToggle")
+        self.agent_button.setIcon(codicons.ai_icon(17, "#9D9D9D"))
+        self.agent_button.setText("Агент")
+        self.agent_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.agent_button.setToolTip("Открыть вкладку агента (Ctrl+Shift+I)")
+        self.agent_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.agent_button.clicked.connect(self.window.show_ai_agent)
+        menu_layout.addWidget(self.agent_button, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
+
         layout.addSpacing(MENU_SEARCH_SPACING)
 
         self.search_pill = OmniSearchPill(self._base_path, self)
@@ -165,17 +176,6 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         controls.setContentsMargins(0, 0, 0, 0)
         controls.setSpacing(0)
 
-        self.agent_button = QtWidgets.QToolButton(self.window_controls)
-        self.agent_button.setObjectName("topAgentToggle")
-        self.agent_button.setIcon(codicons.ai_icon(17, "#9D9D9D"))
-        self.agent_button.setText("Агент")
-        self.agent_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.agent_button.setToolTip("Открыть вкладку агента (Ctrl+Shift+I)")
-        self.agent_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.agent_button.clicked.connect(self.window.show_ai_agent)
-        controls.addWidget(self.agent_button)
-        controls.addSpacing(8)
-
         self.minimize_button = self._window_button("chrome-minimize", "Свернуть", self.window.showMinimized, "windowControl")
         self.maximize_button = self._window_button("chrome-maximize", "Развернуть", self._toggle_maximize, "windowControl")
         self.close_button = self._window_button("chrome-close", "Закрыть", self.window.close, "windowClose")
@@ -186,28 +186,31 @@ class WorkbenchTopBar(QtWidgets.QFrame):
 
     def _window_button(self, icon_name, tooltip, handler, object_name):
         button = QtWidgets.QToolButton(self)
-        button.setIcon(codicons.codicon_icon(icon_name, 16, "#CCCCCC"))
+        button.setProperty("windowControlGlyph", icon_name)
+        self._refresh_window_icon(button)
         button.setIconSize(QtCore.QSize(16, 16))
         button.setToolTip(tooltip)
         button.setObjectName(object_name)
         button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         button.setAutoRaise(True)
         button.setFixedSize(WINDOW_CONTROL_SIZE)
-        button.setStyleSheet(
-            "QToolButton { border-radius: 0; border: none; background: transparent; }"
-            "QToolButton#windowControl:hover { background: #2A2D2E; }"
-            "QToolButton#windowClose:hover { background: #E81123; }"
-        )
         button.clicked.connect(handler)
         return button
 
     def _toggle_maximize(self):
         if self.window.isMaximized():
             self.window.showNormal()
-            self.maximize_button.setIcon(codicons.codicon_icon("chrome-maximize", 16, "#CCCCCC"))
+            self.maximize_button.setProperty("windowControlGlyph", "chrome-maximize")
         else:
             self.window.showMaximized()
-            self.maximize_button.setIcon(codicons.codicon_icon("chrome-restore", 16, "#CCCCCC"))
+            self.maximize_button.setProperty("windowControlGlyph", "chrome-restore")
+        self._refresh_window_icon(self.maximize_button)
+
+    @staticmethod
+    def _refresh_window_icon(button):
+        palette = QtWidgets.QApplication.palette()
+        color = palette.windowText().color().name() if palette.window().color().lightness() >= 128 else "#CCCCCC"
+        button.setIcon(codicons.codicon_icon(button.property("windowControlGlyph"), 16, color))
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
@@ -324,6 +327,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
                 )),
                 ("Анализ и версии", (
                     ("Анализ проекта", None, activity("intelligence")),
+                    ("Анализаторы", None, w.show_project_analyzers),
                     ("Архитектурный граф", None, lambda: w.open_graph_editor(None, "modules")),
                     ("Архитектурный паспорт", None, w.open_defense_guide),
                     ("Git", None, version_control),
@@ -351,6 +355,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
                 ("Выполнение кода", (
                     ("Запустить текущий файл", "F5", w.action_run_file),
                     ("Запустить проект", "Ctrl+F5", w.action_run_project),
+                    ("Запустить тесты проекта", "", lambda: w.workbench.run_tests()),
                     ("Запустить выделенный фрагмент", None, w.action_run_selected_snippet),
                 )),
                 ("Терминал", (("Новый терминал", None, w.new_terminal),)),
@@ -414,7 +419,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
             Qt.ToolButtonStyle.ToolButtonIconOnly if self.width() < 900
             else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
-        full_menu_width = self.menu_strip.sizeHint().width() + 125
+        full_menu_width = self.menu_strip.sizeHint().width() + self.agent_button.sizeHint().width() + 125
         compact = self.width() < 2 * full_menu_width + 300
         self.menu_strip.setVisible(not compact)
         self.compact_menu.setVisible(compact)
@@ -461,6 +466,7 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         for button in (self.minimize_button, self.maximize_button, self.close_button):
             button.setFixedSize(scale_px(46), scale_px(30))
             button.setIconSize(QtCore.QSize(scale_px(16), scale_px(16)))
+            self._refresh_window_icon(button)
         self.agent_button.setIconSize(QtCore.QSize(scale_px(17), scale_px(17)))
         self._fit_menu_strip()
 

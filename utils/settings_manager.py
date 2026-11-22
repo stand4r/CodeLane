@@ -50,6 +50,7 @@ DEFAULT_SETTINGS = {
     "ai_temperature": 3,
     # 0 = no local output budget (the provider's own maximum applies).
     "ai_max_tokens": 0,
+    "ai_agent_round_budget": 64,
     # How hard the model should think: auto | none | low | medium | high.
     "ai_reasoning_effort": "auto",
     "ai_system_prompt": "",

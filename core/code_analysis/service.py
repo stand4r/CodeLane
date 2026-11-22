@@ -93,11 +93,12 @@ class UnifiedCodeAnalysisService(QtCore.QObject):
 
         # Update analyzers
         self.text_analyzer.set_root(self.root_path)
+        # Cancels a still-running scan of the previous project before retargeting.
         self.openapi_bridge.set_root(self.root_path)
 
-        if self.root_path:
-            # Rebuild OpenAPI index in background
-            threading.Thread(target=self.openapi_bridge.rebuild_index, name="openapi-indexer", daemon=True).start()
+        # Rebuild the OpenAPI index in the background; a scan of the old project
+        # (or one racing with a "no project" state) is cancelled by the bridge.
+        self.openapi_bridge.start_indexing()
 
     def close_project(self) -> None:
         self.set_project_root(None)

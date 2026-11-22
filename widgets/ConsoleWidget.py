@@ -1,9 +1,33 @@
 """Bottom workbench panel with terminal, problems and project tasks."""
+import weakref
 from pathlib import Path
 from design.icons import line_icon, set_line_icon
 from PyQt6 import QtWidgets, QtCore, QtGui
 from .TerminalWidget import TerminalWidget
 from design.icons import codicon_icon
+
+
+def _weak_slot(method):
+    """Qt slot that keeps only a weak reference to the bound *method*.
+
+    Connecting a bound method through a closure with a default argument
+    (``lambda checked=False, s=slot: s()``) makes the closure own the method and
+    therefore the whole widget: ``button -> slot -> widget -> button`` is a
+    reference cycle. Such a tree survives the last Python reference and is freed
+    only by the cyclic GC - possibly in the middle of Qt's event dispatch, where
+    destroying a widget that Qt is still using ends in an access violation (and
+    leaves live timers/shell processes behind). A weak slot keeps the lifetime
+    driven by the owner.
+    """
+    ref = weakref.WeakMethod(method)
+
+    def _slot(*_args, **_kwargs):
+        target = ref()
+        if target is None:
+            return None
+        return target()
+
+    return _slot
 
 
 class ConsoleWidget(QtWidgets.QWidget):
@@ -71,7 +95,7 @@ class ConsoleWidget(QtWidgets.QWidget):
             # A fixed 28px hit area, vertically centred inside the 36px strip.
             button.setFixedSize(28, 28)
             button.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
-            button.clicked.connect(lambda checked=False, s=slot: s())
+            button.clicked.connect(_weak_slot(slot))
             corner_layout.addWidget(button, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
             self._toolbar_buttons[key] = button
 

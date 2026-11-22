@@ -54,6 +54,22 @@ def _user_messages():
     return [{"role": "user", "content": "сделай задачу"}]
 
 
+def test_shared_round_budget_and_repeat_guard():
+    from services.agent_harness import RoundBudget
+
+    limit = SAME_CALL_LIMIT + 1
+    budget = RoundBudget(limit)
+    calls = [("", [ToolCall(str(i), "read_file", {"path": "repo.py"})]) for i in range(limit)]
+    service = ScriptedService(calls)
+    result = AgentHarness(service, tools=[{}], tool_runner=lambda *_: "file",
+                          unlimited_rounds=True, round_budget=budget).run(_user_messages())
+    assert result.stop_reason == "limit" and result.rounds == limit
+    assert result.tool_runs[-1].repeated
+    second = ScriptedService([("unexpected", [])])
+    assert AgentHarness(second, round_budget=budget).run(_user_messages()).stop_reason == "limit"
+    assert second.requests == 0
+
+
 def test_harness_runs_far_beyond_the_old_round_limit():
     rounds = [("", [ToolCall(f"call_{i}", "read_file", {"path": f"f{i}.py"})])
               for i in range(10)]

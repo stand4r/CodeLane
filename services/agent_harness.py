@@ -2,12 +2,11 @@
 
 This is the piece that turns a chat model into a working coding agent:
 
-* the loop keeps going until the model produces a final answer — there is no
-  low round limit any more (the old ``MAX_TOOL_ROUNDS = 6`` is exactly why the
-  agent "read a few files and stopped mid-way");
+* the loop keeps going until the model produces a final answer or uses the
+  applicable round allowance;
 * recent tool results retain more detail; large discovery results are
   shortened in provider requests while the transcript retains them;
-* repeated identical tool calls in bounded runs are detected and the model
+* repeated identical tool calls are detected and the model
   is directed to earlier results;
 * transient provider errors (429/5xx/network) are retried with backoff;
 * token usage is accumulated over all rounds and reported once;
@@ -22,6 +21,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from http.client import IncompleteRead
+from threading import Lock
 from typing import Any, Callable, Dict, List, Optional
 
 from services.ai_service import AIError, AIService, ToolCall
@@ -31,6 +31,26 @@ __all__ = ["AgentHarness", "AgentResult", "AgentUsage", "ToolRun"]
 # A pathological model could keep calling tools forever; this is a fuse, not a
 # policy. Normal work (dozens of file reads and edits) fits easily.
 SAFETY_MAX_ROUNDS = 200
+
+
+class RoundBudget:
+    """One round allowance shared by a supervisor and its parallel delegates."""
+
+    def __init__(self, rounds: int):
+        self._remaining = rounds
+        self._lock = Lock()
+
+    def take(self) -> bool:
+        with self._lock:
+            if self._remaining <= 0:
+                return False
+            self._remaining -= 1
+            return True
+
+    @property
+    def exhausted(self) -> bool:
+        with self._lock:
+            return self._remaining <= 0
 
 # A single tool result is copied into the transcript as-is. The limit only
 # protects the process from a runaway command dumping gigabytes.
@@ -72,6 +92,14 @@ class AgentUsage:
             value = usage.get(key)
             if isinstance(value, (int, float)):
                 self.values[key] = int(self.values.get(key, 0)) + int(value)
+        if "cache_read_input_tokens" not in usage:
+            details = usage.get("prompt_tokens_details")
+            cached = details.get("cached_tokens") if isinstance(details, dict) else None
+            if cached is None:
+                cached = usage.get("prompt_cache_hit_tokens")
+            if type(cached) is int:
+                key = "cache_read_input_tokens"
+                self.values[key] = self.values.get(key, 0) + cached
         # OpenAI nests reasoning tokens in completion_tokens_details.
         details = usage.get("completion_tokens_details")
         if isinstance(details, dict) and isinstance(details.get("reasoning_tokens"), int):
@@ -131,12 +159,14 @@ class AgentHarness:
         should_stop: Optional[Callable[[], bool]] = None,
         tool_result_limit: int = MAX_TOOL_RESULT_CHARS,
         unlimited_rounds: bool = False,
+        round_budget: Optional[RoundBudget] = None,
     ):
         self.service = service
         self.tools = list(tools or [])
         self.tool_runner = tool_runner
         self.max_rounds = max_rounds
         self.unlimited_rounds = unlimited_rounds
+        self.round_budget = round_budget
         self.on_text = on_text
         self.on_reasoning = on_reasoning
         self.on_tool_start = on_tool_start
@@ -163,13 +193,16 @@ class AgentHarness:
             if self.should_stop():
                 stop_reason = "stopped"
                 break
+            if not self.unlimited_rounds and rounds >= SAFETY_MAX_ROUNDS:
+                stop_reason = "limit"
+                break
+            if self.max_rounds is not None and rounds >= self.max_rounds:
+                stop_reason = "limit"
+                break
+            if self.round_budget is not None and not self.round_budget.take():
+                stop_reason = "limit"
+                break
             rounds += 1
-            if not self.unlimited_rounds and rounds > SAFETY_MAX_ROUNDS:
-                stop_reason = "limit"
-                break
-            if self.max_rounds is not None and rounds > self.max_rounds:
-                stop_reason = "limit"
-                break
 
             request = self._request_messages(messages, discovery_results, rounds)
             text, calls = self._one_round(request, usage)
@@ -187,7 +220,8 @@ class AgentHarness:
                     narration = answer or narration
                     stop_reason = "stopped"
                     break
-                stop_reason = "answer" if answer.strip() else "empty"
+                budget_ended = self.service.truncated and self.round_budget is not None and self.round_budget.exhausted
+                stop_reason = "limit" if budget_ended else "answer" if answer.strip() else "empty"
                 answer = answer or narration
                 break
 
@@ -201,8 +235,8 @@ class AgentHarness:
                 if call.name in DISCOVERY_TOOLS and runs[-1].ok:
                     discovery_results.append((len(messages) - 1, rounds))
 
-        if stop_reason == "stopped":
-            answer = narration
+        if stop_reason in {"stopped", "limit"}:
+            answer = answer or narration
         if not answer.strip() and stop_reason == "answer":
             stop_reason = "empty"
         return AgentResult(
@@ -355,7 +389,7 @@ class AgentHarness:
         signature = call.name + "|" + json.dumps(call.arguments or {},
                                                  sort_keys=True, ensure_ascii=False)
         seen_calls[signature] = seen_calls.get(signature, 0) + 1
-        repeated = not self.unlimited_rounds and seen_calls[signature] > SAME_CALL_LIMIT
+        repeated = seen_calls[signature] > SAME_CALL_LIMIT
 
         if repeated:
             output = self._repeat_notice(call)
@@ -421,7 +455,8 @@ class AgentHarness:
             {"role": "assistant", "content": partial},
             {"role": "user", "content": self.service._continue_prompt()},
         ]
+        options = {"before_request": self.round_budget.take} if self.round_budget is not None else {}
         return self.service._stream_until_complete(
             working, self._text_callback, self._reasoning_callback,
-            on_usage=usage.add, should_stop=self.should_stop,
+            on_usage=usage.add, should_stop=self.should_stop, **options,
         )

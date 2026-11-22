@@ -19,3 +19,31 @@ jobs:
       - run: python -m pip check
       - run: python -m compileall -q main.py app core design services utils widgets extensions
       - run: pytest
+  windows-bundle:
+    runs-on: windows-latest
+    needs: quality
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.15.2"
+      - run: python -m pip install --config-settings=--global-option=--without-libyaml PyYAML==6.0.3
+      - run: python -m pip install -r requirements.txt pyinstaller==6.22.3
+      - run: python -m PyInstaller --noconfirm CodeLane.spec
+      - name: Test the packaged Windows application
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $project = Join-Path $env:RUNNER_TEMP 'codelane-smoke-project'
+          $tests = Join-Path $project 'tests'
+          New-Item -ItemType Directory -Path $tests -Force | Out-Null
+          @'
+          def test_smoke():
+              assert 2 + 2 == 4
+          '@ | Set-Content -LiteralPath (Join-Path $tests 'test_smoke.py') -Encoding utf8
+          $python = (Get-Command python).Source
+          $arguments = '--smoke-test "{0}" "{1}"' -f $project, $python
+          $process = Start-Process -FilePath 'dist/CodeLane/CodeLane.exe' -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "CodeLane smoke test failed with exit code $($process.ExitCode)" }

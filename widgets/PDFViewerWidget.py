@@ -11,7 +11,7 @@ Features:
 * Text extraction and copying (dialog and clipboard);
 * Export page as PNG image;
 * Night reading / inverted colors mode;
-* Asynchronous rendering on QThreadPool with pixmap caching.
+* Asynchronous rendering on the shared Python pool with pixmap caching.
 """
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ from typing import Dict, List, Optional, Tuple
 import fitz
 from design.icons import set_line_icon
 from PyQt6 import QtCore, QtGui, QtWidgets
+
+from services.background import run_async
 
 __all__ = ["PDFViewerWidget"]
 
@@ -34,129 +36,82 @@ CACHE_LIMIT = 6
 CACHE_MAX_PIXELS = 16_000_000
 
 
-class _RenderBridge(QtCore.QObject):
-    rendered = QtCore.pyqtSignal(object)
+def render_page_payload(path: str, page_index: int, zoom: float, rotation: int,
+                        dpr: float, generation: int, search: str,
+                        password: str = "", invert_colors: bool = False) -> dict:
+    """Rasterise one page on a Python worker thread.
+
+    No Qt object is created here: the PNG bytes travel back to the GUI thread,
+    which does the inverting and the search-highlight painting.
+    """
+    document = None
+    try:
+        document = fitz.open(path)
+        if password:
+            document.authenticate(password)
+        page = document.load_page(page_index)
+        scale = (BASE_DPI / 72.0) * (zoom / 100.0) * dpr
+        matrix = fitz.Matrix(scale, scale).prerotate(rotation)
+        pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+
+        rect = page.rect
+        width, height = rect.width, rect.height
+        if rotation % 180:
+            width, height = height, width
+
+        hits = page.search_for(search) if search else []
+        boxes = []
+        for rect_hit in hits:
+            mapped = rect_hit * matrix
+            boxes.append((mapped.x0, mapped.y0, mapped.width, mapped.height))
+        payload = pixmap.tobytes("png")
+        document.close()
+        return {
+            "png": payload,
+            "page": page_index,
+            "generation": generation,
+            "zoom": zoom,
+            "rotation": rotation,
+            "dpr": dpr,
+            "size": (width, height),
+            "hits": len(hits),
+            "boxes": boxes,
+            "invert": bool(invert_colors),
+        }
+    except Exception as exc:  # noqa: BLE001
+        if document is not None:
+            try:
+                document.close()
+            except Exception:
+                pass
+        return {"error": str(exc), "page": page_index, "generation": generation}
 
 
-class _SearchBridge(QtCore.QObject):
-    results = QtCore.pyqtSignal(object)
-
-
-class _PdfRenderTask(QtCore.QRunnable):
-    """Rasterise one page off the GUI thread."""
-
-    def __init__(self, path: str, page: int, zoom: float, rotation: int,
-                 dpr: float, generation: int, search: str, receiver,
-                 password: str = "", invert_colors: bool = False):
-        super().__init__()
-        self.path = path
-        self.page_index = page
-        self.zoom = zoom
-        self.rotation = rotation
-        self.dpr = dpr
-        self.generation = generation
-        self.search = search
-        self.bridge = receiver
-        self.password = password
-        self.invert_colors = invert_colors
-
-    def run(self):
-        document = None
-        try:
-            document = fitz.open(self.path)
-            if self.password:
-                document.authenticate(self.password)
-            page = document.load_page(self.page_index)
-            scale = (BASE_DPI / 72.0) * (self.zoom / 100.0) * self.dpr
-            matrix = fitz.Matrix(scale, scale).prerotate(self.rotation)
-            pixmap = page.get_pixmap(matrix=matrix, alpha=False)
-
-            rect = page.rect
-            width, height = rect.width, rect.height
-            if self.rotation % 180:
-                width, height = height, width
-
-            hits = page.search_for(self.search) if self.search else []
-            if hits or self.invert_colors:
-                image = QtGui.QImage(pixmap.samples, pixmap.width, pixmap.height,
-                                     pixmap.stride,
-                                     QtGui.QImage.Format.Format_RGB888).copy()
-                if self.invert_colors:
-                    image.invertPixels()
-                if hits:
-                    painter = QtGui.QPainter(image)
-                    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-                    painter.setPen(QtCore.Qt.PenStyle.NoPen)
-                    painter.setBrush(QtGui.QColor(255, 214, 0, 95))
-                    for rect_hit in hits:
-                        mapped = rect_hit * matrix
-                        painter.drawRect(QtCore.QRectF(
-                            mapped.x0, mapped.y0, mapped.width, mapped.height))
-                    painter.end()
-                buffer = QtCore.QBuffer()
-                buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
-                image.save(buffer, "PNG")
-                payload = bytes(buffer.data())
-            else:
-                payload = pixmap.tobytes("png")
-            document.close()
-            self.bridge.rendered.emit({
-                "png": payload,
-                "page": self.page_index,
-                "generation": self.generation,
-                "zoom": self.zoom,
-                "rotation": self.rotation,
-                "dpr": self.dpr,
-                "size": (width, height),
-                "hits": len(hits),
-            })
-        except Exception as exc:  # noqa: BLE001
-            if document is not None:
-                try:
-                    document.close()
-                except Exception:
-                    pass
-            self.bridge.rendered.emit({
-                "error": str(exc), "page": self.page_index,
-                "generation": self.generation})
-
-
-class _PdfSearchTask(QtCore.QRunnable):
-    """Scan the whole document for a query (no rendering)."""
-
-    def __init__(self, path: str, query: str, generation: int, bridge, password: str = ""):
-        super().__init__()
-        self.path = path
-        self.query = query
-        self.generation = generation
-        self.bridge = bridge
-        self.password = password
-
-    def run(self):
-        document = None
-        try:
-            document = fitz.open(self.path)
-            if self.password:
-                document.authenticate(self.password)
-            pages: List[Tuple[int, int]] = []
-            total = 0
-            for index in range(len(document)):
-                hits = document.load_page(index).search_for(self.query)
-                if hits:
-                    pages.append((index, len(hits)))
-                    total += len(hits)
-            document.close()
-            self.bridge.results.emit({
-                "query": self.query, "generation": self.generation,
-                "pages": pages, "total": total})
-        except Exception as exc:  # noqa: BLE001
-            if document is not None:
-                try:
-                    document.close()
-                except Exception:
-                    pass
-            self.bridge.results.emit({"error": str(exc),
-                                      "generation": self.generation})
+def search_document_payload(path: str, query: str, generation: int,
+                            password: str = "") -> dict:
+    """Scan the whole document for *query* on a Python worker thread."""
+    document = None
+    try:
+        document = fitz.open(path)
+        if password:
+            document.authenticate(password)
+        pages: List[Tuple[int, int]] = []
+        total = 0
+        for index in range(len(document)):
+            hits = document.load_page(index).search_for(query)
+            if hits:
+                pages.append((index, len(hits)))
+                total += len(hits)
+        document.close()
+        return {"query": query, "generation": generation,
+                "pages": pages, "total": total}
+    except Exception as exc:  # noqa: BLE001
+        if document is not None:
+            try:
+                document.close()
+            except Exception:
+                pass
+        return {"error": str(exc), "generation": generation}
 
 
 class PDFViewerWidget(QtWidgets.QWidget):
@@ -192,11 +147,6 @@ class PDFViewerWidget(QtWidgets.QWidget):
         self._fit_timer.setSingleShot(True)
         self._fit_timer.setInterval(90)
         self._fit_timer.timeout.connect(self._apply_fit)
-        self.pool = QtCore.QThreadPool.globalInstance()
-        self._bridge = _RenderBridge()
-        self._bridge.rendered.connect(self._render_finished)
-        self._search_bridge = _SearchBridge()
-        self._search_bridge.results.connect(self._search_finished)
 
         self.setObjectName("pdfViewer")
         self._build()
@@ -783,10 +733,26 @@ class PDFViewerWidget(QtWidgets.QWidget):
         self._render_generation += 1
         self.status.setText(f"Страница {self.current_page + 1} из {self.total_pages}"
                             f" · рендеринг…")
-        self.pool.start(_PdfRenderTask(
-            self.current_file_path, self.current_page, self.zoom, self.rotation,
-            self.devicePixelRatioF(), self._render_generation, self._search_term,
-            self._bridge, self.pdf_password, self.invert_colors))
+        generation = self._render_generation
+        # Everything the worker needs is read here, on the GUI thread.
+        path = self.current_file_path
+        page = self.current_page
+        zoom = self.zoom
+        rotation = self.rotation
+        dpr = self.devicePixelRatioF()
+        term = self._search_term
+        password = self.pdf_password
+        invert = self.invert_colors
+        run_async(lambda: render_page_payload(
+            path, page, zoom, rotation, dpr, generation, term, password, invert),
+            parent=self,
+            on_done=self._render_finished,
+            on_error=lambda message: self._render_failed(message, generation))
+
+    def _render_failed(self, message: str, generation: int):
+        if generation != self._render_generation:
+            return
+        self.status.setText(f"Ошибка рендера: {message}")
 
     @QtCore.pyqtSlot(object)
     def _render_finished(self, payload: dict):
@@ -803,6 +769,17 @@ class PDFViewerWidget(QtWidgets.QWidget):
         if image.isNull():
             self.status.setText("Не удалось отобразить страницу")
             return
+        if payload.get("invert"):
+            image.invertPixels()
+        boxes = payload.get("boxes") or []
+        if boxes:
+            painter = QtGui.QPainter(image)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QColor(255, 214, 0, 95))
+            for x0, y0, width, height in boxes:
+                painter.drawRect(QtCore.QRectF(x0, y0, width, height))
+            painter.end()
         pixmap = QtGui.QPixmap.fromImage(image)
         pixmap.setDevicePixelRatio(float(payload.get("dpr", 1.0)))
         size = tuple(payload.get("size") or self._page_pt)
@@ -869,10 +846,19 @@ class PDFViewerWidget(QtWidgets.QWidget):
         if not self.current_file_path:
             return
         self._search_generation += 1
+        generation = self._search_generation
+        path = self.current_file_path
+        password = self.pdf_password
         self.status.setText(f"Поиск «{query}» по документу…")
-        self.pool.start(_PdfSearchTask(self.current_file_path, query,
-                                       self._search_generation, self._search_bridge,
-                                       self.pdf_password))
+        run_async(lambda: search_document_payload(path, query, generation, password),
+            parent=self,
+            on_done=self._search_finished,
+            on_error=lambda message: self._search_failed(message, generation))
+
+    def _search_failed(self, message: str, generation: int):
+        if generation != self._search_generation:
+            return
+        self.status.setText(f"Ошибка поиска: {message}")
 
     @QtCore.pyqtSlot(object)
     def _search_finished(self, payload: dict):

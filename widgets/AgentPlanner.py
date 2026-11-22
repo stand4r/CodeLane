@@ -38,8 +38,6 @@ class AgentPlanner(QtWidgets.QWidget):
         box.setContentsMargins(0, 0, 0, 0)
         row = QtWidgets.QHBoxLayout()
         self.collapse_button = QtWidgets.QToolButton()
-        self.collapse_button.setArrowType(QtCore.Qt.ArrowType.UpArrow)
-        self.collapse_button.setToolTip("Свернуть планировщик")
         self.collapse_button.clicked.connect(self._toggle_collapsed)
         row.addWidget(self.collapse_button)
         title = QtWidgets.QLabel("Отложенные агенты")
@@ -78,6 +76,7 @@ class AgentPlanner(QtWidgets.QWidget):
         self.tree.itemDoubleClicked.connect(lambda item, _: self.edit(item.data(0, QtCore.Qt.ItemDataRole.UserRole))
                                             if item.parent() else None)
         box.addWidget(self.tree)
+        self._set_collapsed(True)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(5000)
@@ -115,7 +114,9 @@ class AgentPlanner(QtWidgets.QWidget):
         self.signature = signature
 
     def _toggle_collapsed(self):
-        collapsed = not self.tree.isHidden()
+        self._set_collapsed(not self.tree.isHidden())
+
+    def _set_collapsed(self, collapsed: bool):
         self.tree.setVisible(not collapsed)
         self.collapse_button.setArrowType(QtCore.Qt.ArrowType.DownArrow if collapsed else QtCore.Qt.ArrowType.UpArrow)
         self.collapse_button.setToolTip("Развернуть планировщик" if collapsed else "Свернуть планировщик")

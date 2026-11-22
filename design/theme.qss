@@ -79,7 +79,7 @@ QToolButton {
 }
 QToolButton:hover  { background: #2A2D2E; color: #E7E7E7; }
 QToolButton:pressed,
-QToolButton:checked { background: #37373D; color: #FFFFFF; }
+QToolButton:checked { background: #37373D; color: @interaction_text@; }
 QToolButton:disabled { color: #5A5A5A; }
 
 /* Top bar menu buttons: exactly as VS Code (30px strip, 24px hits). */
@@ -116,11 +116,11 @@ QToolButton#activityAction {
 }
 QToolButton#activityAction:hover {
     background: transparent;
-    color: #FFFFFF;
+    color: @interaction_text@;
 }
 QToolButton#activityAction:checked {
     background: transparent;
-    color: #FFFFFF;
+    color: @interaction_text@;
 }
 
 /* Explorer toolbar: 24px flat icon buttons, 16px icons, no border */
@@ -134,7 +134,7 @@ QToolButton#explorerAction {
     background: transparent;
     color: #CCCCCC;
 }
-QToolButton#explorerAction:hover { background: #2A2D2E; color: #FFFFFF; }
+QToolButton#explorerAction:hover { background: #2A2D2E; color: @interaction_text@; }
 QToolButton#explorerAction:pressed { background: #37373D; }
 
 /* ---------- Explorer / lists -------------------------------------------- */
@@ -329,7 +329,7 @@ EnhancedTextEdit, QTextEdit#codeEditor {
 }
 
 /* ---------- Splitters & status strip ------------------------------------- */
-QSplitter::handle { background: #2B2B2B; }
+QSplitter::handle { background: @splitter_border@; }
 QSplitter::handle:horizontal { width: 1px; }
 QSplitter::handle:vertical { height: 1px; }
 QSplitter::handle:hover { background: #0078D4; }
@@ -360,7 +360,7 @@ QToolButton.statusActionBtn {
     max-height: 20px;
 }
 QToolButton#lensToggleBtn:hover,
-QToolButton.statusActionBtn:hover { background: #2A2D2E; color: #FFFFFF; }
+QToolButton.statusActionBtn:hover { background: #2A2D2E; color: @interaction_text@; }
 QToolButton.statusActionBtn::menu-indicator { image: none; width: 0; }
 
 /* CodeLens / breadcrumb strip: same 22px row rhythm as the status strip */
@@ -469,7 +469,7 @@ QTabWidget#consoleTabs QTabBar::tab {
     font-size: 11px;
     letter-spacing: 0;
 }
-QTabWidget#consoleTabs QTabBar::tab:hover { color: #FFFFFF; }
+QTabWidget#consoleTabs QTabBar::tab:hover { color: @interaction_text@; }
 QTabWidget#consoleTabs QTabBar::tab:selected {
     background: transparent;
     color: #E7E7E7;
@@ -513,10 +513,10 @@ QTabWidget#terminalTabs QTabBar::tab {
     margin: 0;
     font-size: 12px;
 }
-QTabWidget#terminalTabs QTabBar::tab:hover { color: #FFFFFF; }
+QTabWidget#terminalTabs QTabBar::tab:hover { color: @interaction_text@; }
 QTabWidget#terminalTabs QTabBar::tab:selected {
     background: transparent;
-    color: #FFFFFF;
+    color: @interaction_text@;
     border-bottom: 1px solid #0078D4;
 }
 QWidget#terminalCorner,
@@ -534,7 +534,7 @@ QToolButton#terminalShellButton {
     min-height: 22px;
     max-height: 22px;
 }
-QToolButton#terminalShellButton:hover { background: #2A2D2E; color: #FFFFFF; }
+QToolButton#terminalShellButton:hover { background: #2A2D2E; color: @interaction_text@; }
 QToolButton#terminalTextAction,
 QToolButton#terminalAction {
     background: transparent;
@@ -547,7 +547,7 @@ QToolButton#terminalAction {
     max-height: 22px;
 }
 QToolButton#terminalTextAction:hover,
-QToolButton#terminalAction:hover { background: #2A2D2E; color: #FFFFFF; }
+QToolButton#terminalAction:hover { background: #2A2D2E; color: @interaction_text@; }
 QToolButton#terminalTextAction:pressed,
 QToolButton#terminalAction:pressed { background: #37373D; }
 
@@ -727,6 +727,13 @@ QPlainTextEdit#aiInput {
     selection-color: #FFFFFF;
 }
 QPlainTextEdit#aiInput:focus { border: none; }
+
+QToolButton#aiAttachButton {
+    min-width: 34px;
+    min-height: 32px;
+    padding: 0;
+    font-size: 22px;
+}
 
 /* Composer toolbar: only the send (and transient stop) button are visible.
    All secondary actions live in the right-click menu (QMenu#aiContextMenu). */
@@ -1075,7 +1082,7 @@ QFrame#welcomeAction {
     border-radius: 8px;
 }
 QFrame#welcomeAction:hover { background: #2A2D2E; border-color: #007FD4; }
-QFrame#welcomeAction:hover QLabel { background: transparent; color: #FFFFFF; }
+QFrame#welcomeAction:hover QLabel { background: transparent; color: @interaction_text@; }
 QLabel#welcomeTitle { color: #CCCCCC; font-size: 24px; font-weight: 300; }
 QLabel#welcomeShortcut {
     color: #9D9D9D;
@@ -1333,78 +1340,97 @@ QToolButton#gitAction:hover { background: @glass_hover@; }
 QToolButton#gitAction:pressed, QToolButton#gitAction:open { border-color: @glass_focus@; }
 QToolButton#gitAction::menu-indicator { image: none; width: 0; }
 
-/* Analysis navigation fills the sidebar and wraps on narrow widths. */
-QWidget#analysisNavigation { background: transparent; }
-QToolButton#analysisPageButton {
-    min-width: 0;
-    min-height: 28px;
-    padding: 2px 7px;
-    margin: 0;
-    font-size: 11px;
-    font-weight: 400;
-    border: 1px solid transparent;
+/* Project analysis is one scrollable surface. */
+QFrame#analysisSection {
+    background: @glass_surface@;
+    border: 1px solid @glass_border@;
     border-radius: 8px;
-    color: @glass_text@;
+}
+QWidget#projectIntelligence QWidget#analysisSectionContent {
     background: transparent;
 }
-QToolButton#analysisPageButton:hover { background: @glass_hover@; }
-QToolButton#analysisPageButton:checked {
+QWidget#projectIntelligence QTreeWidget {
     background: @glass_surface@;
+    alternate-background-color: @glass_hover@;
+}
+QWidget#projectIntelligence QHeaderView::section {
+    background: @glass_hover@;
+    color: @glass_text@;
     border-color: @glass_border@;
 }
-QToolButton#analysisPageButton:focus { border-color: @glass_focus@; }
+QLabel#analysisSectionTitle {
+    color: @glass_text@;
+    font-weight: 600;
+}
+QFrame#analysisMetric {
+    background: @glass_hover@;
+    border-radius: 5px;
+}
 
-/* Project analysis chooser: plain-language presets and explicit checks. */
-QDialog#analysisChooser, QDialog#analysisChooser QWidget {
+/* Analyzer profiles share one panel with flat, separated groups of checks. */
+QWidget#analysisChooser, QWidget#analysisChooser QWidget {
     font-size: 13px;
 }
-QDialog#analysisChooser QLabel#analysisChooserTitle {
+QWidget#analysisChooser QLabel#analysisChooserTitle {
     font-size: 23px;
     font-weight: 600;
     color: @glass_text@;
 }
-QDialog#analysisChooser QLabel#analysisChooserHint {
+QWidget#analysisChooser QLabel#analysisChooserHint {
     font-size: 12px;
     color: #A8A8A8;
     background: transparent;
 }
-QDialog#analysisChooser QLabel#analysisChooserSection {
-    font-size: 11px;
-    font-weight: 500;
-    color: #A8A8A8;
-    padding: 3px 0;
+QWidget#analysisChooser QLabel#analysisChooserSection {
+    font-size: 13px;
+    font-weight: 600;
+    color: @glass_text@;
+    background: transparent;
 }
-QDialog#analysisChooser QLabel#analysisChecksTitle {
-    font-size: 15px;
+QWidget#analysisChooser QLabel#analysisChecksTitle {
+    font-size: 13px;
     font-weight: 600;
     color: @glass_text@;
 }
-QDialog#analysisChooser QFrame#analysisChecksPanel {
+QWidget#analysisChooser QFrame#analysisChecksPanel {
     border: 1px solid @glass_border@;
-    border-radius: 12px;
+    border-radius: 8px;
     background: @glass_surface@;
 }
-QDialog#analysisChooser QFrame#analysisChoiceCard {
-    border: 1px solid transparent;
-    border-radius: 9px;
-    background: transparent;
+QWidget#analysisChooser QFrame#analysisGroupDivider {
+    border: none;
+    background: @glass_border@;
 }
-QDialog#analysisChooser QFrame#analysisChoiceCard[selected="true"] {
-    border-color: @glass_border@;
-    background: @glass_surface@;
-}
-QDialog#analysisChooser QScrollArea, QDialog#analysisChooser QScrollArea QWidget {
+QWidget#analysisChooser QScrollArea,
+QWidget#analysisProfilePage,
+QWidget#analysisProfileContent,
+QWidget#analysisProfileGroup {
     background: transparent;
     border: none;
 }
-QDialog#analysisChooser QRadioButton, QDialog#analysisChooser QCheckBox {
+QWidget#analysisChooser QComboBox#analysisProfilePicker {
+    background: @glass_hover@;
+    border: 1px solid @glass_border@;
+    border-radius: 6px;
+}
+QWidget#analysisChooser QComboBox#analysisProfilePicker:focus {
+    border-color: @glass_focus@;
+}
+QWidget#analysisChooser QComboBox#analysisProfilePicker QAbstractItemView {
+    background: @glass_surface@;
+    color: @glass_text@;
+    border: 1px solid @glass_border@;
+    selection-background-color: @glass_hover@;
+    selection-color: @glass_text@;
+}
+QWidget#analysisChooser QCheckBox {
     color: @glass_text@;
     background: transparent;
     font-weight: 500;
     spacing: 7px;
     padding: 2px 0;
 }
-QDialog#analysisChooser QPushButton {
+QWidget#analysisChooser QPushButton {
     min-height: 32px;
     padding: 2px 16px;
 }
@@ -1414,7 +1440,7 @@ QWidget#aiTranscript,
 QWidget#aiColumnHost,
 QWidget#aiChatColumn,
 QWidget#aiComposerWrap {
-    background: #181818;
+    background: @ai_panel_background@;
 }
 QPlainTextEdit#aiInput {
     color: @glass_text@;
@@ -1426,17 +1452,14 @@ QToolButton#aiModelButton {
     padding-right: 8px;
 }
 
-QDialog#analysisChooser QRadioButton::indicator:unchecked,
-QDialog#analysisChooser QCheckBox::indicator:unchecked {
+QWidget#analysisChooser QCheckBox::indicator:unchecked {
     width: 12px;
     height: 12px;
     border: 1px solid @glass_border@;
     background: transparent;
 }
-QDialog#analysisChooser QRadioButton::indicator:unchecked { border-radius: 7px; }
-QDialog#analysisChooser QCheckBox::indicator:unchecked { border-radius: 3px; }
-QDialog#analysisChooser QRadioButton:focus,
-QDialog#analysisChooser QCheckBox:focus { color: @glass_focus@; }
+QWidget#analysisChooser QCheckBox::indicator:unchecked { border-radius: 3px; }
+QWidget#analysisChooser QCheckBox:focus { color: @glass_focus@; }
 
 /* ---- Update / Explorer integration dialogs ------------------------------- */
 QDialog#updateDialog, QDialog#shellIntegrationDialog {
@@ -1763,8 +1786,8 @@ QLabel#omniSearchShortcut {
 }
 QToolButton#topAgentToggle {
     color: @glass_text@;
-    background: @glass_surface@;
-    border: 1px solid @soft_border@;
+    background: transparent;
+    border: 1px solid transparent;
     border-radius: 7px;
     min-height: 28px;
     padding: 0 8px;
@@ -1786,7 +1809,6 @@ QFrame#workbenchSeparator { background: @glass_border@; border: none; }
 QFrame#activityBar { border-right: 1px solid @soft_border@; }
 QFrame#explorerHeader { border-bottom: 1px solid @soft_border@; }
 QWidget#agentWorkspace { background: #181818; }
-QSplitter#agentWorkspaceSplit::handle:horizontal { width: 4px; }
 QSplitter#agentWorkspaceSplit::handle { background: @soft_border@; }
 QSplitter#agentWorkspaceSplit::handle:hover { background: @glass_focus@; }
 QTabBar#editorTabs::tab {
@@ -1801,7 +1823,7 @@ QTabBar#editorTabs::tab {
 QTabBar#editorTabs::tab:selected {
     background: #1E1E1E;
     border-color: @soft_border@;
-    border-bottom-color: #1E1E1E;
+    border-bottom-color: @tab_indicator@;
 }
 QFrame#aiHeader {
     background: @glass_surface@;
@@ -1884,6 +1906,7 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
     border-radius: 7px;
     padding: 4px 8px;
     selection-background-color: #264F78;
+    selection-color: @interaction_text@;
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
     border-color: @glass_focus@;

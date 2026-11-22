@@ -91,8 +91,8 @@ class UIManager:
         self.main_window.intelligence_panel.analysis_failed.connect(self.main_window.on_project_analysis_failed)
         self.main_window.intelligence_panel.open_graph_editor_requested.connect(self.main_window.open_graph_editor)
         self.main_window.intelligence_panel.open_defense_guide_requested.connect(self.main_window.open_defense_guide)
+        self.main_window.intelligence_panel.open_analyzers_requested.connect(self.main_window.show_project_analyzers)
         self.main_window.intelligence_panel.hide()
-        side_layout.addWidget(self.main_window.intelligence_panel)
 
         from widgets.DatabaseWorkspace import DatabaseManager
         self.main_window.database_manager = DatabaseManager(self.main_window)

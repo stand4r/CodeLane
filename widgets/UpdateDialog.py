@@ -1,6 +1,7 @@
 """Update dialog: check GitHub releases, download, install or git-pull.
 
-The network work runs on ``QThread`` objects; the dialog only renders state.
+The network work runs on the shared Python pool (``services.background``); the
+dialog only renders state.
 Two paths are supported (see :mod:`services.updater`):
 
 * source checkout → ``git pull --ff-only`` then restart;
@@ -16,54 +17,33 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from core.app_version import current_version
 from services import updater
+from services.background import run_async
 
 __all__ = ["UpdateDialog"]
 
 
-class _CheckThread(QtCore.QThread):
-    done = QtCore.pyqtSignal(object, bool)
-    failed = QtCore.pyqtSignal(str)
+class _DownloadProgressBridge(QtCore.QObject):
+    """Relays download progress from the worker thread to the GUI thread."""
 
-    def run(self):
-        try:
-            release, newer = updater.check_for_update(current_version())
-        except Exception as exc:  # noqa: BLE001 - shown to the user
-            self.failed.emit(str(exc))
-            return
-        self.done.emit(release, newer)
-
-
-class _DownloadThread(QtCore.QThread):
     progress = QtCore.pyqtSignal(int, int)
-    done = QtCore.pyqtSignal(str)
-    failed = QtCore.pyqtSignal(str)
-
-    def __init__(self, asset: updater.ReleaseAsset, parent=None):
-        super().__init__(parent)
-        self._asset = asset
-
-    def run(self):
-        try:
-            path = updater.download_asset(
-                self._asset,
-                progress=lambda done, total: self.progress.emit(int(done), int(total)))
-        except Exception as exc:  # noqa: BLE001 - shown to the user
-            self.failed.emit(str(exc))
-            return
-        self.done.emit(str(path))
 
 
-class _GitThread(QtCore.QThread):
-    done = QtCore.pyqtSignal(str)
-    failed = QtCore.pyqtSignal(str)
+def check_latest_release():
+    """Query GitHub for the latest release (runs on the shared Python pool)."""
+    return updater.check_for_update(current_version())
 
-    def run(self):
-        try:
-            output = updater.git_update()
-        except Exception as exc:  # noqa: BLE001 - shown to the user
-            self.failed.emit(str(exc))
-            return
-        self.done.emit(output)
+
+def download_release_asset(asset, report):
+    """Download and verify an installer asset; *report* gets (done, total)."""
+    path = updater.download_asset(
+        asset,
+        progress=lambda done, total: report(int(done), int(total)))
+    return str(path)
+
+
+def run_git_update():
+    """``git pull --ff-only`` for a source checkout (runs on the pool)."""
+    return updater.git_update()
 
 
 class UpdateDialog(QtWidgets.QDialog):
@@ -201,13 +181,12 @@ class UpdateDialog(QtWidgets.QDialog):
         self.action_btn.setEnabled(False)
         self._set_busy(True)
         self.notes.setPlainText("")
-        thread = _CheckThread(self)
-        thread.done.connect(
-            lambda release, newer, t=token: self._on_checked(release, newer, t))
-        thread.failed.connect(lambda message, t=token: self._on_check_failed(message, t))
-        thread.finished.connect(thread.deleteLater)
-        self._threads.append(thread)
-        thread.start()
+        job = run_async(
+            check_latest_release,
+            parent=self,
+            on_done=lambda payload, t=token: self._on_checked(payload[0], payload[1], t),
+            on_error=lambda message, t=token: self._on_check_failed(message, t))
+        self._threads.append(job)
 
     @QtCore.pyqtSlot(object, bool)
     def _on_checked(self, release, newer: bool, token: Optional[int] = None):
@@ -303,12 +282,11 @@ class UpdateDialog(QtWidgets.QDialog):
         self._set_busy(True)
         self._status("Обновляю проект из git…")
         self.progress.setVisible(False)
-        thread = _GitThread(self)
-        thread.done.connect(self._on_git_done)
-        thread.failed.connect(self._on_git_failed)
-        thread.finished.connect(thread.deleteLater)
-        self._threads.append(thread)
-        thread.start()
+        job = run_async(run_git_update,
+                        parent=self,
+                        on_done=self._on_git_done,
+                        on_error=self._on_git_failed)
+        self._threads.append(job)
 
     @QtCore.pyqtSlot(str)
     def _on_git_done(self, output: str):
@@ -345,13 +323,14 @@ class UpdateDialog(QtWidgets.QDialog):
         self.progress.setValue(0)
         self.progress.setVisible(True)
         self._status(f"Скачиваю {asset.name}…")
-        thread = _DownloadThread(asset, self)
-        thread.progress.connect(self._on_progress)
-        thread.done.connect(self._on_downloaded)
-        thread.failed.connect(self._on_download_failed)
-        thread.finished.connect(thread.deleteLater)
-        self._threads.append(thread)
-        thread.start()
+        bridge = _DownloadProgressBridge(self)
+        bridge.progress.connect(self._on_progress, QtCore.Qt.ConnectionType.QueuedConnection)
+        job = run_async(
+            lambda: download_release_asset(asset, bridge.progress.emit),
+            parent=self,
+            on_done=self._on_downloaded,
+            on_error=self._on_download_failed)
+        self._threads.append(job)
 
     @QtCore.pyqtSlot(int, int)
     def _on_progress(self, done: int, total: int):

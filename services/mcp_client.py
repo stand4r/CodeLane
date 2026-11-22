@@ -182,6 +182,7 @@ class MCPClient:
         self._buffer: List[str] = []
         self._stderr: List[str] = []
         self.tools: List[MCPTool] = []
+        self._tools_changed = threading.Event()
         self.server_info: Dict[str, Any] = {}
         self.capabilities: Dict[str, Any] = {}
         self.initialized = False
@@ -251,6 +252,8 @@ class MCPClient:
                 self._reply(message["id"], {})
             else:
                 self._reply_error(message["id"], -32601, "Method not supported")
+        elif message.get("method") == "notifications/tools/list_changed":
+            self._tools_changed.set()
 
     def _reply(self, message_id, result):
         try:
@@ -296,31 +299,21 @@ class MCPClient:
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
-                ctype = resp.headers.get("Content-Type", "")
                 session_id = resp.headers.get("Mcp-Session-Id")
                 negotiated_version = resp.headers.get("MCP-Protocol-Version")
                 if session_id:
                     self._session_id = session_id
                 if negotiated_version:
                     self._protocol_version = negotiated_version
+                if "text/event-stream" in resp.headers.get("Content-Type", "").lower():
+                    return self._read_http_events(resp, payload.get("id"))
+                raw = resp.read().decode("utf-8", errors="replace")
+        except MCPError:
+            raise
         except urllib.error.HTTPError as exc:
             raise MCPError(f"MCP «{self.config.label}»: HTTP {exc.code}") from None
         except Exception as exc:  # noqa: BLE001
             raise MCPError(f"MCP «{self.config.label}»: нет соединения — {exc}") from None
-        if "text/event-stream" in ctype:
-            for line in raw.splitlines():
-                line = line.strip()
-                if line.startswith("data:"):
-                    try:
-                        message = json.loads(line[5:].strip())
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(message, dict) and message.get("id") == payload.get("id"):
-                        return message
-            if payload.get("id") is None:
-                return {}
-            raise MCPError(f"MCP «{self.config.label}»: в SSE-ответе нет ответа для запроса.")
         if not raw.strip():
             if payload.get("id") is None:
                 return {}
@@ -329,6 +322,27 @@ class MCPClient:
             return json.loads(raw)
         except json.JSONDecodeError:
             raise MCPError(f"MCP «{self.config.label}»: ответ не является JSON.") from None
+
+    def _read_http_events(self, response, message_id):
+        if message_id is None:
+            return {}
+        data = []
+        for raw_line in response:
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if line.startswith("data:"):
+                data.append(line[5:].removeprefix(" "))
+            elif not line and data:
+                try:
+                    message = json.loads("\n".join(data))
+                except json.JSONDecodeError:
+                    message = None
+                data.clear()
+                if isinstance(message, dict):
+                    if message.get("id") == message_id:
+                        return message
+                    if "id" not in message and "method" in message:
+                        self._dispatch(message)
+        raise MCPError(f"MCP «{self.config.label}»: в SSE-ответе нет ответа для запроса.")
 
     # ------------------------------------------------------------------
     # JSON-RPC core
@@ -400,6 +414,19 @@ class MCPClient:
         else:
             self._post_http({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
         self.tools = self.list_tools() if "tools" in self.capabilities else []
+        return self.tools
+
+    def refresh_tools(self):
+        """Refresh a cached catalogue once the server reports a change."""
+        if self._proc is not None and self._proc.poll() is not None:
+            raise MCPError(f"MCP «{self.config.label}»: процесс завершился.")
+        if self._tools_changed.is_set() and "tools" in self.capabilities:
+            self._tools_changed.clear()
+            try:
+                self.tools = self.list_tools()
+            except MCPError:
+                self._tools_changed.set()
+                raise
         return self.tools
 
     def list_resources(self, cursor="", *, templates=False, offset=0):
@@ -474,6 +501,8 @@ class MCPClient:
                 elif item.get("type") == "resource":
                     resource = item.get("resource") or {}
                     chunks.append(str(resource.get("text") or resource.get("uri") or ""))
+                elif item.get("type") in {"image", "audio"}:
+                    chunks.append(f"Двоичный результат MCP: {item.get('mimeType') or item['type']}.")
                 else:
                     chunks.append(json.dumps(item, ensure_ascii=False)[:2000])
             else:
@@ -484,7 +513,7 @@ class MCPClient:
         if structured is not None:
             try:
                 chunks.append("Структурированный результат:\n" +
-                              json.dumps(structured, ensure_ascii=False, indent=2))
+                              json.dumps(structured, ensure_ascii=False, separators=(",", ":")))
             except (TypeError, ValueError):
                 chunks.append("Структурированный результат: " + str(structured))
         combined = "\n".join(c for c in chunks if c).strip() or "Готово."

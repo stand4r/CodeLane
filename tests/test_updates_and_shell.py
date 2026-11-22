@@ -176,8 +176,8 @@ def test_open_external_target_opens_files_and_folders():
         def __init__(self):
             self.calls = []
 
-        def on_project_opened(self, config, choose_analyzers=True):
-            self.calls.append((config, choose_analyzers))
+        def on_project_opened(self, config):
+            self.calls.append(config)
 
     class Window:
         pass
@@ -192,10 +192,9 @@ def test_open_external_target_opens_files_and_folders():
         assert open_external_target(window, str(file)) == "file"
         assert window.file_manager.opened == [str(file)]
         assert open_external_target(window, str(root)) == "folder"
-        config, choose = window.project_handler.calls[0]
+        config = window.project_handler.calls[0]
         assert config.root_path == str(root)
         assert config.name == root.name
-        assert choose is False, "folder open must not show the analyzer dialog"
         assert open_external_target(window, str(root / "missing.txt")) == "missing"
 
 

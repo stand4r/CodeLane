@@ -9,6 +9,7 @@ from utils.settings_manager import DEFAULT_SETTINGS
 from design.themes import THEMES, THEME_NAMES
 from services.ai_providers import get_provider, provider_choices
 from services.ai_service import REASONING_HINTS, REASONING_LABELS, TEACH_STRICTNESS_HINTS
+from services.background import run_async
 
 DEFAULTS = DEFAULT_SETTINGS
 
@@ -22,39 +23,36 @@ MCP_EXAMPLE = (
 )
 
 
-class _MCPCheckWorker(QtCore.QThread):
-    """Check MCP connections without blocking the settings interface."""
+class _MCPProgressBridge(QtCore.QObject):
+    """Relays per-server progress lines from the worker thread to the GUI."""
 
     progress = QtCore.pyqtSignal(str)
-    completed = QtCore.pyqtSignal(list)
 
-    def __init__(self, servers):
-        super().__init__()
-        self.servers = list(servers)
 
-    def run(self):
-        from services.mcp_client import MCPClient
+def check_mcp_servers(servers, report):
+    """Probe MCP servers (runs on the shared Python pool, never on a Qt thread)."""
+    from services.mcp_client import MCPClient
 
-        lines = []
-        for config in self.servers:
-            if not config.enabled:
-                lines.append(f"– {config.label}: отключён")
-                continue
-            self.progress.emit(f"Проверяется {config.label}…")
-            client = MCPClient(config, timeout=8)
-            try:
-                tools = client.connect()
-                names = ", ".join(tool.name for tool in tools[:6])
-                suffix = f" · {names}" if names else ""
-                if len(tools) > 6:
-                    suffix += f" · +{len(tools) - 6}"
-                server = client.server_info.get("name") or config.label
-                lines.append(f"✓ {server}: {len(tools)} инструментов{suffix}")
-            except Exception as exc:  # noqa: BLE001 - show per-server failures
-                lines.append(f"✗ {config.label}: {exc}")
-            finally:
-                client.close()
-        self.completed.emit(lines)
+    lines = []
+    for config in servers:
+        if not config.enabled:
+            lines.append(f"– {config.label}: отключён")
+            continue
+        report(f"Проверяется {config.label}…")
+        client = MCPClient(config, timeout=8)
+        try:
+            tools = client.connect()
+            names = ", ".join(tool.name for tool in tools[:6])
+            suffix = f" · {names}" if names else ""
+            if len(tools) > 6:
+                suffix += f" · +{len(tools) - 6}"
+            server = client.server_info.get("name") or config.label
+            lines.append(f"✓ {server}: {len(tools)} инструментов{suffix}")
+        except Exception as exc:  # noqa: BLE001 - show per-server failures
+            lines.append(f"✗ {config.label}: {exc}")
+        finally:
+            client.close()
+    return lines
 
 class SettingsWidget(QtWidgets.QWidget):
     """Full CodeLane workbench settings editor.
@@ -864,6 +862,16 @@ class SettingsWidget(QtWidgets.QWidget):
         self.controls['ai_max_tokens'] = tokens
         form.addRow('Лимит токенов ответа', tokens)
 
+        rounds = QtWidgets.QSpinBox()
+        rounds.setRange(1, 200)
+        try:
+            rounds.setValue(int(self._value('ai_agent_round_budget') or 64))
+        except (TypeError, ValueError):
+            rounds.setValue(64)
+        rounds.setToolTip("Общий лимит раундов руководителя и субагентов для одной задачи.")
+        self.controls['ai_agent_round_budget'] = rounds
+        form.addRow("Бюджет раундов команды", rounds)
+
         reasoning = QtWidgets.QComboBox()
         for key in ("auto", "none", "low", "medium", "high"):
             reasoning.addItem(f"{REASONING_LABELS[key]} — {REASONING_HINTS[key]}", key)
@@ -1053,9 +1061,9 @@ class SettingsWidget(QtWidgets.QWidget):
         return page
 
     def _test_mcp(self):
-        """Connect to configured MCP servers in a background thread."""
+        """Connect to configured MCP servers on the shared Python pool."""
         from services.mcp_client import parse_servers
-        if self._mcp_test_worker is not None and self._mcp_test_worker.isRunning():
+        if self._mcp_test_worker is not None:
             return
         try:
             servers = parse_servers(self.mcp_edit.toPlainText())
@@ -1066,21 +1074,33 @@ class SettingsWidget(QtWidgets.QWidget):
             self.mcp_status_label.setText('Список MCP-серверов пуст.')
             return
         self._mcp_test_button.setEnabled(False)
-        self._mcp_test_worker = _MCPCheckWorker(servers)
-        worker = self._mcp_test_worker
-        worker.progress.connect(self.mcp_status_label.setText)
-        worker.completed.connect(self._show_mcp_test_results)
-        worker.finished.connect(lambda w=worker: self._mcp_test_finished(w))
-        worker.start()
+        bridge = _MCPProgressBridge(self)
+        bridge.progress.connect(self.mcp_status_label.setText)
+        job = run_async(
+            lambda: check_mcp_servers(servers, bridge.progress.emit),
+            parent=self,
+            on_done=self._mcp_test_done,
+            on_error=self._mcp_test_failed)
+        self._mcp_test_worker = job
+
+    def _mcp_test_done(self, lines):
+        try:
+            self._show_mcp_test_results(lines)
+        finally:
+            self._mcp_test_finished()
+
+    def _mcp_test_failed(self, message):
+        try:
+            self.mcp_status_label.setText(f'✗ {message}')
+        finally:
+            self._mcp_test_finished()
 
     def _show_mcp_test_results(self, lines):
         self.mcp_status_label.setText('\n'.join(lines) or 'Нет активных MCP-серверов.')
 
-    def _mcp_test_finished(self, worker):
-        if self._mcp_test_worker is worker:
-            self._mcp_test_worker = None
+    def _mcp_test_finished(self):
+        self._mcp_test_worker = None
         self._mcp_test_button.setEnabled(True)
-        worker.deleteLater()
 
     def _open_provider_keys_page(self):
         """Open the active provider's API-key page."""
@@ -1125,6 +1145,7 @@ class SettingsWidget(QtWidgets.QWidget):
                                     or 'normal'),
             'ai_temperature': temperature,
             'ai_max_tokens': int(self.controls['ai_max_tokens'].value()),
+            'ai_agent_round_budget': int(self.controls['ai_agent_round_budget'].value()),
             'ai_reasoning_effort': str(self.controls['ai_reasoning_effort'].currentData()
                                        or 'auto'),
             'ai_system_prompt': text('ai_system_prompt'),

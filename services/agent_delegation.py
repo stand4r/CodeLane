@@ -10,7 +10,7 @@ ROLES = {
     "review": ("Ревью", {"search_in_project", "read_file", "git_read", "analysis_details", "lsp_query"}),
     "docs": ("Документация", {"list_directory", "search_in_project", "read_file", "lsp_query"}),
     "design": ("Дизайнер", {"list_directory", "search_in_project", "read_file"}),
-    "test": ("Тестировщик", {"list_directory", "search_in_project", "read_file", "analysis_details"}),
+    "test": ("Тестировщик", {"list_directory", "search_in_project", "read_file", "analysis_details", "test_results"}),
     "requirements": ("Постановка задачи", {"list_directory", "search_in_project", "read_file"}),
 }
 
@@ -30,7 +30,7 @@ DELEGATE_TOOL = {
 
 
 def delegate(service, toolbox, definitions, args, should_stop, on_usage=None, *, collect_edits=False, trace=None,
-             assign_children=None, dependency_context="", tool_runner=None):
+             assign_children=None, dependency_context="", tool_runner=None, round_budget=None):
     from services.agent_edits import EDIT_SCHEMA, validate_fragment
     from services.ide_mcp import IDEMCP
 
@@ -94,7 +94,8 @@ def delegate(service, toolbox, definitions, args, should_stop, on_usage=None, *,
            if assign_children else "")
         + f"\n\nПодзадача: {task}" + dependency_context,
         tools=tools, tool_runner=traced_tool, should_stop=should_stop,
-        **({"unlimited_rounds": True} if assign_children else {"max_rounds": 32}),
+        max_rounds=32,
+        **({"round_budget": round_budget} if round_budget is not None else {}),
     )
     if on_usage is not None:
         on_usage(getattr(child, "last_usage", {}))

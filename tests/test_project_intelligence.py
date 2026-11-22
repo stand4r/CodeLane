@@ -51,6 +51,57 @@ def test_python_structure_analysis(tmp_path: Path):
     assert any(symbol.name == "run" for symbol in result.symbols)
 
 
+def test_source_cache_survives_restart_and_checks_content(tmp_path, monkeypatch):
+    import os
+
+    from core.analyzers.polyglot import PolyglotSourceAnalyzer
+
+    source = tmp_path / "main.py"
+    source.write_bytes(b"def first():\n    pass\n")
+    calls = []
+    original = PolyglotSourceAnalyzer.analyze
+
+    def count(self, path, text):
+        calls.append(path)
+        return original(self, path, text)
+
+    monkeypatch.setattr(PolyglotSourceAnalyzer, "analyze", count)
+    first = ProjectIntelligenceEngine(str(tmp_path)).analyze()
+    restarted = ProjectIntelligenceEngine(str(tmp_path))
+    reused = restarted.analyze()
+    assert reused.files == first.files
+    assert reused.structure_nodes == first.structure_nodes
+    assert calls == [source]
+
+    timestamp = source.stat()
+    source.write_bytes(b"def other():\n    pass\n")
+    os.utime(source, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
+    assert any(symbol.name == "other" for symbol in restarted.analyze().symbols)
+    assert calls == [source, source]
+
+    cache_entry, = (tmp_path / ".codelane" / "analysis-cache" / "source").glob("*.json")
+    cache_entry.write_text("{broken", encoding="utf-8")
+    assert any(symbol.name == "other" for symbol in ProjectIntelligenceEngine(str(tmp_path)).analyze().symbols)
+    assert calls == [source, source, source]
+
+
+def test_binary_cache_survives_restart(tmp_path, monkeypatch):
+    from core.analyzers.binary import BinaryAnalyzer
+
+    target = tmp_path / "sample.exe"
+    target.write_bytes(b"MZ")
+    first = ProjectIntelligenceEngine(str(tmp_path), {"binaries"}).analyze()
+    assert str(target) in first.binaries
+
+    def unexpected(*args):
+        raise AssertionError("Unchanged binary was analyzed again")
+
+    monkeypatch.setattr(BinaryAnalyzer, "analyze", unexpected)
+    second = ProjectIntelligenceEngine(str(tmp_path), {"binaries"}).analyze()
+    assert second.binaries == first.binaries
+    assert second.structure_nodes == first.structure_nodes
+
+
 def test_metrics_match_radon_and_reuse_unchanged_files(tmp_path, monkeypatch):
     from radon.metrics import mi_visit
     from radon.complexity import cc_visit
@@ -70,6 +121,7 @@ def test_metrics_match_radon_and_reuse_unchanged_files(tmp_path, monkeypatch):
         return original(text)
     monkeypatch.setattr(raw, 'analyze', count)
     assert engine.analyze().files[str(source)].metrics == first
+    assert ProjectIntelligenceEngine(str(tmp_path), {'metrics'}).analyze().files[str(source)].metrics == first
     assert calls == []
     source.write_text(text + '\n# changed\n', encoding='utf-8')
     engine.analyze()
@@ -90,7 +142,7 @@ def test_security_cache_rechecks_edits_and_removes_deleted_findings(tmp_path, mo
     monkeypatch.setattr(BanditManager, 'discover_files', discover)
     engine = ProjectIntelligenceEngine(str(tmp_path), {'security'})
     first = engine.analyze()
-    second = engine.analyze()
+    second = ProjectIntelligenceEngine(str(tmp_path), {'security'}).analyze()
     assert first.issues == second.issues
     assert any(i.code == 'B101' for i in second.issues)
     assert len(calls) == 1

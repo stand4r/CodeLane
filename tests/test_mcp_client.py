@@ -5,6 +5,49 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from services.mcp_client import MCPClient, MCPError, MCPServerConfig, MCPTool, parse_servers, run_tool
 
 
+def test_http_sse_returns_matching_event_before_socket_closes():
+    release = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            prefix = '{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}'
+            self.wfile.write((f"data: {prefix}\n\n"
+                              f'data: {{"jsonrpc":"2.0","id":{request["id"]},\n'
+                              'data: "result":{"tools":[]}}\n\n').encode())
+            self.wfile.flush()
+            release.wait(3)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = MCPClient(MCPServerConfig(name="events", transport="http",
+                           url=f"http://127.0.0.1:{server.server_port}/mcp"), timeout=1)
+        assert client.request("tools/list") == {"tools": []}
+        assert client._tools_changed.is_set()
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_cached_tools_refresh_only_after_notification(monkeypatch):
+    client = MCPClient(MCPServerConfig(name="docs"))
+    client.capabilities = {"tools": {}}
+    calls = []
+    monkeypatch.setattr(client, "list_tools", lambda: calls.append("list") or [MCPTool("docs", "lookup")])
+    assert client.refresh_tools() == []
+    client._dispatch({"method": "notifications/tools/list_changed"})
+    assert [tool.name for tool in client.refresh_tools()] == ["lookup"]
+    client.refresh_tools()
+    assert calls == ["list"]
+
+
 def test_tool_discovery_stops_on_a_repeated_cursor(monkeypatch):
     client = MCPClient(MCPServerConfig(name="docs"))
     calls = []
