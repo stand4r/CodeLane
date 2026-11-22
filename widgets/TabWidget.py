@@ -78,6 +78,7 @@ class TabWidget(QtWidgets.QTabWidget):
         self.setTabsClosable(True)
         self.setAcceptDrops(True)
         self.setTabBar(EditorTabBar(self))
+        self.tabBar().setObjectName("editorTabs")
         self.setObjectName("editorGroup")
 
         self.tabBar().installEventFilter(self)

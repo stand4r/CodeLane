@@ -144,9 +144,25 @@ def test_table_cells_use_plain_code_and_header_background():
         "| Баг | Было → стало |\n| :--- | :--- |\n"
         "| `ARCHITECTURE_MULTIPLIERS` мёртвая | добавлены Zen 4 |")
     assert SENTINEL_BG not in html_text, "no chip sentinel inside table cells"
-    assert "background:#202024" in html_text, "header row needs a quiet background"
+    assert "background:#" in html_text, "header row needs a themed background"
     assert 'valign="top"' in html_text
     assert "padding:10px 12px" in html_text
+
+
+def test_code_markup_is_literal_and_supports_long_fences():
+    blocks = split_markdown_blocks(
+        "Символы `**value** <tag>` остаются кодом.\n\n"
+        "````markdown\n```python\nprint(1)\n```\n````"
+    )
+    assert "**value** &lt;tag&gt;" in blocks[0][1]
+    assert blocks[1] == ("code", ("markdown", "```python\nprint(1)\n```"))
+
+
+def test_nested_lists_and_inline_code_inside_bold():
+    markup = markdown_to_html("1. **Проверить `settings.json`**\n   - [x] Прочитан\n2. Продолжить")
+    assert markup.count("<li>") == 3
+    assert "☑ Прочитан" in markup
+    assert "<b>Проверить <code" in markup and "</code></b>" in markup
 
 
 def test_long_url_wraps_instead_of_overflowing():

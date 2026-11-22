@@ -51,8 +51,9 @@ __all__ = [
 ]
 
 DEFAULT_TIMEOUT = 180
-# Context is no longer cut: the provider receives the whole file/context block.
-MAX_CONTEXT_CHARS = None
+# Character budgets for automatically attached context and prior turns.
+MAX_CONTEXT_CHARS = 48_000
+MAX_HISTORY_CHARS = 32_000
 # Kept for backwards compatibility with older callers; the agent harness runs
 # the tool loop itself and has no practical round limit.
 MAX_TOOL_ROUNDS = None
@@ -708,10 +709,11 @@ class AIService:
         prompt += (
             "\n\nДля работы с файлами CodeLane используй open_file, read_file, "
             "edit_file и write_file. Эти инструменты связаны с QCodeEditor и его "
-            "несохранёнными буферами. Для определения активной вкладки используй "
+            "несохранёнными буферами. Для больших файлов сначала найди нужные строки "
+            "и читай их через offset и limit. Для определения активной вкладки используй "
             "editor_state. Открывай файл через open_file перед правкой. "
             "Для актуального состояния браузера, проводника и анализа вызывай workspace_state. "
-            "Повторяй получение состояния во время работы, поскольку пользователь может менять вкладки. "
+            "Обновляй состояние только при смене вкладки или когда от него зависит следующее действие. "
             "Браузером управляй через browser_navigate, анализ обновляй через analysis_refresh. "
             "Изменения файлов выполняй через edit_file или write_file. "
             "Терминал используй для сборки, запуска и диагностики. "
@@ -722,10 +724,43 @@ class AIService:
     def build_messages(self, user_prompt: str, history: Optional[List[AIMessage]] = None,
                        context: Optional[str] = None) -> List[Dict[str, str]]:
         messages: List[Dict[str, str]] = [{"role": "system", "content": self.build_system_prompt()}]
-        for item in history or []:
+        history = history or []
+        start = len(history)
+        remaining = MAX_HISTORY_CHARS
+        for index in range(len(history) - 1, -1, -1):
+            item = history[index]
+            remaining -= len(item.content) + 16
+            if remaining < 0:
+                break
+            if item.role == "user":
+                start = index
+        if start == len(history) and history:
+            # A long recent answer can still be the subject of a follow-up.
+            # Preserve its opening and conclusion along with the preceding question.
+            latest_turn = history[next(
+                (i for i in range(len(history) - 1, -1, -1) if history[i].role == "user"),
+                len(history),
+            ):]
+            if latest_turn:
+                excerpt = (MAX_HISTORY_CHARS - 16 * len(latest_turn)) // len(latest_turn)
+                if excerpt >= 100:
+                    for item in latest_turn:
+                        content = item.content
+                        if len(content) > excerpt:
+                            half = excerpt // 2
+                            content = content[:half] + "\n… [Сокращена история]\n" + content[-half:]
+                        messages.append({"role": item.role, "content": content})
+        for item in history[start:]:
             messages.append(item.as_dict())
         prompt = user_prompt
         if context:
+            if len(context) > MAX_CONTEXT_CHARS:
+                half = MAX_CONTEXT_CHARS // 2
+                context = (
+                    context[:half] + "\n… [Пропущена середина вложенного контекста. "
+                    "При необходимости уточни нужный фрагмент через доступные инструменты.]\n"
+                    + context[-half:]
+                )
             prompt = f"{user_prompt}\n\n{context}"
         messages.append({"role": "user", "content": prompt})
         return messages
@@ -844,8 +879,8 @@ class AIService:
         """Run a chat turn through the agent harness.
 
         The harness owns the tool loop: it keeps calling tools until the model
-        produces its final answer (no low round limit), passes full tool
-        results back, retries transient provider errors and detects repeated
+        produces its final answer, retains recent tool results,
+        retries transient provider errors and detects repeated
         identical calls. ``tool_runner(name, args)`` executes one tool.
         """
         problem = self.configuration_problem()
@@ -932,7 +967,10 @@ class AIService:
 
     def _stream_until_complete(self, messages: List[Dict[str, Any]],
                                on_text: Optional[Callable[[str], None]] = None,
-                               on_reasoning: Optional[Callable[[str], None]] = None) -> str:
+                               on_reasoning: Optional[Callable[[str], None]] = None,
+                               *,
+                               on_usage: Optional[Callable[[Dict[str, Any]], None]] = None,
+                               should_stop: Optional[Callable[[], bool]] = None) -> str:
         """Stream one answer, automatically continuing it if the model truncates.
 
         Providers stop with ``finish_reason == "length"`` when the output budget
@@ -943,10 +981,16 @@ class AIService:
         collected: List[str] = []
         working = list(messages)
         for attempt in range(MAX_CONTINUATIONS + 1):
+            if should_stop and should_stop():
+                break
             for piece in self._stream_with(working, on_reasoning=on_reasoning):
+                if should_stop and should_stop():
+                    return "".join(collected)
                 collected.append(piece)
                 if on_text:
                     on_text(piece)
+            if on_usage:
+                on_usage(self.last_usage)
             if not self.truncated:
                 break
             if attempt == MAX_CONTINUATIONS:

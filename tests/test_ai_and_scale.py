@@ -1239,27 +1239,30 @@ def test_ai_panel_uses_one_row_header_and_readable_composer():
 
 
 def test_ai_panel_typography_scale_matches_chat(monkeypatch):
-    """Editor settings control chat text and terminal output."""
+    """Chat prose follows UI settings, while code keeps the editor font."""
     from types import SimpleNamespace
     from app.styling import user_appearance_qss
     from app.ui_scale import scale_px
     from utils import settings_manager
-    from widgets.ChatMessage import chat_code_font_px, chat_editor_font, chat_font_px
+    from widgets.ChatMessage import chat_body_font, chat_code_font_px, chat_editor_font, chat_font_px
     import widgets.TerminalWidget as terminal_module
 
-    settings = {"editor_font": "Consolas", "editor_font_size": 15, "terminal_font_size": 9}
+    settings = {"editor_font": "Consolas", "editor_font_size": 15,
+                "terminal_font_size": 9, "ui_font_size": 14}
     monkeypatch.setattr(settings_manager, "get_settings_manager", lambda: SimpleNamespace(get_setting=settings.get))
     monkeypatch.setattr(terminal_module, "get_settings_manager", settings_manager.get_settings_manager)
     terminal = terminal_module.InteractiveTerminalEdit(None)
     terminal.apply_terminal_settings()
     assert terminal.document().defaultFont().family() == chat_editor_font().family() == "Consolas"
     assert terminal.document().defaultFont().pointSize() == chat_editor_font().pointSize() == scale_px(15)
-    assert chat_code_font_px() == chat_font_px()
+    assert chat_body_font().family() == QtWidgets.QApplication.font().family()
+    assert chat_font_px() == scale_px(15)
+    assert chat_code_font_px() == max(11, chat_font_px() - 1)
     qss = user_appearance_qss(settings, 13)
     assert "QPlainTextEdit#aiInput" in qss
-    assert "QPlainTextEdit#chatCodeView" in qss
+    assert "QPlainTextEdit#chatCodeView" not in qss
     assert "QToolButton#aiScopeButton" in qss
-    assert "font-size: 15pt" in qss
+    assert "font-size: 15pt" in qss  # Editor only.
     assert "font-size: 9pt" not in qss
 
 

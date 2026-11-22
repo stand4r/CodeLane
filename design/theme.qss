@@ -6,7 +6,7 @@
 
      MENU_BAR_H   30   top menu strip                      (font 12/13px)
      TITLE_BAR_H  40   custom title bar                    (app name 13px)
-     ACTIVITY_BAR_W 48 (icon 24px, item 48x48)
+     ACTIVITY_BAR_W 46 (icon 20px, item 38x38)
      SIDEBAR_TITLE_H 35 (font 11px, uppercase, letter-spaced)
      LIST_ROW_H   22   explorer / search / git rows        (font 13px)
      TOOLBAR_BTN  24   explorer action buttons (icon 16px)
@@ -30,7 +30,7 @@ QMainWindow, QDialog, QWidget {
     background: #181818;
     color: #CCCCCC;
 }
-QWidget::item { color: #CCCCCC; }
+QWidget::item { color: @glass_text@; }
 QLabel { background: transparent; color: #CCCCCC; }
 
 /* ---------- Workbench regions ------------------------------------------- */
@@ -50,8 +50,7 @@ QFrame#explorerHeader {
 }
 
 /* Text roles — only three sizes exist in the chrome. */
-QLabel#appTitle   { color: #CCCCCC; font-size: 13px; font-weight: 400; }
-QLabel#topProject { color: #8C8C8C; font-size: 13px; }
+QLabel#appTitle { color: @glass_text@; font-size: 13px; font-weight: 600; }
 
 /* Sidebar section title: VS Code "ПРОВОДНИК" style — 11px, uppercase, tracked */
 QLabel#sideTitle,
@@ -755,7 +754,7 @@ QToolButton#aiStopButton {
     margin: 0;
 }
 QToolButton#aiStopButton:hover { background: #4A4A4C; }
-QLabel#aiStatusLine { color: #E2B86B; font-size: 11px; padding: 0 2px 2px 2px; }
+QLabel#aiStatusLine { color: @chat_warning@; font-size: 11px; padding: 0 2px 2px 2px; }
 /* Session metrics under the composer (answers · steps · tok/s · tokens · cache) */
 QLabel#aiStatsLine {
     color: #AAAAAD;
@@ -1062,48 +1061,11 @@ QProgressBar::chunk { background: #0078D4; border-radius: 8px; }
 QStatusBar#statusBar { background: transparent; border: none; min-height: 0; max-height: 0; height: 0; }
 QStatusBar::item { border: 0; }
 
-QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
-QScrollBar::handle:vertical { background: #424242; min-height: 24px; border-radius: 0; }
-QScrollBar::handle:vertical:hover { background: #4F4F4F; }
 QScrollBar:horizontal { background: transparent; height: 10px; }
 QScrollBar::handle:horizontal { background: #424242; min-width: 24px; border-radius: 0; }
 QScrollBar::handle:horizontal:hover { background: #4F4F4F; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
-
-/* ---------- Side menus: no vertical scrollbar rail ----------------------- */
-/* Explorer, search, git, task and intelligence menus live inside
-   QFrame#sidePanel (app/ui_manager.py). Their content uses the full panel
-   width: the 10px right-hand rail is collapsed to 0px. The scrollbars still
-   exist internally, so the mouse wheel, touchpad, keyboard and programmatic
-   scrolling keep working. The editor, terminal, AI chat and PDF outline are
-   NOT descendants of #sidePanel and keep their normal scrollbars. */
-QFrame#sidePanel QScrollBar:vertical {
-    background: transparent;
-    width: 0px;
-    min-width: 0px;
-    max-width: 0px;
-    margin: 0px;
-    border: none;
-}
-QFrame#sidePanel QScrollBar::handle:vertical {
-    background: transparent;
-    min-height: 0px;
-    max-height: 0px;
-    border: none;
-}
-QFrame#sidePanel QScrollBar::add-line:vertical,
-QFrame#sidePanel QScrollBar::sub-line:vertical {
-    background: transparent;
-    width: 0px;
-    height: 0px;
-    border: none;
-}
-QFrame#sidePanel QScrollBar::add-page:vertical,
-QFrame#sidePanel QScrollBar::sub-page:vertical {
-    background: transparent;
-    border: none;
-}
 
 /* ---------- Welcome ------------------------------------------------------ */
 QWidget#Main { background: #1E1E1E; }
@@ -1259,11 +1221,6 @@ QFrame#aiComposer {
 QWidget#agentWorkspacePanel { background: @glass_surface@; border: none; }
 QLabel#agentWorkspaceTitle { color: @glass_text@; font-size: 15px; font-weight: 600; }
 QLabel#agentPlannerTitle { color: @glass_text@; font-weight: 600; }
-QLineEdit#agentPlannerSearch {
-    background: @glass_surface@; color: @glass_text@; border: 1px solid @glass_border@;
-    border-radius: 6px; padding: 0 8px; min-height: 20px; max-height: 20px;
-}
-QLineEdit#agentPlannerSearch:focus { border-color: #438bd2; }
 QLabel#agentWorkspaceStats { color: @glass_text@; padding: 2px 4px; }
 QLabel#agentGraphEmpty { color: #90959e; background: transparent; border: none; }
 QGraphicsView#agentGraph { background: transparent; border: none; }
@@ -1284,6 +1241,9 @@ QPushButton#agentStopButton, QPushButton#agentChangesButton {
 QToolButton#agentPlannerButton:hover, QToolButton#agentPlannerAdd:hover,
 QPushButton#agentStopButton:hover, QPushButton#agentChangesButton:hover {
     background: @glass_hover@;
+}
+QToolButton#agentPlannerAdd {
+    font-size: 18px; font-weight: 600; padding: 5px 9px; min-width: 42px; max-width: 42px;
 }
 QPushButton#agentStopButton:disabled { color: #777a80; }
 QToolButton#aiScopeButton, QToolButton#aiModeButton, QToolButton#aiModelButton {
@@ -1791,7 +1751,27 @@ QFrame#omniSearchPill {
     border-radius: 8px;
 }
 QFrame#omniSearchPill:hover { background: @glass_hover@; }
-QLabel#omniSearchPrompt { background: transparent; color: #A8A8A8; }
+QFrame#omniSearchPill:focus { border-color: @glass_focus@; }
+QLabel#omniSearchPrompt { background: transparent; color: @glass_text@; }
+QLabel#omniSearchShortcut {
+    background: @glass_menu@;
+    color: @muted_text@;
+    border: 1px solid @soft_border@;
+    border-radius: 4px;
+    padding: 0 4px;
+    font-size: 11px;
+}
+QToolButton#topAgentToggle {
+    color: @glass_text@;
+    background: @glass_surface@;
+    border: 1px solid @soft_border@;
+    border-radius: 7px;
+    min-height: 28px;
+    padding: 0 8px;
+}
+QToolButton#topAgentToggle:hover,
+QToolButton#topAgentToggle:pressed { background: @glass_hover@; border-color: @glass_border@; }
+QToolButton#topAgentToggle:focus { border-color: @glass_focus@; }
 QMenu#workbenchPopup::item { padding: 5px 16px; }
 QLabel#workbenchMenuSection {
     background: transparent;
@@ -1805,6 +1785,83 @@ QLabel#workbenchMenuSection {
 QFrame#workbenchSeparator { background: @glass_border@; border: none; }
 QFrame#activityBar { border-right: 1px solid @soft_border@; }
 QFrame#explorerHeader { border-bottom: 1px solid @soft_border@; }
+QWidget#agentWorkspace { background: #181818; }
+QSplitter#agentWorkspaceSplit::handle:horizontal { width: 4px; }
+QSplitter#agentWorkspaceSplit::handle { background: @soft_border@; }
+QSplitter#agentWorkspaceSplit::handle:hover { background: @glass_focus@; }
+QTabBar#editorTabs::tab {
+    margin: 3px 1px 0 1px;
+    min-width: 48px;
+    border: 1px solid transparent;
+    border-top-left-radius: 7px;
+    border-top-right-radius: 7px;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+QTabBar#editorTabs::tab:selected {
+    background: #1E1E1E;
+    border-color: @soft_border@;
+    border-bottom-color: #1E1E1E;
+}
+QFrame#aiHeader {
+    background: @glass_surface@;
+    border-bottom: 1px solid @soft_border@;
+}
+QFrame#aiComposer {
+    background: @glass_surface@;
+    border: 1px solid @glass_border@;
+    border-radius: 14px;
+}
+QFrame#aiComposer:hover { border-color: @muted_text@; }
+QFrame#aiComposer[inputFocused="true"] { border-color: @glass_focus@; }
+QPlainTextEdit#aiInput { color: @glass_text@; }
+QFrame#aiUserBubblePill {
+    background: @glass_hover@;
+    border: 1px solid @glass_border@;
+    border-radius: 13px;
+}
+QLabel#aiUserBubbleText, QLabel#aiAssistantBubbleText { color: @glass_text@; }
+QTextBrowser#chatRichText, QPlainTextEdit#chatCodeView {
+    selection-background-color: #264F78;
+    selection-color: @glass_text@;
+}
+QWidget#chatCodeSnippet {
+    background: #1E1E1E;
+    border: 1px solid @glass_border@;
+    border-radius: 10px;
+}
+QFrame#chatCodeHeader {
+    background: @glass_hover@;
+    border-bottom: 1px solid @glass_border@;
+    border-top-left-radius: 9px;
+    border-top-right-radius: 9px;
+}
+QLabel#chatCodeLanguage { color: @glass_text@; font-weight: 600; }
+QToolButton#chatCodeCopy { color: @glass_text@; }
+QToolButton#chatCodeCopy:hover, QToolButton#chatCodeCopy:focus {
+    color: @glass_text@;
+    background: @glass_surface@;
+    border-color: @glass_border@;
+}
+QPlainTextEdit#chatCodeView {
+    background: #1E1E1E;
+    color: @glass_text@;
+    border-bottom-left-radius: 9px;
+    border-bottom-right-radius: 9px;
+}
+QLabel#agentWorkspaceActivity {
+    background: @glass_hover@;
+    color: @glass_text@;
+    border: 1px solid @glass_border@;
+    border-radius: 7px;
+    padding: 6px 9px;
+}
+QGraphicsView#agentGraph {
+    background: @glass_menu@;
+    border: 1px solid @soft_border@;
+    border-radius: 8px;
+}
+QLabel#agentGraphEmpty, QLabel#agentWorkspaceStats { color: @muted_text@; }
 QLabel#sideTitle, QLabel#explorerSectionTitle {
     letter-spacing: 0px;
     font-size: 12px;

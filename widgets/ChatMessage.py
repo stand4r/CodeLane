@@ -26,7 +26,6 @@ __all__ = ["AssistantMessage", "CodeSnippet", "InlineCodeText",
 SENTINEL_BG = "#010203"
 INLINE_PROP = int(QtGui.QTextFormat.Property.UserProperty) + 1
 
-CHIP_BG = "#2A2A2C"
 CHIP_RADIUS = 5.0
 CHIP_PAD_X = 2.0
 
@@ -47,17 +46,7 @@ def _forward_wheel_to_chat(widget: QtWidgets.QWidget, event) -> bool:
     bar.setValue(bar.value() - event.angleDelta().y())
     return True
 
-TEXT = "#E6E6E8"
-MUTED = "#8B949E"
-BORDER = "#2B2B2D"
-SURFACE = "#1B1B1E"
-CODE_TEXT = "#D9D9DE"
-TABLE_HEAD_BG = "#202024"
-TABLE_BORDER = "#303035"
-
-# Chat text follows the workbench font settings and UI scale. Fixed 13.5px
-# looked tiny next to the 110%-scaled chrome and was reported as unreadable.
-LINE_HEIGHT = 1.40
+LINE_HEIGHT = "145%"
 
 
 def chat_editor_font() -> QtGui.QFont:
@@ -70,19 +59,44 @@ def chat_editor_font() -> QtGui.QFont:
         points = int(settings.get_setting("editor_font_size", 13) or 13)
     except RuntimeError:
         family, points = "Cascadia Code", 13
-    return QtGui.QFont(family, scale_px(points))
+    font = QtGui.QFont(family, scale_px(points))
+    font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
+    font.setFixedPitch(True)
+    return font
 
 
 def chat_font_px() -> int:
-    return QtGui.QFontInfo(chat_editor_font()).pixelSize()
+    return chat_body_font().pixelSize()
+
+
+def chat_body_font() -> QtGui.QFont:
+    from app.ui_scale import scale_px
+    from utils.settings_manager import get_settings_manager
+
+    try:
+        size = int(get_settings_manager().get_setting("ui_font_size", 13))
+    except (RuntimeError, TypeError, ValueError):
+        size = 13
+    font = QtGui.QFont(QtWidgets.QApplication.font())
+    font.setPixelSize(scale_px(max(12, min(size, 15)) + 1))
+    return font
 
 
 def chat_code_font_px() -> int:
-    return chat_font_px()
+    return max(11, chat_font_px() - 1)
 
 
 def chat_small_px() -> int:
-    return max(13, chat_font_px() - 3)
+    return max(11, chat_font_px() - 2)
+
+
+def _tinted_surface(palette, amount):
+    base = palette.color(QtGui.QPalette.ColorRole.Window)
+    text = palette.color(QtGui.QPalette.ColorRole.WindowText)
+    return QtGui.QColor(*[
+        round(start + (end - start) * amount)
+        for start, end in zip(base.getRgb()[:3], text.getRgb()[:3])
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +113,7 @@ def split_markdown_blocks(text: str) -> List[Tuple[str, object]]:
     text_lines: List[str] = []
     code_lines: List[str] = []
     code_lang = ""
-    in_code = False
+    fence = None
 
     def flush_text():
         if text_lines:
@@ -109,72 +123,74 @@ def split_markdown_blocks(text: str) -> List[Tuple[str, object]]:
             text_lines.clear()
 
     for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("```"):
-            if in_code:
+        match = re.fullmatch(r" {0,3}(`{3,}|~{3,})(.*)", line)
+        if fence is not None:
+            if (match and match[1][0] == fence[0] and len(match[1]) >= len(fence)
+                    and not match[2].strip()):
                 blocks.append(("code", (code_lang or "text",
                                          "\n".join(code_lines))))
-                code_lines = []
-                code_lang = ""
-                in_code = False
+                code_lines.clear()
+                fence = None
             else:
-                flush_text()
-                in_code = True
-                code_lang = stripped[3:].strip()
-            continue
-        if in_code:
-            code_lines.append(line)
+                code_lines.append(line)
+        elif match:
+            flush_text()
+            fence = match[1]
+            info = match[2].split()
+            code_lang = info[0] if info else ""
         else:
             text_lines.append(line)
-    if in_code:
+    if fence is not None:
         blocks.append(("code", (code_lang or "text", "\n".join(code_lines))))
     flush_text()
     return blocks
 
 
 def _inline(value: str, chip: bool = True) -> str:
-    safe = html.escape(value)
+    code_fragments = []
+
+    def save_code(match):
+        background = f"background:{SENTINEL_BG}; " if chip else ""
+        code = match[1]
+        if chip:
+            code = f"&#8201;{code}&#8201;"
+        code_fragments.append(f'<code style="{background}font-size:{chat_code_font_px()}px;">{code}</code>')
+        return f"\0{len(code_fragments) - 1}\0"
+
+    safe = html.escape(value.replace("\0", "\uFFFD"))
+    safe = re.sub(r"`([^`\n]+)`", save_code, safe)
     safe = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", safe)
     safe = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", safe)
-    # Inline code: a sentinel background is converted into a rounded chip by
-    # ``_decorate_inline_code``. Tables pass ``chip=False``: a grid of filled
-    # chips read as a wall of gray blocks, so cells use plain monospace.
-    if chip:
-        safe = re.sub(
-            r"`([^`]+)`",
-            r'<span style="background:%s; color:%s; '
-            r'font-size:%dpx;">&#8201;\1&#8201;</span>'
-            % (SENTINEL_BG, TEXT, chat_code_font_px()),
-            safe)
-    else:
-        safe = re.sub(
-            r"`([^`]+)`",
-            r'<span style="color:%s; '
-            r'font-size:%dpx;">\1</span>'
-            % (CODE_TEXT, chat_code_font_px()),
-            safe)
-    safe = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)",
-                  r'<a href="\2" style="color:#6FA8DC; text-decoration:none;">\1</a>',
-                  safe)
-    return safe
+    safe = re.sub(r"\[([^\]]+)\]\((https?://[^)\s<>\0]+)\)",
+                  r'<a href="\2"><u>\1</u></a>', safe)
+    return re.sub(r"\0(\d+)\0", lambda marker: code_fragments[int(marker[1])], safe)
 
 
-def _list_row(marker: str, content_html: str, body_px: int,
-              marker_width: int) -> str:
-    """One list item as a two-column row (proper hanging indent).
+_LIST_ITEM = re.compile(r"^( *)([-*+]|(\d+)[.)])\s+(.*)$")
 
-    Wrapped continuation lines used to start under the number/bullet instead of
-    under the item text, which made the list look like one fused block.
-    """
-    return (
-        f'<table cellspacing="0" cellpadding="0" style="margin:0 0 7px 0;">'
-        f'<tr>'
-        f'<td width="{marker_width}" valign="top" style="color:{MUTED};'
-        f' font-size:{body_px}px; line-height:{LINE_HEIGHT};">{marker}</td>'
-        f'<td style="font-size:{body_px}px; line-height:{LINE_HEIGHT};">'
-        f'{content_html}</td>'
-        f'</tr></table>'
-    )
+
+def _render_list(lines: List[str], index: int, first: re.Match) -> tuple[str, int]:
+    indent = len(first[1])
+    tag = "ol" if first[3] else "ul"
+    start = f' start="{first[3]}"' if first[3] else ""
+    items = []
+    while index < len(lines):
+        item = _LIST_ITEM.match(lines[index])
+        if not item or len(item[1]) != indent or bool(item[3]) != bool(first[3]):
+            break
+        content = re.sub(r"^\[([ xX])\]\s+", lambda mark: "☐ " if mark[1] == " " else "☑ ", item[4])
+        item_html = _inline(content, chip=False)
+        index += 1
+        while index < len(lines) and lines[index].startswith(" " * (indent + 2)) and lines[index].strip():
+            nested = _LIST_ITEM.match(lines[index])
+            if nested:
+                child_html, index = _render_list(lines, index, nested)
+                item_html += child_html
+            else:
+                item_html += " " + _inline(lines[index].strip(), chip=False)
+                index += 1
+        items.append(f"<li>{item_html}</li>")
+    return f'<{tag}{start} style="margin:8px 0 12px 0;">{"".join(items)}</{tag}>', index
 
 
 def markdown_to_html(text: str) -> str:
@@ -188,6 +204,10 @@ def markdown_to_html(text: str) -> str:
     paragraph: List[str] = []
     index = 0
     body = chat_font_px()
+    palette = QtWidgets.QApplication.palette()
+    table_header = _tinted_surface(palette, 0.09).name()
+    border = _tinted_surface(palette, 0.23).name()
+    quote_text = _tinted_surface(palette, 0.78).name()
 
     def flush():
         if paragraph:
@@ -224,21 +244,21 @@ def markdown_to_html(text: str) -> str:
                 rows.append([c.strip() for c in
                              lines[index].strip().strip("|").split("|")])
                 index += 1
-            column_width = max(14, 100 // max(1, len(header)))
+            column_width = 100 / len(header)
             head_html = "".join(
-                f'<th align="left" valign="top" width="{column_width}%"'
-                f' style="padding:9px 12px; color:{MUTED};'
+                f'<th align="left" valign="top" width="{column_width:.2f}%"'
+                f' style="padding:9px 12px;'
                 f' font-size:{body - 2}px; font-weight:600;'
-                f' background:{TABLE_HEAD_BG};'
-                f' border-bottom:1px solid {TABLE_BORDER};">{_inline(c, chip=False)}</th>'
+                f' background:{table_header};'
+                f' border-bottom:1px solid {border};">{_inline(c, chip=False)}</th>'
                 for c in header)
             body_html = ""
             for cells in rows:
                 padded = (cells + [""] * len(header))[:len(header)]
                 body_html += "<tr>" + "".join(
                     f'<td valign="top" style="padding:10px 12px;'
-                    f' font-size:{body - 1}px; line-height:1.55;'
-                    f' border-bottom:1px solid {TABLE_BORDER};">'
+                    f' font-size:{body}px; line-height:{LINE_HEIGHT};'
+                    f' border-bottom:1px solid {border};">'
                     f'{_inline(c, chip=False)}</td>' for c in padded) + "</tr>"
             blocks.append(
                 f'<table cellspacing="0" cellpadding="0" width="100%"'
@@ -254,35 +274,15 @@ def markdown_to_html(text: str) -> str:
             top = 18 if level <= 2 else 14
             blocks.append(
                 f'<p style="margin:{top}px 0 8px 0; font-size:{size}px;'
-                f' font-weight:600; line-height:1.3;">{_inline(heading.group(2))}</p>')
+                f' font-weight:600; line-height:130%;">{_inline(heading.group(2))}</p>')
             index += 1
             continue
 
-        if re.match(r"^\s*([-*+])\s+", line):
+        list_item = _LIST_ITEM.match(line)
+        if list_item:
             flush()
-            items = []
-            while index < len(lines) and re.match(r"^\s*([-*+])\s+", lines[index]):
-                content = re.sub(r"^\s*[-*+]\s+", "", lines[index])
-                items.append("<li>" + _inline(content, chip=False) + "</li>")
-                index += 1
-            blocks.append('<ul style="margin:8px 0 12px 0;">' + "".join(items) + "</ul>")
-            continue
-
-        ordered = re.match(r"^\s*(\d+)[.)]\s+", line)
-        if ordered:
-            flush()
-            items = []
-            counter = int(ordered.group(1))
-            while index < len(lines):
-                match = re.match(r"^\s*(\d+)[.)]\s+", lines[index])
-                if not match:
-                    break
-                content = re.sub(r"^\s*\d+[.)]\s+", "", lines[index])
-                number = f"{counter}."
-                items.append("<li>" + _inline(content, chip=False) + "</li>")
-                counter += 1
-                index += 1
-            blocks.append(f'<ol start="{ordered.group(1)}" style="margin:8px 0 12px 0;">' + "".join(items) + "</ol>")
+            list_html, index = _render_list(lines, index, list_item)
+            blocks.append(list_html)
             continue
 
         if stripped.startswith(">"):
@@ -293,15 +293,15 @@ def markdown_to_html(text: str) -> str:
                 index += 1
             blocks.append(
                 f'<table cellspacing="0" cellpadding="0" style="margin:10px 0;"><tr>'
-                f'<td width="3" bgcolor="#3F3F42"></td>'
-                f'<td style="padding:6px 12px; color:{MUTED};'
+                f'<td width="3" bgcolor="{border}"></td>'
+                f'<td style="padding:6px 12px; color:{quote_text};'
                 f' font-size:{body}px; line-height:{LINE_HEIGHT};">'
                 f'{"<br>".join(quote)}</td></tr></table>')
             continue
 
         if re.match(r"^\s*(---+|\*\*\*+)\s*$", line):
             flush()
-            blocks.append(f'<p style="margin:14px 0; border-top:1px solid {BORDER};"></p>')
+            blocks.append(f'<hr style="margin:14px 0;" color="{border}">')
             index += 1
             continue
 
@@ -329,16 +329,14 @@ class InlineCodeText(QtWidgets.QTextBrowser):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("chatRichText")
         self.setReadOnly(True)
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
                            QtWidgets.QSizePolicy.Policy.Fixed)
-        self.setStyleSheet(
-            "QTextBrowser { background: transparent; border: none; "
-            f"color: {TEXT}; selection-background-color: #2C5A7A; "
-            "selection-color: #FFFFFF; }")
+        self.setStyleSheet("QTextBrowser { background: transparent; border: none; }")
         self.document().setDocumentMargin(0)
         # Long URLs / paths without spaces used to overflow the line and get
         # clipped at the bubble edge; break anywhere as a last resort.
@@ -360,8 +358,12 @@ class InlineCodeText(QtWidgets.QTextBrowser):
 
     # -- content -------------------------------------------------------
     def set_html(self, html_text: str):
-        self.document().setDefaultFont(chat_editor_font())
-        body = (f'<div style="color:{TEXT}; font-size:{chat_font_px()}px;'
+        self.document().setDefaultFont(chat_body_font())
+        palette = QtWidgets.QApplication.palette()
+        text = palette.color(QtGui.QPalette.ColorRole.Text).name()
+        link = "#8EC3FF" if palette.color(QtGui.QPalette.ColorRole.Window).lightness() < 128 else "#19558A"
+        self.document().setDefaultStyleSheet(f"a {{ color: {link}; }}")
+        body = (f'<div style="color:{text}; font-size:{chat_font_px()}px;'
                 f' line-height:{LINE_HEIGHT};">{html_text or ""}</div>')
         self.setHtml(body)
         self._normalize_tables()
@@ -447,7 +449,7 @@ class InlineCodeText(QtWidgets.QTextBrowser):
         painter = QtGui.QPainter(self.viewport())
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
         painter.setPen(QtCore.Qt.PenStyle.NoPen)
-        painter.setBrush(QtGui.QColor(CHIP_BG))
+        painter.setBrush(_tinted_surface(QtWidgets.QApplication.palette(), 0.14))
         try:
             block = document.begin()
             while block.isValid():
@@ -551,8 +553,9 @@ class CodeSnippet(QtWidgets.QWidget):
         self.copy_btn = QtWidgets.QToolButton()
         self.copy_btn.setObjectName("chatCodeCopy")
         self.copy_btn.setText("Копировать")
+        self.copy_btn.setAccessibleName("Скопировать блок кода")
         self.copy_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self.copy_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.copy_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.TabFocus)
         self.copy_btn.clicked.connect(self.copy_code)
         header_layout.addWidget(self.copy_btn)
         root.addWidget(header)
@@ -592,7 +595,10 @@ class CodeSnippet(QtWidgets.QWidget):
         except Exception:
             return
         try:
-            self.highlighter = ModernSyntaxHighlighter(self.view.document(), config)
+            background = QtWidgets.QApplication.palette().color(QtGui.QPalette.ColorRole.Base)
+            self.highlighter = ModernSyntaxHighlighter(
+                self.view.document(), config, light_background=background.lightness() >= 128,
+            )
         except Exception:
             self.highlighter = None
 
@@ -647,7 +653,7 @@ class AssistantMessage(QtWidgets.QWidget):
         self._width = 520
         self._layout = QtWidgets.QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(6)
+        self._layout.setSpacing(10)
         self._parts: List[QtWidgets.QWidget] = []
         self._markdown = ""
         self.set_markdown(markdown or "")
@@ -655,7 +661,7 @@ class AssistantMessage(QtWidgets.QWidget):
     # -- content -------------------------------------------------------
     def set_markdown(self, markdown: str):
         self._markdown = markdown or ""
-        self._content_font = chat_editor_font()
+        self._appearance = (chat_body_font(), chat_editor_font(), QtWidgets.QApplication.palette().cacheKey())
         for part in self._parts:
             try:
                 self._layout.removeWidget(part)
@@ -676,7 +682,7 @@ class AssistantMessage(QtWidgets.QWidget):
         self.set_width(self._width)
 
     def on_ui_scale_changed(self, scale):
-        if self._content_font != chat_editor_font():
+        if self._appearance != (chat_body_font(), chat_editor_font(), QtWidgets.QApplication.palette().cacheKey()):
             self.set_markdown(self._markdown)
 
     def text(self) -> str:

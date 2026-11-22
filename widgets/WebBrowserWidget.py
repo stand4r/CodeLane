@@ -3,7 +3,7 @@ from pathlib import Path
 
 from design.icons import line_icon
 from PyQt6 import QtCore, QtGui, QtWidgets
-from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from core.logging_config import get_logger
@@ -482,6 +482,17 @@ class WebBrowserWidget(QtWidgets.QWidget):
         view.setPage(page)
         page.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
         page.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, False)
+        scrollbar_style = QWebEngineScript()
+        scrollbar_style.setName("hideVerticalScrollbars")
+        scrollbar_style.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
+        scrollbar_style.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
+        scrollbar_style.setRunsOnSubFrames(True)
+        scrollbar_style.setSourceCode("""
+            const style = document.createElement("style");
+            style.textContent = "::-webkit-scrollbar:vertical { width: 0 !important; }";
+            (document.head || document.documentElement).appendChild(style);
+        """)
+        page.scripts().insert(scrollbar_style)
         page.permissionRequested.connect(lambda permission: permission.deny())
         tab.view = view
         tab.addWidget(view)

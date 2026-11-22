@@ -5,11 +5,10 @@ This is the piece that turns a chat model into a working coding agent:
 * the loop keeps going until the model produces a final answer — there is no
   low round limit any more (the old ``MAX_TOOL_ROUNDS = 6`` is exactly why the
   agent "read a few files and stopped mid-way");
-* tool results are passed back in full (the old code cut every result at 8000
-  characters, so the model never saw the rest of a file and re-read it until
-  the round budget ran out);
-* repeated identical tool calls are detected: the result is reused and the
-  model is told to move on instead of looping forever;
+* recent tool results retain more detail; large discovery results are
+  shortened in provider requests while the transcript retains them;
+* repeated identical tool calls in bounded runs are detected and the model
+  is directed to earlier results;
 * transient provider errors (429/5xx/network) are retried with backoff;
 * token usage is accumulated over all rounds and reported once;
 * the user can abort at any moment (``should_stop``) between rounds and calls.
@@ -40,6 +39,13 @@ MAX_TOOL_RESULT_CHARS = 2_000_000
 # How many identical (tool, arguments) calls are allowed before the harness
 # answers with the cached result and asks the model to continue.
 SAME_CALL_LIMIT = 3
+RECENT_DISCOVERY_CHARS = 32_000
+MAX_DISCOVERY_RESULT_CHARS = 48_000
+RECENT_DISCOVERY_ROUNDS = 2
+DISCOVERY_PREVIEW_CHARS = 1200
+DISCOVERY_TOOLS = frozenset({"read_file", "list_directory", "search_in_project",
+                            "editor_state", "workspace_state", "analysis_details",
+                            "dependency_graph", "git_read", "browser_read", "browser_search"})
 
 RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 RETRY_ATTEMPTS = 4
@@ -144,6 +150,7 @@ class AgentHarness:
         usage = AgentUsage()
         runs: List[ToolRun] = []
         seen_calls: Dict[str, int] = {}
+        discovery_results: list[tuple[int, int]] = []
         rounds = 0
         stop_reason = "answer"
         # Text said *before* a tool call is narration ("читаю файл, проверяю…"),
@@ -164,25 +171,35 @@ class AgentHarness:
                 stop_reason = "limit"
                 break
 
-            text, calls = self._one_round(messages, usage)
+            request = self._request_messages(messages, discovery_results, rounds)
+            text, calls = self._one_round(request, usage)
             if self.should_stop():
                 narration = text or narration
                 stop_reason = "stopped"
                 break
 
             if not calls:
-                answer = text or narration
+                answer = text
                 if self.service.truncated:
                     answer = self._join(answer,
-                                        self._extend_truncated(messages, answer))
-                stop_reason = "answer" if text.strip() else "empty"
+                                        self._extend_truncated(request, answer, usage))
+                if self.should_stop():
+                    narration = answer or narration
+                    stop_reason = "stopped"
+                    break
+                stop_reason = "answer" if answer.strip() else "empty"
+                answer = answer or narration
                 break
 
             if text.strip():
                 narration = text
             messages = self._append_assistant_turn(messages, text, calls)
             for call in calls:
+                if self.should_stop():
+                    break
                 self._handle_call(messages, call, runs, seen_calls)
+                if call.name in DISCOVERY_TOOLS and runs[-1].ok:
+                    discovery_results.append((len(messages) - 1, rounds))
 
         if stop_reason == "stopped":
             answer = narration
@@ -197,6 +214,38 @@ class AgentHarness:
             stop_reason=stop_reason,
             truncated=bool(self.service.truncated),
         )
+
+    @staticmethod
+    def _request_messages(messages: List[Dict[str, Any]],
+                          discovery_results: list[tuple[int, int]],
+                          round_number: int) -> List[Dict[str, Any]]:
+        request = list(messages)
+        remaining = RECENT_DISCOVERY_CHARS
+        for index, result_round in reversed(discovery_results):
+            message = messages[index]
+            content = message["content"]
+            block = content[0] if isinstance(content, list) else None
+            output = block["content"] if block is not None else content
+            size = len(output)
+            if result_round == round_number - 1:
+                limit = MAX_DISCOVERY_RESULT_CHARS
+            elif round_number - result_round <= RECENT_DISCOVERY_ROUNDS and size <= remaining:
+                limit = remaining
+            else:
+                limit = DISCOVERY_PREVIEW_CHARS
+            if size <= limit:
+                remaining -= size
+                continue
+            half = limit // 2
+            remaining -= limit
+            preview = (
+                output[:half] + f"\n… [Сокращён результат: пропущено {size - 2 * half} символов. "
+                "При необходимости запроси только нужный фрагмент.]\n" + output[-half:]
+            )
+            if block is not None:
+                preview = [{**block, "content": preview}]
+            request[index] = {**message, "content": preview}
+        return request
 
     @staticmethod
     def _join(first: str, second: str) -> str:
@@ -216,6 +265,8 @@ class AgentHarness:
                    usage: AgentUsage) -> tuple[str, List[ToolCall]]:
         last_error: Optional[Exception] = None
         for attempt in range(RETRY_ATTEMPTS):
+            if self.should_stop():
+                return "", []
             try:
                 if self.service.is_anthropic:
                     blocks, calls = self.service._anthropic_tool_round(
@@ -363,11 +414,14 @@ class AgentHarness:
         )
 
     # ------------------------------------------------------------------
-    def _extend_truncated(self, messages: List[Dict[str, Any]], partial: str) -> str:
+    def _extend_truncated(self, messages: List[Dict[str, Any]], partial: str,
+                          usage: AgentUsage) -> str:
         """Continue a text answer that hit the provider's output ceiling."""
         working = list(messages) + [
             {"role": "assistant", "content": partial},
             {"role": "user", "content": self.service._continue_prompt()},
         ]
-        extra = self.service._stream_until_complete(working, self.on_text, self.on_reasoning)
-        return extra
+        return self.service._stream_until_complete(
+            working, self._text_callback, self._reasoning_callback,
+            on_usage=usage.add, should_stop=self.should_stop,
+        )

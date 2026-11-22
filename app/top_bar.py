@@ -21,13 +21,15 @@ class OmniSearchPill(QtWidgets.QFrame):
         super().__init__(parent)
         self.setObjectName("omniSearchPill")
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(26)
+        self.setFixedHeight(30)
         self.setMinimumWidth(36)
         self.setMaximumWidth(420)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         self.setToolTip("Поиск файлов и команд (Ctrl+P)")
+        self.setAccessibleName("Поиск файлов и команд")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         pill_layout = QtWidgets.QHBoxLayout(self)
-        pill_layout.setContentsMargins(6, 0, 8, 0)
+        pill_layout.setContentsMargins(8, 0, 6, 0)
         pill_layout.setSpacing(6)
 
         lens_icon = QtWidgets.QLabel()
@@ -41,6 +43,9 @@ class OmniSearchPill(QtWidgets.QFrame):
         prompt.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         pill_layout.addWidget(prompt, 1, QtCore.Qt.AlignmentFlag.AlignVCenter)
         self._prompt = prompt
+        self._shortcut = QtWidgets.QLabel("Ctrl+P", self)
+        self._shortcut.setObjectName("omniSearchShortcut")
+        pill_layout.addWidget(self._shortcut)
 
     def sizeHint(self):
         return QSize(self.maximumWidth(), self.height())
@@ -48,6 +53,14 @@ class OmniSearchPill(QtWidgets.QFrame):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._prompt.setVisible(event.size().width() > 150)
+        self._shortcut.setVisible(event.size().width() > 220)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
@@ -58,7 +71,7 @@ class OmniSearchPill(QtWidgets.QFrame):
 
 
 class WorkbenchTopBar(QtWidgets.QFrame):
-    """VS Code-inspired application/title/menu strip."""
+    """Workspace title, command search and panel controls."""
     def __init__(self, window):
         super().__init__(window)
         self.window = window
@@ -108,7 +121,6 @@ class WorkbenchTopBar(QtWidgets.QFrame):
 
         title = QtWidgets.QLabel("CodeLane")
         title.setObjectName("appTitle")
-        title.setStyleSheet("background: transparent; border: none; color: #CCCCCC; font-size: 13px;")
         menu_layout.addWidget(title, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         menu_layout.addSpacing(10)
 
@@ -137,6 +149,8 @@ class WorkbenchTopBar(QtWidgets.QFrame):
 
         self.search_pill = OmniSearchPill(self._base_path, self)
         self.search_pill.clicked.connect(self.window.action_quick_open)
+        self.search_left_balance = QtWidgets.QSpacerItem(0, 0)
+        layout.addItem(self.search_left_balance)
         layout.addStretch()
         layout.addWidget(self.search_pill, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         layout.addStretch()
@@ -144,18 +158,23 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         layout.addItem(self.search_balance)
         layout.addSpacing(6)
 
-        # Retain self.project so external callers do not error, but omit from layout
-        self.project = QtWidgets.QLabel("")
-        self.project.setObjectName("topProject")
-
-        # Native title-bar replacement, right-aligned like VS Code on Windows.
         self.window_controls = QtWidgets.QWidget(self)
         self.window_controls.setObjectName("windowControls")
         self.window_controls.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
-        self.window_controls.setStyleSheet("background: transparent; border: none;")
         controls = QtWidgets.QHBoxLayout(self.window_controls)
         controls.setContentsMargins(0, 0, 0, 0)
         controls.setSpacing(0)
+
+        self.agent_button = QtWidgets.QToolButton(self.window_controls)
+        self.agent_button.setObjectName("topAgentToggle")
+        self.agent_button.setIcon(codicons.ai_icon(17, "#9D9D9D"))
+        self.agent_button.setText("Агент")
+        self.agent_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.agent_button.setToolTip("Открыть вкладку агента (Ctrl+Shift+I)")
+        self.agent_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.agent_button.clicked.connect(self.window.show_ai_agent)
+        controls.addWidget(self.agent_button)
+        controls.addSpacing(8)
 
         self.minimize_button = self._window_button("chrome-minimize", "Свернуть", self.window.showMinimized, "windowControl")
         self.maximize_button = self._window_button("chrome-maximize", "Развернуть", self._toggle_maximize, "windowControl")
@@ -391,8 +410,12 @@ class WorkbenchTopBar(QtWidgets.QFrame):
     def _fit_menu_strip(self):
         if not hasattr(self, "window_controls"):
             return
-        chrome = self.window_controls.sizeHint().width() + 165 + MENU_SEARCH_SPACING
-        compact = self.width() < self.menu_strip.sizeHint().width() + chrome
+        self.agent_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonIconOnly if self.width() < 900
+            else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        full_menu_width = self.menu_strip.sizeHint().width() + 125
+        compact = self.width() < 2 * full_menu_width + 300
         self.menu_strip.setVisible(not compact)
         self.compact_menu.setVisible(compact)
         self._center_search()
@@ -402,12 +425,13 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         margins = layout.contentsMargins()
         left = margins.left() + self.menu_group.layout().sizeHint().width() + MENU_SEARCH_SPACING
         right = margins.right() + self.window_controls.sizeHint().width() + 6
-        # Balance the unequal side groups only when there is room for the full search field.
-        spare = self.width() - left - right - self.search_pill.maximumWidth() - 2 * layout.spacing()
-        balance = max(0, min(left - right, spare))
-        if balance != self.search_balance.sizeHint().width():
-            self.search_balance.changeSize(balance, 0, QtWidgets.QSizePolicy.Policy.Fixed)
-            layout.invalidate()
+        spare = max(0, self.width() - left - right - 240 - 2 * layout.spacing())
+        for spacer, difference in ((self.search_left_balance, right - left),
+                                   (self.search_balance, left - right)):
+            balance = max(0, min(difference, spare))
+            if balance != spacer.sizeHint().width():
+                spacer.changeSize(balance, 0, QtWidgets.QSizePolicy.Policy.Fixed)
+                layout.invalidate()
 
     def event(self, event):
         if event.type() == QtCore.QEvent.Type.LayoutRequest and hasattr(self, "window_controls"):
@@ -419,20 +443,25 @@ class WorkbenchTopBar(QtWidgets.QFrame):
         self._fit_menu_strip()
 
     def set_project(self, name):
-        self.project.setText(name or "")
+        # Keep the search action discoverable while exposing the workspace name.
+        self.search_pill._prompt.setText(name or "Поиск файлов и команд")
+        self.search_pill.setToolTip(
+            f"{name}\nПоиск файлов и команд (Ctrl+P)" if name else "Поиск файлов и команд (Ctrl+P)"
+        )
 
     def on_ui_scale_changed(self, percent: int):
         """Resize the title bar and its fixed-size controls for the UI scale."""
         from app.ui_scale import scale_px
         self.setFixedHeight(scale_px(TITLE_BAR_HEIGHT))
         try:
-            self.search_pill.setFixedHeight(scale_px(26))
+            self.search_pill.setFixedHeight(scale_px(30))
             self.search_pill.setMaximumWidth(scale_px(420))
         except Exception:
             pass
         for button in (self.minimize_button, self.maximize_button, self.close_button):
             button.setFixedSize(scale_px(46), scale_px(30))
             button.setIconSize(QtCore.QSize(scale_px(16), scale_px(16)))
+        self.agent_button.setIconSize(QtCore.QSize(scale_px(17), scale_px(17)))
         self._fit_menu_strip()
 
 

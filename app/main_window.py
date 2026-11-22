@@ -1022,10 +1022,7 @@ class ModernMainWindow(QMainWindow):
         """Open the AI workspace tab and focus the chat."""
         if not self.extension_enabled("ai"):
             return
-        try:
-            self.activity_bar.set_activity("ai")
-        except Exception:
-            self._handle_activity("ai")
+        self._handle_activity("ai")
 
     def action_ai_explain_selection(self):
         """Ask the AI agent to explain the current selection/line."""
@@ -1084,9 +1081,11 @@ class ModernMainWindow(QMainWindow):
         if key == "settings":
             self.action_open_settings()
             return
-        if key in {"ai", "todo", "git", "intelligence"} and not self.extension_enabled(key):
+        if key in {"todo", "git", "intelligence"} and not self.extension_enabled(key):
             return
         if key == "ai":
+            if not self.extension_enabled("ai"):
+                return
             if getattr(self, "ai_panel", None) is not None:
                 self.ai_panel._open_agent_team()
             return
@@ -2118,8 +2117,11 @@ class ModernMainWindow(QMainWindow):
     def apply_builtin_extensions(self):
         activity = self.activity_bar
         enabled = {key: self.extension_enabled(key) for key in ("todo", "ai", "git", "intelligence")}
+        self.top_bar.agent_button.setVisible(enabled["ai"])
         for key, visible in enabled.items():
-            activity.buttons[key].setVisible(visible)
+            button = activity.buttons.get(key)
+            if button is not None:
+                button.setVisible(visible)
         if activity.active_sidebar_key in enabled and not enabled[activity.active_sidebar_key]:
             activity.set_sidebar_active("explorer")
             self._handle_activity("explorer")

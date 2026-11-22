@@ -47,6 +47,7 @@ class AgentTeamTab(QtWidgets.QWidget):
 
     def __init__(self, agent_panel, parent=None):
         super().__init__(parent)
+        self.setObjectName("agentWorkspace")
         self.setProperty("pyscribeSpecial", "agentTeam")
         self._agent_panel = agent_panel
         self._cancel = None
@@ -65,6 +66,8 @@ class AgentTeamTab(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        split.setObjectName("agentWorkspaceSplit")
+        split.setHandleWidth(4)
         split.setChildrenCollapsible(False)
         split.addWidget(agent_panel)
         agent_panel.show()
@@ -72,8 +75,8 @@ class AgentTeamTab(QtWidgets.QWidget):
         details = QtWidgets.QWidget()
         details.setObjectName("agentWorkspacePanel")
         right = QtWidgets.QVBoxLayout(details)
-        right.setContentsMargins(12, 8, 12, 8)
-        right.setSpacing(8)
+        right.setContentsMargins(14, 12, 14, 12)
+        right.setSpacing(10)
 
         controls = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel("Команда")
@@ -90,7 +93,7 @@ class AgentTeamTab(QtWidgets.QWidget):
         controls.addWidget(self.stop_button)
         right.addLayout(controls)
         self.activity = QtWidgets.QLabel("Готов к задаче")
-        self.activity.setObjectName("agentWorkspaceStats")
+        self.activity.setObjectName("agentWorkspaceActivity")
         self.activity.setWordWrap(True)
         right.addWidget(self.activity)
         self.pending_list = QtWidgets.QListWidget()

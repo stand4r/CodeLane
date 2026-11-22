@@ -161,6 +161,7 @@ def _load_design_qss(base_path: Path) -> str:
             "@glass_hover@": tint(0.14),
             "@glass_menu@": tint(0.025),
             "@glass_text@": foreground.name(),
+            "@chat_warning@": "#825100" if surface.lightness() >= 128 else "#E2B86B",
             "@markdown_paper@": tint(0.075),
             "@markdown_text@": tint(0.83),
             "@glass_focus@": colors.get("accent_color", "#0078D4"),
@@ -200,12 +201,9 @@ def user_appearance_qss(settings: dict, ui_font_size: int) -> str:
     return f"""QWidget {{ font-size: {ui_font_size}px; color: {text_primary}; }}
 QMainWindow, QDialog {{ background: {app_background}; }}
 QFrame#workbenchTopBar, QFrame#activityBar, QFrame#sidePanel, QFrame#explorerHeader {{ background: {app_background}; }}
-QLabel#aiUserBubbleText, QLabel#aiAssistantBubbleText,
-QPlainTextEdit#aiInput, QPlainTextEdit#chatCodeView {{
-    font-family: '{editor_font}';
-    font-size: {editor_font_size}pt;
+QLabel#aiUserBubbleText, QLabel#aiAssistantBubbleText, QPlainTextEdit#aiInput {{
+    font-size: {ui_font_size + 1}px;
 }}
-QPlainTextEdit#aiInput {{ padding: 2px 4px; }}
 QToolButton#aiAccessMode, QToolButton#aiScopeButton, QToolButton#aiModelButton {{
     font-size: {chip_px}px;
 }}
@@ -224,15 +222,26 @@ QTabWidget#editorGroupPrimary QTabBar::tab, QTabWidget#editorGroupSecondary QTab
 
 
 class _DesignSystemEventFilter(QtCore.QObject):
-    """Event filter for central theme integration without destructive stylesheet stripping."""
+    """Legacy event filter retained for the main module's re-export."""
 
     def eventFilter(self, watched, event):
         return False
 
 
+class _WorkbenchStyle(QtWidgets.QProxyStyle):
+    """Collapse vertical scrollbar rails without changing scroll ranges."""
+
+    def pixelMetric(self, metric, option=None, widget=None):
+        if (metric == QtWidgets.QStyle.PixelMetric.PM_ScrollBarExtent
+                and isinstance(widget, QtWidgets.QScrollBar)
+                and widget.orientation() == Qt.Orientation.Vertical):
+            return 0
+        return super().pixelMetric(metric, option, widget)
+
+
 def setup_application_style(app: QApplication, base_path: Path):
     """Apply persisted theme and uniform typography before the first workbench widget is created."""
-    app.setStyle("Fusion")
+    app.setStyle(_WorkbenchStyle("Fusion"))
     app_font = ui_qfont(9)
     app.setFont(app_font)
     sm = get_settings_manager()
@@ -253,8 +262,6 @@ def setup_application_style(app: QApplication, base_path: Path):
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor(colors["text_primary"]))
     app.setPalette(palette)
     app.setStyleSheet(_load_design_qss(base_path))
-    app._pyscribe_design_filter = _DesignSystemEventFilter(app)
-    app.installEventFilter(app._pyscribe_design_filter)
     # Prefer the official mark (two slashes) for the window/taskbar icon.
     icon_candidates = [
         base_path / "src" / "PyScribe.ico",

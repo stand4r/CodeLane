@@ -46,12 +46,6 @@ class AgentPlanner(QtWidgets.QWidget):
         title.setObjectName("agentPlannerTitle")
         row.addWidget(title)
         row.setSpacing(6)
-        self.search = QtWidgets.QLineEdit()
-        self.search.setObjectName("agentPlannerSearch")
-        self.search.setPlaceholderText("Поиск по названию и тексту…")
-        self.search.setClearButtonEnabled(True)
-        self.search.setToolTip("Фильтр списка: название или текст задачи")
-        self.search.textChanged.connect(self._apply_filter)
         row.addStretch()
         archive = QtWidgets.QToolButton()
         archive.setObjectName("agentPlannerButton")
@@ -70,7 +64,6 @@ class AgentPlanner(QtWidgets.QWidget):
         add.clicked.connect(lambda: self.edit())
         row.addWidget(add)
         box.addLayout(row)
-        box.addWidget(self.search)
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setObjectName("agentPlannerTree")
         self.tree.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
@@ -91,37 +84,24 @@ class AgentPlanner(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self.refresh)
 
     def _reload(self):
-        """Перечитать задания текущего проекта без heartbeat/recover (дешёво для ввода)."""
+        """Перечитать задания текущего проекта без heartbeat/recover."""
         root = self.team._agent_panel._project_root()
         self._root = root
         self._jobs = list(self.cache.jobs(root) if root else [])
 
-    def _apply_filter(self, *_args):
-        """Применить поиск по мере ввода: обновить список и перерисовать дерево."""
-        self._reload()
-        self._redraw()
-
-    def _matches(self, job, query):
-        """Совпадение запроса с названием или текстом задачи (без учёта регистра)."""
-        if not query:
-            return True
-        return query in (job["title"] or "").casefold() or query in (job["prompt"] or "").casefold()
-
     def _redraw(self):
-        """Перестроить дерево по текущему запросу; фильтр влияет только на отображение."""
+        """Перестроить дерево заданий текущего проекта."""
         root = self._root
         jobs = self._jobs
-        query = self.search.text().strip().casefold()
-        visible = [job for job in jobs if self._matches(job, query)]
-        signature = (root, query, tuple(tuple(j) for j in jobs))
+        signature = (root, tuple(tuple(j) for j in jobs))
         if signature == self.signature:
             return
         self.tree.clear()
-        self.empty_label.setText("Нет запланированных задач" if not jobs else "Ничего не найдено")
-        self.empty_label.setVisible(not visible)
+        self.empty_label.setText("Нет запланированных задач")
+        self.empty_label.setVisible(not jobs)
         self.empty_label.setGeometry(self.tree.viewport().rect())
         groups = {}
-        for job in visible:
+        for job in jobs:
             role = job["role"]
             if role not in groups:
                 groups[role] = QtWidgets.QTreeWidgetItem(self.tree, [ROLES[role][0]])
@@ -137,7 +117,6 @@ class AgentPlanner(QtWidgets.QWidget):
     def _toggle_collapsed(self):
         collapsed = not self.tree.isHidden()
         self.tree.setVisible(not collapsed)
-        self.search.setVisible(not collapsed)
         self.collapse_button.setArrowType(QtCore.Qt.ArrowType.DownArrow if collapsed else QtCore.Qt.ArrowType.UpArrow)
         self.collapse_button.setToolTip("Развернуть планировщик" if collapsed else "Свернуть планировщик")
 

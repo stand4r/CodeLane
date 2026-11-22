@@ -720,9 +720,10 @@ class AIAgentPanel(QtWidgets.QWidget):
         # involved in positioning messages.
         self.chat = QtWidgets.QWidget()
         self.chat.setObjectName("aiChatColumn")
+        self.chat.setMaximumWidth(800)
         self.messages = QtWidgets.QVBoxLayout(self.chat)
-        self.messages.setContentsMargins(10, 8, 10, 8)
-        self.messages.setSpacing(2)
+        self.messages.setContentsMargins(14, 12, 14, 16)
+        self.messages.setSpacing(4)
         self.messages.addStretch(1)
 
         column_host = QtWidgets.QWidget()
@@ -730,7 +731,9 @@ class AIAgentPanel(QtWidgets.QWidget):
         host_layout = QtWidgets.QHBoxLayout(column_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
         host_layout.setSpacing(0)
-        host_layout.addWidget(self.chat)
+        host_layout.addStretch()
+        host_layout.addWidget(self.chat, 100)
+        host_layout.addStretch()
         self.transcript.setWidget(column_host)
         root.addWidget(self.transcript, 1)
 
@@ -860,7 +863,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         layout.setContentsMargins(12, 0, 8, 0)
         layout.setSpacing(6)
 
-        title = QtWidgets.QLabel("AI Agent")
+        title = QtWidgets.QLabel("Агент")
         title.setObjectName("aiHeaderTitle")
         self.header_title = title
         layout.addWidget(title)
@@ -946,7 +949,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         wrapper = QtWidgets.QWidget()
         wrapper.setObjectName("aiComposerWrap")
         outer_layout = QtWidgets.QVBoxLayout(wrapper)
-        outer_layout.setContentsMargins(10, 0, 10, 8)
+        outer_layout.setContentsMargins(14, 4, 14, 10)
         outer_layout.setSpacing(4)
 
         card_row = QtWidgets.QWidget()
@@ -957,9 +960,10 @@ class AIAgentPanel(QtWidgets.QWidget):
 
         self.composer = QtWidgets.QFrame()
         self.composer.setObjectName("aiComposer")
+        self.composer.setMaximumWidth(772)
         box = QtWidgets.QVBoxLayout(self.composer)
-        box.setContentsMargins(12, 8, 10, 8)
-        box.setSpacing(4)
+        box.setContentsMargins(12, 10, 10, 9)
+        box.setSpacing(6)
 
         self.input = _ComposerInput(self.composer)
         self.input.setPlaceholderText("Сообщение")
@@ -2019,7 +2023,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._refresh_reasoning_label()
         title = getattr(self, "header_title", None)
         if title is not None:
-            title.setText("AI" if self.width() < 250 else "AI Agent")
+            title.setText("ИИ" if self.width() < 250 else "Агент")
 
     def _relayout_transcript(self):
         timer = getattr(self, "_transcript_layout_timer", None)
@@ -2033,7 +2037,9 @@ class AIAgentPanel(QtWidgets.QWidget):
 
     def _apply_transcript_layout(self):
         """Re-measure every bubble after a width change or a text update."""
-        width = max(160, self.transcript.viewport().width())
+        margins = self.messages.contentsMargins()
+        width = max(160, min(self.transcript.viewport().width(), self.chat.maximumWidth())
+                    - margins.left() - margins.right())
         for bubble in getattr(self, "_bubbles", []) or []:
             try:
                 if bubble.isVisible() or bubble.parent() is not None:
@@ -3488,6 +3494,13 @@ class AIAgentPanel(QtWidgets.QWidget):
 
     def eventFilter(self, watched, event):
         """Intercept Up/Down/Tab/Enter while the completion popup is open."""
+        if watched is getattr(self, "input", None) and event.type() in (
+                QtCore.QEvent.Type.FocusIn, QtCore.QEvent.Type.FocusOut):
+            self.composer.setProperty("inputFocused", event.type() == QtCore.QEvent.Type.FocusIn)
+            style = self.composer.style()
+            style.unpolish(self.composer)
+            style.polish(self.composer)
+            self.composer.update()
         if watched is self.input and event.type() == QtCore.QEvent.Type.KeyPress:
             if self.completion.isVisible():
                 if event.key() in (QtCore.Qt.Key.Key_Up, QtCore.Qt.Key.Key_Down):
@@ -3769,14 +3782,13 @@ class _UserBubble(QtWidgets.QWidget):
             return
         self._width_layout_key = layout_key
         if isinstance(body, QtWidgets.QWidget) and hasattr(body, "set_width"):
-            available = max(220, width - 44)
-            body.set_width(available)
-            self.pill.setMaximumWidth(available)
+            margins = self.pill.layout().contentsMargins()
+            body.set_width(width - margins.left() - margins.right())
+            self.pill.setMaximumWidth(width)
             self.updateGeometry()
             return
         if self._side == "in":
-            # Assistant answers use the full column width, minus the scrollbar
-            # and a little breathing room.
+            # Assistant answers use the column width with room for side padding.
             available = max(200, width - 44)
             cap = available
         else:

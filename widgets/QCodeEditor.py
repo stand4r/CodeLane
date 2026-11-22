@@ -323,9 +323,10 @@ class ModernSyntaxHighlighter(QSyntaxHighlighter):
     STATE_NORMAL = 0
     _format_cache = {}
 
-    def __init__(self, document, language_config: LanguageConfig):
+    def __init__(self, document, language_config: LanguageConfig, *, light_background: bool = False):
         super().__init__(document)
         self.language_config = language_config
+        self._light_background = light_background
         self.lang_name = language_config.name.lower()
         opening, closing = language_config.block_comment_start, language_config.block_comment_end
         line_marks = [language_config.line_comment] if language_config.line_comment else []
@@ -361,6 +362,8 @@ class ModernSyntaxHighlighter(QSyntaxHighlighter):
         self._rules = self._compile_rules()
 
     def _get_cached_format(self, color: str, weight: int = QFont.Weight.Normal, italic: bool = False) -> QTextCharFormat:
+        if self._light_background:
+            color = QColor(color).darker(190).name()
         cache_key = f"{color}_{weight}_{italic}"
         if cache_key not in self._format_cache:
             fmt = QTextCharFormat()

@@ -1,20 +1,12 @@
-"""PyScribe widgets/ActivityBar.py: VS Code-style vertical activity bar.
-
-Metrics intentionally mirror VS Code:
-
-* the bar is a flat 48px column (no rounded pill buttons),
-* every item is a 48x48 hit-area holding a 24px monochrome codicon,
-* the active item is drawn with a 2px accent stripe on the left edge,
-* inactive icons are muted (#868686) and become white on hover.
-"""
+"""Compact navigation rail for the workbench."""
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from design import icons as codicons
 
-ACTIVITY_BAR_WIDTH = 48
-ITEM_SIZE = 48
+ACTIVITY_BAR_WIDTH = 46
+ITEM_SIZE = 38
 ITEM_SIZE_DEFAULT = ITEM_SIZE
-ICON_SIZE = 24
+ICON_SIZE = 20
 ICON_SIZE_DEFAULT = ICON_SIZE
 
 
@@ -72,7 +64,6 @@ class ActivityBar(QtWidgets.QFrame):
         ("git", "source-control", "Управление версиями"),
         ("todo", "circle-check", "Задачи проекта (Ctrl+Shift+T)"),
         ("intelligence", "intelligence", "Анализ проекта"),
-        ("ai", "ai-agent", "ИИ-агент (Ctrl+Shift+I)"),
     ]
 
     def __init__(self, parent=None):
@@ -87,8 +78,8 @@ class ActivityBar(QtWidgets.QFrame):
 
     def _build(self):
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(0, 6, 0, 6)
+        layout.setSpacing(3)
 
         for key, icon_name, tooltip in self.ITEMS:
             button = self._button(icon_name, tooltip)
@@ -126,12 +117,6 @@ class ActivityBar(QtWidgets.QFrame):
         button.setCheckable(True)
         button.setAutoRaise(True)
         button.setFocusPolicy(QtCore.Qt.FocusPolicy.TabFocus)
-        # Per-widget rule so the application QSS cannot tint the pixmap icon.
-        button.setStyleSheet(
-            "QToolButton#activityAction { background: transparent; border: 0; padding: 0; }"
-            "QToolButton#activityAction:hover { background: transparent; border: 0; }"
-            "QToolButton#activityAction:checked { background: transparent; border: 0; }"
-        )
         button.installEventFilter(self)
         return button
 
@@ -273,9 +258,6 @@ class ActivityBar(QtWidgets.QFrame):
             self.terminal_requested.emit()
 
     def _activate_or_toggle(self, key):
-        if key == "ai":
-            self.activity_changed.emit(key)
-            return
         if self.active_sidebar_key == key:
             self.set_sidebar_active(None)
             self.activity_changed.emit("toggle_sidebar")
@@ -300,9 +282,7 @@ class ActivityBar(QtWidgets.QFrame):
     def set_activity(self, key):
         if key in self.buttons and self.buttons[key].isHidden():
             return
-        if key == "ai":
-            self.activity_changed.emit(key)
-        elif key == "settings":
+        if key == "settings":
             self._activate_special("settings")
         elif key == "terminal":
             self._activate_special("terminal")

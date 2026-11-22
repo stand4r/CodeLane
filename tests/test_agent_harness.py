@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.ai_service import AIError, AIService, ToolCall  # noqa: E402
+from services.ai_service import AIError, AIMessage, AIService, ToolCall  # noqa: E402
 from services.agent_harness import (SAME_CALL_LIMIT, AgentHarness,  # noqa: E402
                                     AgentResult)
 
@@ -46,7 +46,7 @@ class ScriptedService:
     def _continue_prompt(self):
         return "продолжи"
 
-    def _stream_until_complete(self, messages, on_text=None, on_reasoning=None):
+    def _stream_until_complete(self, messages, on_text=None, on_reasoning=None, **kwargs):
         return ""
 
 
@@ -86,6 +86,63 @@ def test_tool_results_are_passed_back_whole():
     assert len(tool_messages[0]["content"]) == len(payload), len(tool_messages[0]["content"])
 
 
+def test_old_discovery_output_is_compacted_only_in_provider_requests():
+    large = "начало\n" + "x" * 25_000 + "\nконец"
+    for anthropic in (False, True):
+        calls = [
+            ("", [ToolCall("read", "read_file", {"path": "large.py"})]),
+            ("", [ToolCall("edit", "edit_file", {})]),
+            ("", [ToolCall("check", "run_command", {})]),
+            ("Готово", []),
+        ]
+        service = ScriptedService(calls)
+        service.is_anthropic = anthropic
+
+        def anthropic_round(*args):
+            _, tool_calls = service._openai_tool_round(*args)
+            return [], tool_calls
+
+        service._anthropic_tool_round = anthropic_round
+        result = AgentHarness(service, tools=[{}], tool_runner=lambda *_: large).run(_user_messages())
+
+        def tool_output(message):
+            content = message["content"]
+            if anthropic:
+                assert content[0]["tool_use_id"] == "read"
+                return content[0]["content"]
+            assert message["tool_call_id"] == "read"
+            return content
+
+        assert tool_output(service.seen[1][2]) == large
+        preview = tool_output(service.seen[-1][2])
+        assert preview.startswith("начало") and preview.endswith("конец")
+        assert len(preview) < 2000
+        assert tool_output(result.messages[2]) == large
+        edit = service.seen[-1][4]["content"]
+        assert (edit[0]["content"] if anthropic else edit) == large
+
+
+def test_request_keeps_recent_turn_and_limits_automatic_context():
+    service = AIService({})
+    history = [AIMessage("user", "Старый вопрос"),
+               AIMessage("assistant", "x" * 40_000),
+               AIMessage("user", "Последний вопрос"),
+               AIMessage("assistant", "Последний ответ")]
+    prompt = "Новый запрос"
+    context = "начало" + "y" * 60_000 + "конец"
+    messages = service.build_messages(prompt, history, context)
+    assert messages[1:3] == [item.as_dict() for item in history[-2:]]
+    assert len(messages) == 4
+    attached = messages[-1]["content"]
+    assert attached.startswith(prompt + "\n\nначало") and attached.endswith("конец")
+    assert len(attached) < 49_000
+
+    follow_up = service.build_messages(prompt, history[:2])
+    assert follow_up[1] == history[0].as_dict()
+    assert "Сокращена история" in follow_up[2]["content"]
+    assert len(history[1].content) == 40_000
+
+
 def test_repeated_identical_calls_do_not_loop_forever():
     rounds = [("", [ToolCall("c", "read_file", {"path": "same.py"})]) for _ in range(6)]
     rounds.append(("Хватит", []))
@@ -123,6 +180,24 @@ def test_usage_is_summed_across_rounds():
     # 4 tool rounds + the final answer round: every request reports 10/5.
     assert result.usage.get("prompt_tokens") == 50, result.usage
     assert result.usage.get("completion_tokens") == 25, result.usage
+
+
+def test_usage_includes_automatic_continuation():
+    class TruncatingService(AIService):
+        def _openai_tool_round(self, messages, tools, on_text, on_reasoning=None):
+            self.last_finish_reason = "length"
+            self.last_usage = {"total_tokens": 10}
+            return "Первая часть", []
+
+        def _stream_with(self, messages, on_reasoning=None):
+            self.last_finish_reason = "stop"
+            self.last_usage = {"total_tokens": 15}
+            yield "и продолжение."
+
+    result = AgentHarness(TruncatingService({})).run(_user_messages())
+    assert result.text == "Первая часть и продолжение."
+    assert result.usage["total_tokens"] == 25
+    assert result.stop_reason == "answer"
 
 
 def test_stop_request_ends_the_run_before_new_tools():
@@ -287,9 +362,12 @@ def test_read_file_has_no_character_budget_and_supports_paging():
 TESTS = [
     test_harness_runs_far_beyond_the_old_round_limit,
     test_tool_results_are_passed_back_whole,
+    test_old_discovery_output_is_compacted_only_in_provider_requests,
+    test_request_keeps_recent_turn_and_limits_automatic_context,
     test_narration_before_tools_is_not_part_of_the_answer,
     test_repeated_identical_calls_do_not_loop_forever,
     test_usage_is_summed_across_rounds,
+    test_usage_includes_automatic_continuation,
     test_stop_request_ends_the_run_before_new_tools,
     test_transient_error_is_retried,
     test_non_retryable_error_propagates,

@@ -36,8 +36,8 @@ class UIManager:
         self.main_window.setCentralWidget(self.main_window.central_widget)
 
         root = QtWidgets.QHBoxLayout(self.main_window.central_widget)
-        root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(6)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
         self.main_window.activity_bar = ActivityBar(self.main_window)
         root.addWidget(self.main_window.activity_bar)
