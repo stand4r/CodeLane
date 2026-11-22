@@ -596,7 +596,14 @@ def test_terminal_opens_clean_without_banner(tmp_path, monkeypatch):
         assert "$ " in text, "the prompt must be present"
         assert "PyScribe Terminal" not in text, "no startup banner"
         assert "Среда готова" not in text
-        assert text.strip().count("\n") == 0, f"buffer must contain only the prompt, got {text!r}"
+        # Headless Bash reports missing job control before it prints the prompt.
+        lines = [
+            line for line in text.strip().splitlines()
+            if not (os.name != "nt" and line.startswith((
+                "bash: cannot set terminal process group", "bash: no job control in this shell",
+            )))
+        ]
+        assert len(lines) == 1 and "$" in lines[0], f"buffer must contain only the prompt, got {text!r}"
     finally:
         widget.shutdown()
 
@@ -829,16 +836,18 @@ def test_terminal_ansi_parsing():
     assert parts[1] == " plain"
 
 
-def test_terminal_powershell_command_adaptation():
+def test_terminal_powershell_command_adaptation(monkeypatch):
     from widgets.TerminalWidget import TerminalTab
     app = _app()
     tab = TerminalTab(98, "t", os.getcwd())
     try:
-        tab.shell_program = r"C:\WINDOWS\powershell.exe"
-        assert tab._shell_command_text('"C:/x/y.py" a').startswith("& ")
-        assert tab._shell_command_text("git status") == "git status"
-        tab.shell_program = r"C:\WINDOWS\cmd.exe"
-        assert tab._shell_command_text('"C:/x/y.py"') == '"C:/x/y.py"'
+        with monkeypatch.context() as patch:
+            patch.setattr("widgets.TerminalWidget.IS_WINDOWS", True)
+            tab.shell_program = r"C:\WINDOWS\powershell.exe"
+            assert tab._shell_command_text('"C:/x/y.py" a').startswith("& ")
+            assert tab._shell_command_text("git status") == "git status"
+            tab.shell_program = r"C:\WINDOWS\cmd.exe"
+            assert tab._shell_command_text('"C:/x/y.py"') == '"C:/x/y.py"'
     finally:
         tab.stop_process()
 

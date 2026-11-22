@@ -417,9 +417,9 @@ def test_language_status_and_install_hints(temp_project_dir):
 # =====================================================================
 # 5. Windows Cyrillic & Spaces URI Encoding / Decoding
 # =====================================================================
-def test_windows_paths_with_spaces_and_cyrillic():
-    windows_path = r"C:\Users\Dmitr\OneDrive\Документы\PyScribe\Тестовая Папка\скрипт 1.py"
-    uri = path_to_uri(windows_path)
+def test_paths_with_spaces_and_cyrillic(tmp_path):
+    source_path = tmp_path.resolve() / "Тестовая Папка" / "скрипт 1.py"
+    uri = path_to_uri(str(source_path))
 
     assert uri.startswith("file:///")
     # Cyrillic characters must be percent-encoded in URI
@@ -428,7 +428,7 @@ def test_windows_paths_with_spaces_and_cyrillic():
     assert "%20" in uri
 
     decoded_path = uri_to_path(uri)
-    assert Path(decoded_path) == Path(windows_path)
+    assert Path(decoded_path) == source_path
 
 
 # =====================================================================
