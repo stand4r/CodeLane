@@ -20,6 +20,14 @@ datas = [
     (str(ROOT / "third_party" / "assembly" / "fasm"), "third_party/assembly/fasm"),
 ]
 datas += collect_data_files("jedi") + collect_data_files("parso")
+# The Mozilla CA bundle is data, not code: without it a frozen build falls
+# back to the (sometimes trimmed) Windows root store and AI requests fail with
+# CERTIFICATE_VERIFY_FAILED.
+import certifi
+certifi_bundle = Path(certifi.where())
+if not certifi_bundle.is_file():
+    raise FileNotFoundError(f"certifi CA bundle is missing: {certifi_bundle}")
+datas.append((str(certifi_bundle), "certifi"))
 datas += copy_metadata("bandit")
 datas, database_binaries = collect_delvewheel_libs_directory("psycopg_binary", datas=datas)
 
@@ -35,6 +43,8 @@ hiddenimports = [
     # System and Process inspection
     "psutil",
     "pyte",
+    # CA bundle for outbound HTTPS (utils/tls.py)
+    "certifi",
     # Syntax highlighting & themes
     "pygments",
     "pygments.lexers",

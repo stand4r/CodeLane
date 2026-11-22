@@ -795,6 +795,56 @@ class SettingsWidget(QtWidgets.QWidget):
         self.controls['ai_base_url'] = base_url
         form.addRow('Базовый URL API', base_url)
 
+        tls_verify = QtWidgets.QCheckBox('Проверять TLS-сертификат (рекомендуется)')
+        stored_verify = self._value('ai_tls_verify')
+        tls_verify.setChecked(stored_verify not in (False, 'False', 'false', 0, '0'))
+        tls_verify.setToolTip(
+            'Снимайте только в крайнем случае: без проверки сертификата трафик можно '
+            'перехватить и прочитать. Для прокси/антивируса лучше указать его корневой '
+            'сертификат в поле ниже.')
+        self.controls['ai_tls_verify'] = tls_verify
+        form.addRow('', tls_verify)
+
+        ca_bundle = QtWidgets.QLineEdit(str(self._value('ai_tls_ca_bundle') or ''))
+        ca_bundle.setPlaceholderText('Необязательно: PEM- или DER-файл корневого сертификата')
+        ca_bundle.setToolTip(
+            'Корневой сертификат, которому нужно доверять дополнительно к системному '
+            'хранилищу и набору Mozilla. Помогает при ошибке «unable to get local issuer '
+            'certificate» и при перехвате HTTPS корпоративным прокси.')
+        self.controls['ai_tls_ca_bundle'] = ca_bundle
+        ca_row = QtWidgets.QWidget()
+        ca_lay = QtWidgets.QHBoxLayout(ca_row)
+        ca_lay.setContentsMargins(0, 0, 0, 0)
+        browse_ca = QtWidgets.QPushButton('Обзор…')
+        browse_ca.setToolTip('Выбрать файл сертификата CA (PEM или DER)')
+
+        def _pick_ca_bundle():
+            path, _selected = QtWidgets.QFileDialog.getOpenFileName(
+                self, 'Выбрать корневой сертификат', ca_bundle.text().strip(),
+                'Сертификаты (*.pem *.crt *.cer *.der);;Все файлы (*)')
+            if path:
+                ca_bundle.setText(path)
+
+        browse_ca.clicked.connect(_pick_ca_bundle)
+        ca_lay.addWidget(ca_bundle, 1)
+        ca_lay.addWidget(browse_ca)
+        form.addRow('Сертификат CA', ca_row)
+
+        ca_hint = QtWidgets.QLabel(
+            'CodeLane доверяет системному хранилищу и полному набору корневых '
+            'сертификатов Mozilla (certifi). Если сеть перехватывает HTTPS, укажите '
+            'корневой сертификат прокси или антивируса в этом поле.')
+        ca_hint.setWordWrap(True)
+        ca_hint.setObjectName('settingsHint')
+        form.addRow('', ca_hint)
+
+        def _sync_tls_fields():
+            ca_bundle.setEnabled(tls_verify.isChecked())
+            browse_ca.setEnabled(tls_verify.isChecked())
+
+        tls_verify.toggled.connect(lambda _checked: _sync_tls_fields())
+        _sync_tls_fields()
+
         model = QtWidgets.QComboBox()
         model.setEditable(True)
         self.controls['ai_model'] = model
@@ -803,6 +853,12 @@ class SettingsWidget(QtWidgets.QWidget):
         def _fill_models(provider_key, keep_current=False):
             spec = get_provider(provider_key)
             current = model.currentText() if keep_current else spec.default_model
+            # Migrate values saved by older releases that stored the display
+            # label instead of the provider's API model ID.
+            for item in spec.models:
+                if current.casefold() == item.label.casefold():
+                    current = item.id
+                    break
             model.blockSignals(True)
             model.clear()
             for item in spec.models:
@@ -1138,6 +1194,8 @@ class SettingsWidget(QtWidgets.QWidget):
             'ai_model': text('ai_model'),
             'ai_api_key': typed_key,
             'ai_provider_keys': keys,
+            'ai_tls_verify': bool(self.controls['ai_tls_verify'].isChecked()),
+            'ai_tls_ca_bundle': text('ai_tls_ca_bundle'),
             'ai_show_reasoning': bool(self.controls['ai_show_reasoning'].isChecked()),
             'ai_mode': self.controls['ai_mode'].currentData() or 'solve',
             'ai_access_mode': self.controls['ai_access_mode'].currentData(),

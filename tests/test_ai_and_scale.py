@@ -601,6 +601,12 @@ def test_deepseek_models_are_current():
     # Retired names must not be offered as first-class choices.
     assert "deepseek-reasoner" not in ids
     assert spec.default_model == "deepseek-flash"
+
+
+def test_ai_service_normalizes_legacy_model_labels():
+    from services.ai_service import AIService
+
+    assert AIService(config={"ai_provider": "deepseek", "ai_model": "DeepSeek Flash"}).model == "deepseek-flash"
     # The Anthropic-format endpoint is declared for Claude-compatible clients.
     assert spec.anthropic_base_url.endswith("/anthropic")
 

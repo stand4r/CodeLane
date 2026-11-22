@@ -52,3 +52,6 @@ jobs:
           $arguments = '--smoke-test "{0}" "{1}"' -f $project, $python
           $process = Start-Process -FilePath 'dist/CodeLane/CodeLane.exe' -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "CodeLane smoke test failed with exit code $($process.ExitCode)" }
+          $bundle = Join-Path (Get-Location) 'dist/CodeLane/_internal/certifi/cacert.pem'
+          if (-not (Test-Path -LiteralPath $bundle -PathType Leaf)) { throw "Packaged certifi CA bundle is missing: $bundle" }
+          if ((Get-Item -LiteralPath $bundle).Length -lt 100000) { throw 'Packaged certifi CA bundle is unexpectedly small.' }

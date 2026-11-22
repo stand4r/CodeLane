@@ -45,6 +45,11 @@ DEFAULT_SETTINGS = {
     "ai_base_url": "https://api.deepseek.com",
     "ai_model": "deepseek-flash",
     "ai_api_key": "",
+    # Verify HTTPS certificates. Turning this off is unsafe; a corporate
+    # proxy/antivirus certificate is better pointed at with ai_tls_ca_bundle.
+    "ai_tls_verify": True,
+    # Optional PEM/DER file with a root CA added to the system trust store.
+    "ai_tls_ca_bundle": "",
     # Per-provider keys: {"deepseek": "sk-...", "gemini": "AIza..."}.
     "ai_provider_keys": {},
     "ai_temperature": 3,

@@ -490,6 +490,27 @@ class InteractiveTerminalEdit(QtWidgets.QTextEdit):
                     self.setTextCursor(cursor)
             elif cursor.position() <= self.prompt_pos:
                 return
+            else:
+                # QTextEdit's default Backspace handling can be intercepted by
+                # platform input methods. Edit only the command buffer and
+                # place the caret explicitly so deletion is reliable.
+                offset = self._input_cursor_offset()
+                command = self.get_current_command()
+                if offset > 0:
+                    start = offset - 1
+                    # A supplementary Unicode character occupies two UTF-16
+                    # code units in QTextCursor; delete it as one character.
+                    if (start > 0 and start < len(command)
+                            and 0xDC00 <= ord(command[start]) <= 0xDFFF
+                            and 0xD800 <= ord(command[start - 1]) <= 0xDBFF):
+                        start -= 1
+                    updated = command[:start] + command[offset:]
+                    self._set_input_text(updated)
+                    cursor = self.textCursor()
+                    cursor.setPosition(self.prompt_pos + len(updated[:start].encode("utf-16-le")) // 2)
+                    self.setTextCursor(cursor)
+                event.accept()
+                return
 
         # Never move the caret into the prompt area
         cursor = self.textCursor()

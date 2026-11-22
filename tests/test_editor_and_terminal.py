@@ -108,6 +108,32 @@ def test_terminal_shortcuts_take_precedence_and_filter_control_characters():
         host.close()
 
 
+def test_terminal_backspace_deletes_input_and_preserves_prompt():
+    from PyQt6.QtTest import QTest
+    from widgets.TerminalWidget import InteractiveTerminalEdit
+
+    class Shell:
+        def is_run_process_active(self):
+            return False
+
+    host = QtWidgets.QWidget()
+    screen = InteractiveTerminalEdit(Shell(), host)
+    screen._insert_at_end("$ ")
+    screen._set_input_text("abc")
+    screen.setFocus()
+    cursor = screen.textCursor()
+    cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+    screen.setTextCursor(cursor)
+    QTest.keyClick(screen, QtCore.Qt.Key.Key_Backspace)
+    assert screen.get_current_command() == "ab"
+    assert screen.textCursor().position() == screen.document().characterCount() - 1
+    for _ in range(2):
+        QTest.keyClick(screen, QtCore.Qt.Key.Key_Backspace)
+    assert screen.get_current_command() == ""
+    assert screen.toPlainText().startswith("$ ")
+    host.close()
+
+
 def test_terminal_interrupt_does_not_write_control_bytes_to_shell():
     from types import SimpleNamespace
     from widgets.TerminalWidget import TerminalTab

@@ -22,12 +22,15 @@ from __future__ import annotations
 
 import json
 import re
+import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from services.ai_providers import KIND_ANTHROPIC, PROVIDERS, get_provider
+from utils.tls import TLSProblem, build_ssl_context, describe_tls_error
 
 # Shape of a bare 32-character hexadecimal token (what other services use for
 # API keys; DeepSeek keys always start with "sk-").
@@ -276,10 +279,47 @@ class AIService:
         return str(value).strip().rstrip("/")
 
     @property
+    def tls_verify(self) -> bool:
+        """Whether HTTPS certificates are verified (Настройки → ИИ-агент)."""
+        value = self._setting("ai_tls_verify", True)
+        return value not in (False, "False", "false", 0, "0")
+
+    @property
+    def tls_ca_bundle(self) -> str:
+        """Optional user-supplied CA file added to the trust store."""
+        return str(self._setting("ai_tls_ca_bundle", "") or "").strip()
+
+    def _ssl_context(self) -> ssl.SSLContext:
+        """Build (once) the TLS context used by every request of this service."""
+        context = getattr(self, "_tls_context_cache", None)
+        if context is not None:
+            return context
+        try:
+            context = build_ssl_context(self.tls_verify, self.tls_ca_bundle)
+        except TLSProblem as exc:
+            raise AIError(str(exc)) from None
+        self._tls_context_cache = context
+        return context
+
+    def _tls_message(self, exc: BaseException) -> str:
+        host = urllib.parse.urlsplit(self.base_url).hostname or self.base_url
+        return describe_tls_error(exc, host=host, verify=self.tls_verify,
+                                  ca_bundle=self.tls_ca_bundle)
+
+    @property
     def model(self) -> str:
         if not self.config or "ai_model" not in self.config:
             return self.provider.default_model
-        return str(self.config.get("ai_model") or "").strip()
+        configured = str(self.config.get("ai_model") or "").strip()
+        if not configured:
+            return self.provider.default_model
+
+        # Older settings (and editable combo boxes) sometimes stored the
+        # human-facing label. APIs require the stable model ID instead.
+        for model in self.provider.models:
+            if configured.casefold() in (model.id.casefold(), model.label.casefold()):
+                return model.id
+        return configured
 
     @property
     def api_key(self) -> str:
@@ -621,8 +661,11 @@ class AIService:
         return f"Ошибка API ({code})" + (f": {detail}" if detail else "")
 
     def _open(self, req: urllib.request.Request):
+        context = None
+        if req.full_url.lower().startswith("https://"):
+            context = self._ssl_context()
         try:
-            return urllib.request.urlopen(req, timeout=self.timeout)
+            return urllib.request.urlopen(req, timeout=self.timeout, context=context)
         except urllib.error.HTTPError as exc:
             body = ""
             try:
@@ -630,8 +673,14 @@ class AIService:
             except Exception:
                 pass
             raise self._friendly_http_error(exc.code, body) from None
+        except ssl.SSLCertVerificationError as exc:
+            raise AIError(self._tls_message(exc)) from None
+        except ssl.SSLError as exc:
+            raise AIError(self._tls_message(exc)) from None
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", exc)
+            if isinstance(reason, ssl.SSLError):
+                raise AIError(self._tls_message(reason)) from None
             raise AIError(
                 "Нет соединения с API. Проверьте интернет и базовый URL "
                 f"({self.base_url}). Причина: {reason}"
