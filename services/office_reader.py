@@ -3,7 +3,10 @@ from html import escape
 from pathlib import Path
 import re
 from zipfile import ZipFile
-import xml.etree.ElementTree as ET
+try:
+    from defusedxml import ElementTree as ET
+except ImportError:  # Keep the application usable before optional deps are installed.
+    import xml.etree.ElementTree as ET
 
 from PyQt6 import QtCore, QtGui
 

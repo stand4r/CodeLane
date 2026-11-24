@@ -43,6 +43,8 @@ class AgentTeamTab(QtWidgets.QWidget):
     agent_updated = QtCore.pyqtSignal(int, str, str, str)
     report_updated = QtCore.pyqtSignal(int, str)
     action_logged = QtCore.pyqtSignal(int, str)
+    reasoning_received = QtCore.pyqtSignal(int, str)
+    usage_received = QtCore.pyqtSignal(object)
     relationship_updated = QtCore.pyqtSignal(int, int, object)
 
     def __init__(self, agent_panel, parent=None):
@@ -62,25 +64,25 @@ class AgentTeamTab(QtWidgets.QWidget):
         self._applying = None
         self._pending = []
         self._last_result = ""
-        self._run_attachments = ()
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(7, 7, 7, 7)
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.split = split
         split.setObjectName("agentWorkspaceSplit")
-        split.setHandleWidth(1)
+        split.setHandleWidth(8)
         split.setChildrenCollapsible(False)
         split.addWidget(agent_panel)
         agent_panel.show()
         self.idea = agent_panel.input
-        details = QtWidgets.QWidget()
+        details = QtWidgets.QFrame()
         details.setObjectName("agentWorkspacePanel")
         right = QtWidgets.QVBoxLayout(details)
         right.setContentsMargins(14, 12, 14, 12)
         right.setSpacing(10)
 
         controls = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel("Команда")
+        title = QtWidgets.QLabel("Ход работы")
         title.setObjectName("agentWorkspaceTitle")
         controls.addWidget(title)
         controls.addStretch()
@@ -92,26 +94,28 @@ class AgentTeamTab(QtWidgets.QWidget):
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop)
         controls.addWidget(self.stop_button)
-        self.continue_button = QtWidgets.QPushButton("Продолжить", self)
-        self.continue_button.hide()
-        self.continue_button.clicked.connect(self._continue_limited_run)
-        controls.addWidget(self.continue_button)
         right.addLayout(controls)
         self.activity = QtWidgets.QLabel("Готов к задаче")
         self.activity.setObjectName("agentWorkspaceActivity")
         self.activity.setWordWrap(True)
         right.addWidget(self.activity)
+        self.reasoning_view = QtWidgets.QLabel()
+        self.reasoning_view.setObjectName("agentTeamReasoning")
+        self.reasoning_view.setFixedHeight(18)
+        self.reasoning_view.setWordWrap(False)
+        self.reasoning_view.installEventFilter(self)
+        self.reasoning_view.hide()
         self.pending_list = QtWidgets.QListWidget()
         self.pending_list.setObjectName("agentTaskQueue")
         self.pending_list.setMaximumHeight(90)
         self.pending_list.setToolTip("Двойной клик удаляет задачу из очереди")
         self.pending_list.itemDoubleClicked.connect(self._remove_pending)
         self.pending_list.hide()
-        right.addWidget(self.pending_list)
         self.graph = AgentGraph()
         right.addWidget(self.graph, 1)
         self.stats = QtWidgets.QLabel()
         self.stats.setObjectName("agentWorkspaceStats")
+        self.stats.setWordWrap(True)
         right.addWidget(self.stats)
         self.changes_button = QtWidgets.QPushButton()
         self.changes_button.setObjectName("agentChangesButton")
@@ -123,6 +127,8 @@ class AgentTeamTab(QtWidgets.QWidget):
         self.applied_button.clicked.connect(self.show_snapshots)
         self.applied_button.hide()
         right.addWidget(self.applied_button)
+        right.addWidget(self.reasoning_view)
+        right.addWidget(self.pending_list)
         self.planner = AgentPlanner(self)
         right.addWidget(self.planner)
         split.addWidget(details)
@@ -134,7 +140,18 @@ class AgentTeamTab(QtWidgets.QWidget):
         self.agent_updated.connect(self._update_card, QtCore.Qt.ConnectionType.QueuedConnection)
         self.report_updated.connect(self._update_report, QtCore.Qt.ConnectionType.QueuedConnection)
         self.action_logged.connect(self._log, QtCore.Qt.ConnectionType.QueuedConnection)
+        self.reasoning_received.connect(self._append_reasoning, QtCore.Qt.ConnectionType.QueuedConnection)
+        self.usage_received.connect(self._update_live_usage, QtCore.Qt.ConnectionType.QueuedConnection)
         self.relationship_updated.connect(self._relationship, QtCore.Qt.ConnectionType.QueuedConnection)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "split"):
+            direction = (QtCore.Qt.Orientation.Vertical if self.width() < 720
+                         else QtCore.Qt.Orientation.Horizontal)
+            if self.split.orientation() != direction:
+                self.split.setOrientation(direction)
+                self.split.setSizes([650, 310])
 
     @QtCore.pyqtSlot(int, int, object)
     def _relationship(self, number, parent, dependencies):
@@ -188,7 +205,7 @@ class AgentTeamTab(QtWidgets.QWidget):
         self.pending_list.setVisible(bool(self._pending))
 
     def _next_pending(self):
-        if self.busy or self._question or self._edits or not self.continue_button.isHidden() or not self._pending:
+        if self.busy or self._question or self._edits or not self._pending:
             return
         root, text, paths = self._pending[0]
         if self._agent_panel._project_root() != root:
@@ -215,12 +232,62 @@ class AgentTeamTab(QtWidgets.QWidget):
     def _log(self, number, text):
         entry = QtCore.QTime.currentTime().toString("HH:mm:ss") + "  " + str(text)
         self._logs.setdefault(number, []).append(entry)
+        if self._cancel is not None and not getattr(self, "_received_reasoning", False):
+            title = self._cards[number].title if number in self._cards else "Агент"
+            self._set_reasoning_line(f"{title}: {str(text).splitlines()[0]}")
         view = self._log_views.get(number)
         if view is not None:
             try:
                 view.appendPlainText(entry)
             except RuntimeError:
                 self._log_views.pop(number, None)
+
+    @QtCore.pyqtSlot(int, str)
+    def _append_reasoning(self, number, piece):
+        if self._cancel is None or not piece:
+            return
+        if not getattr(self, "_received_reasoning", False):
+            self._reasoning_text = ""
+            self._received_reasoning = True
+        if number != self._reasoning_agent:
+            self._reasoning_text = f"{self._cards[number].title if number in self._cards else 'Агент'}: "
+            self._reasoning_agent = number
+        self._reasoning_text += piece.replace("\n", " ")
+        self._set_reasoning_line(self._reasoning_text)
+
+    def _set_reasoning_line(self, text):
+        self._reasoning_text = str(text)
+        metrics = self.reasoning_view.fontMetrics()
+        width = max(0, self.reasoning_view.width() - 4)
+        if metrics.horizontalAdvance(text) > width:
+            low, high = 0, len(text)
+            while low < high:
+                middle = (low + high + 1) // 2
+                if metrics.horizontalAdvance(text[:middle] + "...") <= width:
+                    low = middle
+                else:
+                    high = middle - 1
+            text = text[:low].rstrip() + "..."
+        self.reasoning_view.setText(text)
+        self.reasoning_view.setToolTip(self._reasoning_text)
+        self.reasoning_view.show()
+
+    def eventFilter(self, watched, event):
+        if watched is self.reasoning_view and event.type() == QtCore.QEvent.Type.Resize:
+            if self.reasoning_view.isVisible() and hasattr(self, "_reasoning_text"):
+                self._set_reasoning_line(self._reasoning_text)
+        return super().eventFilter(watched, event)
+
+    @QtCore.pyqtSlot(object)
+    def _update_live_usage(self, usage):
+        if self._cancel is None or not isinstance(usage, dict):
+            return
+        total = usage.get("total_tokens")
+        if not isinstance(total, (int, float)):
+            total = (usage.get("prompt_tokens") or usage.get("input_tokens") or 0) + (
+                usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        self._live_tokens += int(total)
+        self.stats.setText(f"Токены: {self._live_tokens:,} · запрос выполняется".replace(",", " "))
 
     def _show_report(self, item):
         from PyQt6 import sip
@@ -286,13 +353,11 @@ class AgentTeamTab(QtWidgets.QWidget):
             self._agent_panel._append_notice(problem, "warn")
             return False
         cancel = Event()
-        toolbox = self._agent_panel._build_local_tools(cancel.is_set, full_access=True)
+        toolbox = self._agent_panel._build_local_tools(cancel.is_set, background=True)
         if "read_file" not in {tool["function"]["name"] for tool in toolbox.definitions()}:
             self._agent_panel._append_notice("Включите чтение файлов проекта в разрешениях агента.", "warn")
             return False
         self._root = root
-        self._run_attachments = attachment_paths
-        self.continue_button.hide()
         self._run_id = uuid4().hex
         toolbox.team_cache = self.planner.cache
         toolbox.team_run_id = self._run_id
@@ -303,6 +368,12 @@ class AgentTeamTab(QtWidgets.QWidget):
         self._cancel = cancel
         self.stop_button.setEnabled(True)
         self.stats.clear()
+        self.reasoning_view.clear()
+        self.reasoning_view.hide()
+        self._reasoning_text = ""
+        self._received_reasoning = False
+        self._reasoning_agent = None
+        self._live_tokens = 0
         self.applied_button.hide()
         self._set_edits([])
         self.graph.clear()
@@ -311,32 +382,25 @@ class AgentTeamTab(QtWidgets.QWidget):
         self._log_views.clear()
         self._update_card(0, "Руководитель", self._goal, "Запуск")
         self._agent_panel._record_team_message("user", text)
-        context = ("\n\nПредыдущая задача и её итог (проверь актуальность по проекту):\n" + self._last_result
-                   if self._last_result else "")
         options = {"attachment_paths": attachment_paths} if attachment_paths else {}
+        from services.ai_service import AIService
+        if isinstance(service, AIService):
+            service.config["ai_team_strategy"] = "single"  # three-stage team is paused
+        if self._last_result:
+            options["previous_result"] = self._last_result
         server_configs = getattr(self._agent_panel, "_mcp_server_configs", None)
         if access_mode == "full" and server_configs is not None:
             configs = server_configs()
             if configs:
                 options["mcp_servers"] = configs
-        run_async(partial(run_team, service, toolbox, self._goal + context, self.agent_updated.emit, cancel.is_set,
+        run_async(partial(run_team, service, toolbox, self._goal, self.agent_updated.emit, cancel.is_set,
                           report=self.report_updated.emit, trace=self.action_logged.emit,
+                          reasoning=self.reasoning_received.emit, usage_progress=self.usage_received.emit,
                           scheduled_role=scheduled_role, relationship=self.relationship_updated.emit, **options),
                   on_done=self._finish, on_error=self._finish)
         return True
 
-    def _continue_limited_run(self):
-        if self._agent_panel._project_root() != self._root:
-            self.continue_button.hide()
-            return
-        if self._edits:
-            self._agent_panel._append_notice("Сначала примените или отклоните подготовленные изменения.", "warn")
-            return
-        self.submit("Продолжи предыдущую задачу с достигнутого состояния.",
-                    attachment_paths=self._run_attachments)
-
     def stop(self):
-        self.continue_button.hide()
         self._pending.clear()
         self.pending_list.clear()
         self.pending_list.hide()
@@ -532,7 +596,6 @@ class AgentTeamTab(QtWidgets.QWidget):
                 self._persist_chat_session()
             return
         self._question = result.question
-        self.continue_button.setVisible(result.budget_exhausted)
         self._set_edits(result.edits)
         self.applied_button.setText(f"Применено файлов · {len(result.changed_files)}")
         self.applied_button.setToolTip("\n".join(result.changed_files))
@@ -552,6 +615,20 @@ class AgentTeamTab(QtWidgets.QWidget):
         if result.question:
             self.idea.setFocus()
         total = result.usage.get("total_tokens")
-        self.stats.setText(f"Токены: {total}" if total is not None else "Расход токенов недоступен")
+        usage = result.usage
+        incoming = usage.get("prompt_tokens")
+        if incoming is None and "input_tokens" in usage:
+            incoming = (usage["input_tokens"] + usage.get("cache_read_input_tokens", 0)
+                        + usage.get("cache_creation_input_tokens", 0))
+        outgoing = usage.get("completion_tokens", usage.get("output_tokens"))
+        if incoming is not None:
+            parts = [f"Вход {incoming:,}"]
+            if "cache_read_input_tokens" in usage:
+                parts.append(f"из кэша {usage['cache_read_input_tokens']:,}")
+            if outgoing is not None:
+                parts.append(f"выход {outgoing:,}")
+            self.stats.setText(" · ".join(parts).replace(",", " "))
+        else:
+            self.stats.setText(f"Токены: {total}" if total is not None else "Расход токенов недоступен")
         if result.complete and not result.failed_agents:
             QtCore.QTimer.singleShot(0, self._next_pending)

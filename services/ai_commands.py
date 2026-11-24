@@ -34,7 +34,7 @@ COMMANDS: Tuple[ChatCommand, ...] = (
     ChatCommand("help", "/help", "Показать список команд"),
     ChatCommand("model", "/model [имя]", "Показать или сменить модель"),
     ChatCommand("models", "/models", "Список моделей провайдера (в т.ч. бесплатных)"),
-    ChatCommand("provider", "/provider [ключ]", "Сменить провайдера (deepseek, gemini, …)"),
+    ChatCommand("provider", "/provider [ключ]", "Сменить провайдера (deepseek, tokenator, …)"),
     ChatCommand("context", "/context project|file|none", "Что прикреплять к запросу"),
     ChatCommand("mode", "/mode solve|teach", "Режим агента: решение или наставник"),
     ChatCommand("reasoning", "/reasoning auto|none|low|medium|high",

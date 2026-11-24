@@ -4,6 +4,7 @@ from dataclasses import asdict, replace
 from itertools import islice
 from pathlib import Path
 import re
+import shutil
 
 from PyQt6 import QtCore, QtGui
 
@@ -248,11 +249,38 @@ def _find_editor(window, path):
     return None
 
 
+def _delete_path(window, path, *, recursive=False):
+    if not path.exists() and not path.is_symlink():
+        raise RuntimeError("Путь не найден.")
+    if path.is_dir() and not path.is_symlink():
+        if not recursive:
+            raise RuntimeError("Для удаления папки укажи recursive=true.")
+        for group in window.editor_groups():
+            for index in range(group.count()):
+                current = getattr(group.widget(index), "file_path", None)
+                if current and Path(current).resolve().is_relative_to(path):
+                    raise RuntimeError("Сначала закрой открытые вкладки удаляемого пути.")
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    if hasattr(window, "file_explorer"):
+        try:
+            window.file_explorer.refresh_model()
+        except Exception:
+            pass
+    return {"deleted": True, "path": str(path)}
+
+
 def _edit_explorer(window, payload, root):
     path = Path(payload["path"])
-    if payload["action"] == "mkdir":
+    action = payload["action"]
+    if action == "mkdir":
         path.mkdir()
         return {"path": str(path)}
+    if path.resolve() == Path(root).resolve():
+        raise RuntimeError("Нельзя изменить корень проекта.")
+    if action == "delete":
+        return _delete_path(window, path, recursive=bool(payload.get("recursive")))
     if "destination" not in payload:
         raise RuntimeError("Укажи destination.")
     target = Path(payload["destination"])
@@ -305,8 +333,6 @@ def run_workbench(window, name, payload, complete):
                 if not current or Path(current).resolve() != root:
                     complete(error="Открытый проект изменился.")
                     return
-                if not error:
-                    window.file_manager.open_file(str(path))
                 complete(value, error=error)
 
             return _background(lambda: read_document(path, offset=payload.get("offset", 1),
@@ -429,8 +455,10 @@ def run_workbench(window, name, payload, complete):
 
         service = UnifiedCodeAnalysisService.get_instance()
         path = Path(payload["path"])
+        if not path.is_absolute() and root is not None:
+            path = Path(root) / path
         if not path.is_file():
-            raise RuntimeError("Файл для LSP не найден.")
+            raise RuntimeError(f"Файл для LSP не найден: {path}")
         found = _find_editor(window, path)
         get_code = getattr(found[2], "get_code", None) if found else None
         source = get_code() if callable(get_code) else None

@@ -54,7 +54,7 @@ def _user_messages():
     return [{"role": "user", "content": "сделай задачу"}]
 
 
-def test_shared_round_budget_and_repeat_guard():
+def test_legacy_round_budget_is_ignored_but_repeat_guard_still_works():
     from services.agent_harness import RoundBudget
 
     limit = SAME_CALL_LIMIT + 1
@@ -63,11 +63,11 @@ def test_shared_round_budget_and_repeat_guard():
     service = ScriptedService(calls)
     result = AgentHarness(service, tools=[{}], tool_runner=lambda *_: "file",
                           unlimited_rounds=True, round_budget=budget).run(_user_messages())
-    assert result.stop_reason == "limit" and result.rounds == limit
+    assert result.stop_reason == "answer" and result.rounds == limit + 1
     assert result.tool_runs[-1].repeated
     second = ScriptedService([("unexpected", [])])
-    assert AgentHarness(second, round_budget=budget).run(_user_messages()).stop_reason == "limit"
-    assert second.requests == 0
+    assert AgentHarness(second, round_budget=budget).run(_user_messages()).stop_reason == "answer"
+    assert second.requests == 1
 
 
 def test_harness_runs_far_beyond_the_old_round_limit():
@@ -103,7 +103,7 @@ def test_tool_results_are_passed_back_whole():
 
 
 def test_old_discovery_output_is_compacted_only_in_provider_requests():
-    large = "начало\n" + "x" * 25_000 + "\nконец"
+    large = "начало\n" + "x" * 900_000 + "\nконец"
     for anthropic in (False, True):
         calls = [
             ("", [ToolCall("read", "read_file", {"path": "large.py"})]),
@@ -129,7 +129,7 @@ def test_old_discovery_output_is_compacted_only_in_provider_requests():
             assert message["tool_call_id"] == "read"
             return content
 
-        assert tool_output(service.seen[1][2]) == large
+        assert len(tool_output(service.seen[1][2])) < 49_000
         preview = tool_output(service.seen[-1][2])
         assert preview.startswith("начало") and preview.endswith("конец")
         assert len(preview) < 2000
@@ -151,7 +151,7 @@ def test_request_keeps_recent_turn_and_limits_automatic_context():
     assert len(messages) == 4
     attached = messages[-1]["content"]
     assert attached.startswith(prompt + "\n\nначало") and attached.endswith("конец")
-    assert len(attached) < 49_000
+    assert attached == prompt + "\n\n" + context
 
     follow_up = service.build_messages(prompt, history[:2])
     assert follow_up[1] == history[0].as_dict()
@@ -368,7 +368,7 @@ def test_read_file_has_no_character_budget_and_supports_paging():
         body = "\n".join(f"line {i}" for i in range(1, 501))
         (root / "big.py").write_text(body, encoding="utf-8")
         box = LocalToolbox(str(root))
-        whole = box.read_file("big.py")
+        whole = box.read_file("big.py", limit=0)
         assert whole == body, "read_file must not cut the file"
         page = box.read_file("big.py", offset=10, limit=5)
         assert "строки 10–14" in page
@@ -414,3 +414,28 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+def test_repeated_read_deduplicates_payload_but_checks_for_changes():
+    outputs = iter(['first' * 1000, 'first' * 1000, 'updated' * 1000])
+    service = ScriptedService([
+        ('', [ToolCall(str(i), 'read_file', {'path': 'a.py'})]) for i in range(3)
+    ] + [('done', [])])
+    result = AgentHarness(service, tools=[{}], tool_runner=lambda *_: next(outputs)).run(_user_messages())
+    assert result.tool_runs[0].output == 'first' * 1000
+    assert 'не изменился' in result.tool_runs[1].output
+    assert len(result.tool_runs[1].output) < 500
+    assert result.tool_runs[2].output == 'updated' * 1000
+
+
+def test_edit_allows_fresh_read_after_repeat_limit():
+    calls = [('', [ToolCall(str(i), 'read_file', {'path': 'a.py'})])
+             for i in range(SAME_CALL_LIMIT)]
+    calls += [('', [ToolCall('edit', 'edit_file', {'path': 'a.py'})]),
+              ('', [ToolCall('after', 'read_file', {'path': 'a.py'})]), ('done', [])]
+    executed = []
+    def runner(name, args):
+        executed.append(name)
+        return 'output'
+    result = AgentHarness(ScriptedService(calls), tools=[{}], tool_runner=runner).run(_user_messages())
+    assert executed.count('read_file') == SAME_CALL_LIMIT + 1
+    assert not result.tool_runs[-1].repeated

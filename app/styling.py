@@ -172,6 +172,12 @@ def _load_design_qss(base_path: Path) -> str:
         qss = re.sub(r"#[0-9A-Fa-f]{6}\b", lambda match: token_map.get(match[0], match[0]), qss)
 
         glass_tokens = {
+            "@agent_canvas@": "#f8f8fb" if light else "#18191e",
+            "@agent_panel@": "#f1f2f7" if light else "#202127",
+            "@agent_card@": "#ffffff" if light else "#292b33",
+            "@agent_edge@": "#d9dbe5" if light else "#393b46",
+            "@agent_accent@": "#67569d" if light else "#b8a9eb",
+            "@agent_tint@": "#eae6f5" if light else "#322e40",
             "@glass_surface@": tint(0.035),
             "@glass_border@": tint(0.32 if light else 0.18),
             "@glass_hover@": tint(0.14),

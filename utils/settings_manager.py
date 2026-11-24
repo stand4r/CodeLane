@@ -45,6 +45,8 @@ DEFAULT_SETTINGS = {
     "ai_base_url": "https://api.deepseek.com",
     "ai_model": "deepseek-flash",
     "ai_api_key": "",
+    "ai_profiles": [],
+    "ai_active_profile": "",
     # Verify HTTPS certificates. Turning this off is unsafe; a corporate
     # proxy/antivirus certificate is better pointed at with ai_tls_ca_bundle.
     "ai_tls_verify": True,
@@ -55,7 +57,6 @@ DEFAULT_SETTINGS = {
     "ai_temperature": 3,
     # 0 = no local output budget (the provider's own maximum applies).
     "ai_max_tokens": 0,
-    "ai_agent_round_budget": 64,
     # How hard the model should think: auto | none | low | medium | high.
     "ai_reasoning_effort": "auto",
     "ai_system_prompt": "",

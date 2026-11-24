@@ -1,4 +1,5 @@
 """Process and thread usage for launches belonging to the active project."""
+import os
 import time
 
 import psutil
@@ -84,20 +85,16 @@ class ProjectTaskManager(QtWidgets.QWidget):
             self.session = session
             self.previous = {}
             self.tree.clear()
-        if not session:
-            self.summary.setText("Откройте проект, чтобы видеть его процессы.")
-            self.tree.clear()
-            return
         if self.worker is not None:
             return
-        roots = []
+        roots = [os.getpid()]
         for tab in self.terminal.tabs.values():
             for process in (tab.process, getattr(tab, "_run_process", None)):
                 if process is not None and process.state() != QtCore.QProcess.ProcessState.NotRunning:
                     pid = int(process.processId())
                     if pid:
                         roots.append(pid)
-        self.summary.setText("Процессы терминалов и запусков проекта · " + session)
+        self.summary.setText("CodeLane, терминалы и запуски проекта" + (" · " + session if session else ""))
         # The snapshot is sampled on the shared Python pool, never on a Qt thread.
         previous = self.previous
         self.worker = run_async(

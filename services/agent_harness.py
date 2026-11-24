@@ -2,8 +2,7 @@
 
 This is the piece that turns a chat model into a working coding agent:
 
-* the loop keeps going until the model produces a final answer or uses the
-  applicable round allowance;
+* the loop keeps going until the model produces a final answer or the user stops it;
 * recent tool results retain more detail; large discovery results are
   shortened in provider requests while the transcript retains them;
 * repeated identical tool calls are detected and the model
@@ -28,13 +27,8 @@ from services.ai_service import AIError, AIService, ToolCall
 
 __all__ = ["AgentHarness", "AgentResult", "AgentUsage", "ToolRun"]
 
-# A pathological model could keep calling tools forever; this is a fuse, not a
-# policy. Normal work (dozens of file reads and edits) fits easily.
-SAFETY_MAX_ROUNDS = 200
-
-
 class RoundBudget:
-    """One round allowance shared by a supervisor and its parallel delegates."""
+    """Deprecated compatibility object; agent runs no longer spend round budgets."""
 
     def __init__(self, rounds: int):
         self._remaining = rounds
@@ -59,13 +53,19 @@ MAX_TOOL_RESULT_CHARS = 2_000_000
 # How many identical (tool, arguments) calls are allowed before the harness
 # answers with the cached result and asks the model to continue.
 SAME_CALL_LIMIT = 3
-RECENT_DISCOVERY_CHARS = 32_000
-MAX_DISCOVERY_RESULT_CHARS = 48_000
-RECENT_DISCOVERY_ROUNDS = 2
-DISCOVERY_PREVIEW_CHARS = 1200
+RECENT_DISCOVERY_CHARS = 12_000
+MAX_DISCOVERY_RESULT_CHARS = 24_000
+RECENT_DISCOVERY_ROUNDS = 1
+DISCOVERY_PREVIEW_CHARS = 400
 DISCOVERY_TOOLS = frozenset({"read_file", "list_directory", "search_in_project",
                             "editor_state", "workspace_state", "analysis_details",
-                            "dependency_graph", "git_read", "browser_read", "browser_search"})
+                            "dependency_graph", "git_read", "browser_read", "browser_search",
+                            "assign_team"})
+TEXT_OBSERVATIONS = DISCOVERY_TOOLS | {"run_project_tests", "test_results", "terminal_output",
+                                       "run_terminal_command", "read_previous_result", "read_local_evidence"}
+LOOKUP_TOOL = {"type": "function", "function": {
+    "name": "lookup_tools", "description": "Схемы инструментов IDE и MCP по имени или описанию. Пустой запрос — список имён.",
+    "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}}
 
 RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 RETRY_ATTEMPTS = 4
@@ -76,6 +76,7 @@ USAGE_KEYS = (
     "input_tokens", "output_tokens",
     "cache_creation_input_tokens", "cache_read_input_tokens",
     "reasoning_tokens",
+    "uncached_input_tokens",
 )
 
 
@@ -97,12 +98,28 @@ class AgentUsage:
             cached = details.get("cached_tokens") if isinstance(details, dict) else None
             if cached is None:
                 cached = usage.get("prompt_cache_hit_tokens")
+            if cached is None and isinstance(usage.get('input_tokens_details'), dict):
+                cached = usage['input_tokens_details'].get('cached_tokens')
             if type(cached) is int:
                 key = "cache_read_input_tokens"
                 self.values[key] = self.values.get(key, 0) + cached
+        if 'uncached_input_tokens' not in usage:
+            if isinstance(usage.get('prompt_tokens'), (int, float)):
+                cached = usage.get('cache_read_input_tokens')
+                if cached is None:
+                    details = usage.get('prompt_tokens_details') or {}
+                    cached = details.get('cached_tokens', usage.get('prompt_cache_hit_tokens'))
+                if isinstance(cached, (int, float)):
+                    self.values['uncached_input_tokens'] = self.values.get('uncached_input_tokens', 0) + max(0, int(usage['prompt_tokens']-cached))
+            elif isinstance(usage.get('input_tokens_details'), dict) and isinstance(usage.get('input_tokens'), (int, float)):
+                cached = usage['input_tokens_details'].get('cached_tokens')
+                if isinstance(cached, (int, float)):
+                    self.values['uncached_input_tokens'] = self.values.get('uncached_input_tokens', 0) + max(0, int(usage['input_tokens']-cached))
+            elif 'cache_read_input_tokens' in usage and isinstance(usage.get('input_tokens'), (int, float)):
+                self.values['uncached_input_tokens'] = self.values.get('uncached_input_tokens', 0) + int(usage['input_tokens'])
         # OpenAI nests reasoning tokens in completion_tokens_details.
         details = usage.get("completion_tokens_details")
-        if isinstance(details, dict) and isinstance(details.get("reasoning_tokens"), int):
+        if 'reasoning_tokens' not in usage and isinstance(details, dict) and isinstance(details.get("reasoning_tokens"), int):
             self.values["reasoning_tokens"] = (self.values.get("reasoning_tokens", 0)
                                                + details["reasoning_tokens"])
 
@@ -154,6 +171,7 @@ class AgentHarness:
         max_rounds: Optional[int] = None,
         on_text: Optional[Callable[[str], None]] = None,
         on_reasoning: Optional[Callable[[str], None]] = None,
+        on_usage: Optional[Callable[[Dict[str, Any]], None]] = None,
         on_tool_start: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         on_tool_end: Optional[Callable[[ToolRun], None]] = None,
         should_stop: Optional[Callable[[], bool]] = None,
@@ -163,20 +181,40 @@ class AgentHarness:
     ):
         self.service = service
         self.tools = list(tools or [])
+        self._deferred = {}
+        names = {t.get("function", {}).get("name") for t in self.tools}
+        if len(names) > 18 and names.isdisjoint({"discover_tools", "lookup_tools"}):
+            common = {"read_file", "search_in_project", "list_directory", "edit_file", "write_file",
+                      "run_terminal_command", "run_project_tests", "assign_team", "ask_user",
+                      "delegate_task", "accept_proposal", "optimize_team", "read_local_evidence"}
+            self._deferred = {t["function"]["name"]: t for t in self.tools
+                              if t.get("function", {}).get("name") and t["function"]["name"] not in common}
+            self.tools = [t for t in self.tools if t.get("function", {}).get("name") not in self._deferred]
+            self.tools.append(LOOKUP_TOOL)
+        from services.local_evidence import LocalEvidence
+        self.evidence = getattr(service, "_team_evidence", None) or LocalEvidence()
+        if self.tools:
+            self.enable_evidence_tool()
         self.tool_runner = tool_runner
-        self.max_rounds = max_rounds
-        self.unlimited_rounds = unlimited_rounds
-        self.round_budget = round_budget
         self.on_text = on_text
         self.on_reasoning = on_reasoning
+        self.on_usage = on_usage
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
         self.should_stop = should_stop or (lambda: False)
         self.tool_result_limit = int(tool_result_limit)
+        self._observations = {}
+
+    def enable_evidence_tool(self) -> None:
+        from services.local_evidence import READ_EVIDENCE_TOOL
+
+        if not any(t.get("function", {}).get("name") == "read_local_evidence" for t in self.tools):
+            self.tools.append(READ_EVIDENCE_TOOL)
 
     # ------------------------------------------------------------------
     def run(self, messages: List[Dict[str, Any]]) -> AgentResult:
         messages = list(messages)
+        self._observations.clear()
         usage = AgentUsage()
         runs: List[ToolRun] = []
         seen_calls: Dict[str, int] = {}
@@ -193,23 +231,17 @@ class AgentHarness:
             if self.should_stop():
                 stop_reason = "stopped"
                 break
-            if not self.unlimited_rounds and rounds >= SAFETY_MAX_ROUNDS:
-                stop_reason = "limit"
-                break
-            if self.max_rounds is not None and rounds >= self.max_rounds:
-                stop_reason = "limit"
-                break
-            if self.round_budget is not None and not self.round_budget.take():
-                stop_reason = "limit"
-                break
             rounds += 1
 
-            request = self._request_messages(messages, discovery_results, rounds)
+            request = self._request_messages(messages, discovery_results, rounds, self.evidence)
             text, calls = self._one_round(request, usage)
             if self.should_stop():
                 narration = text or narration
                 stop_reason = "stopped"
                 break
+
+            if getattr(self.service, "_team_role", None) and self.service.truncated and calls:
+                raise AIError("Ответ этапа достиг лимита токенов. Неполные команды пропущены.")
 
             if not calls:
                 answer = text
@@ -220,8 +252,7 @@ class AgentHarness:
                     narration = answer or narration
                     stop_reason = "stopped"
                     break
-                budget_ended = self.service.truncated and self.round_budget is not None and self.round_budget.exhausted
-                stop_reason = "limit" if budget_ended else "answer" if answer.strip() else "empty"
+                stop_reason = "answer" if answer.strip() else "empty"
                 answer = answer or narration
                 break
 
@@ -232,10 +263,14 @@ class AgentHarness:
                 if self.should_stop():
                     break
                 self._handle_call(messages, call, runs, seen_calls)
-                if call.name in DISCOVERY_TOOLS and runs[-1].ok:
+                if call.name not in DISCOVERY_TOOLS and call.name != "read_local_evidence":
+                    # An edit/command can change files. Allow a fresh read even
+                    # if the same range was already requested several times.
+                    seen_calls.clear()
+                if call.name in TEXT_OBSERVATIONS and runs[-1].ok:
                     discovery_results.append((len(messages) - 1, rounds))
 
-        if stop_reason in {"stopped", "limit"}:
+        if stop_reason == "stopped":
             answer = answer or narration
         if not answer.strip() and stop_reason == "answer":
             stop_reason = "empty"
@@ -252,15 +287,34 @@ class AgentHarness:
     @staticmethod
     def _request_messages(messages: List[Dict[str, Any]],
                           discovery_results: list[tuple[int, int]],
-                          round_number: int) -> List[Dict[str, Any]]:
+                          round_number: int, evidence=None) -> List[Dict[str, Any]]:
         request = list(messages)
+        # Keep file contents available across rounds while the request fits.
+        # Age alone must not force another network round trip to reread a file.
+        from services.ai_context import PROJECT_CONTEXT_BYTES
+        if evidence is None and len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) <= PROJECT_CONTEXT_BYTES:
+            return request
         remaining = RECENT_DISCOVERY_CHARS
+        names = {c.get('id'):c.get('function', {}).get('name')
+                 for m in messages for c in m.get('tool_calls', [])}
+        for message in messages:
+            if isinstance(message.get('content'), list):
+                for item in message['content']:
+                    if isinstance(item, dict) and item.get('type') == 'tool_use':
+                        names[item.get('id')] = item.get('name')
+        source_remaining = 24_000
         for index, result_round in reversed(discovery_results):
             message = messages[index]
             content = message["content"]
             block = content[0] if isinstance(content, list) else None
             output = block["content"] if block is not None else content
             size = len(output)
+            call_id = block.get('tool_use_id') if block is not None else message.get('tool_call_id')
+            if names.get(call_id) == 'read_file' and round_number - result_round <= 2 and size <= source_remaining:
+                source_remaining -= size
+                continue
+            if result_round == round_number - 1 and names.get(call_id) == "read_local_evidence":
+                continue  # Deliver the exact range the model just requested.
             if result_round == round_number - 1:
                 limit = MAX_DISCOVERY_RESULT_CHARS
             elif round_number - result_round <= RECENT_DISCOVERY_ROUNDS and size <= remaining:
@@ -276,10 +330,36 @@ class AgentHarness:
                 output[:half] + f"\n… [Сокращён результат: пропущено {size - 2 * half} символов. "
                 "При необходимости запроси только нужный фрагмент.]\n" + output[-half:]
             )
+            if evidence is not None:
+                preview = evidence.preview(output, limit)
             if block is not None:
                 preview = [{**block, "content": preview}]
             request[index] = {**message, "content": preview}
-        return request
+        return AgentHarness._archive_completed_edits(request, evidence)
+
+    @staticmethod
+    def _archive_completed_edits(messages, evidence):
+        """Keep exact patches locally once acknowledged; preserve tool-call groups."""
+        if evidence is None:
+            return messages
+        results = {m.get('tool_call_id'): m for m in messages if m.get('role') == 'tool'}
+        turns = [i for i, m in enumerate(messages) if m.get('tool_calls')]
+        eligible = set(turns[:-2])
+        replacements, removed = {}, set()
+        for index in eligible:
+            calls = messages[index]['tool_calls']
+            if any(c.get('function', {}).get('name') not in {'edit_file', 'write_file'} for c in calls):
+                continue
+            outputs = [results.get(c.get('id')) for c in calls]
+            if any(not m or not isinstance(m.get('content'), str) or not m['content'].startswith(('Изменён файл', 'Обновлён файл', 'Создан файл')) for m in outputs):
+                continue
+            payload = json.dumps({'tool_calls': calls, 'results': outputs}, ensure_ascii=False)
+            if len(payload) < 1200:
+                continue
+            key = evidence.put(payload)
+            replacements[index] = {'role': 'assistant', 'content': 'Подтверждённые правки: ' + '; '.join(m['content'] for m in outputs) + f' Полные исторические аргументы: read_local_evidence(id={key!r}). Для текущего состояния читай файл.'}
+            removed.update(c['id'] for c in calls)
+        return [replacements.get(i, m) for i, m in enumerate(messages) if not (m.get('role') == 'tool' and m.get('tool_call_id') in removed)]
 
     @staticmethod
     def _join(first: str, second: str) -> str:
@@ -297,6 +377,10 @@ class AgentHarness:
     # ------------------------------------------------------------------
     def _one_round(self, messages: List[Dict[str, Any]],
                    usage: AgentUsage) -> tuple[str, List[ToolCall]]:
+        for definition in getattr(self.service, '_discovered_tools', ()):
+            name = definition.get('function', {}).get('name')
+            if name and not any(d.get('function', {}).get('name') == name for d in self.tools):
+                self.tools.append(definition)
         last_error: Optional[Exception] = None
         for attempt in range(RETRY_ATTEMPTS):
             if self.should_stop():
@@ -306,6 +390,8 @@ class AgentHarness:
                     blocks, calls = self.service._anthropic_tool_round(
                         messages, self.tools, self._text_callback, self._reasoning_callback)
                     usage.add(self.service.last_usage)
+                    if self.on_usage:
+                        self.on_usage(dict(self.service.last_usage))
                     text = "".join(
                         str(block.get("text") or "")
                         for block in blocks
@@ -317,6 +403,8 @@ class AgentHarness:
                 text, calls = self.service._openai_tool_round(
                     messages, self.tools, self._text_callback, self._reasoning_callback)
                 usage.add(self.service.last_usage)
+                if self.on_usage:
+                    self.on_usage(dict(self.service.last_usage))
                 return text, calls
             except (AIError, ConnectionError, IncompleteRead, TimeoutError) as exc:
                 last_error = exc if isinstance(exc, AIError) else AIError(
@@ -389,7 +477,7 @@ class AgentHarness:
         signature = call.name + "|" + json.dumps(call.arguments or {},
                                                  sort_keys=True, ensure_ascii=False)
         seen_calls[signature] = seen_calls.get(signature, 0) + 1
-        repeated = seen_calls[signature] > SAME_CALL_LIMIT
+        repeated = call.name != "read_local_evidence" and seen_calls[signature] > SAME_CALL_LIMIT
 
         if repeated:
             output = self._repeat_notice(call)
@@ -405,7 +493,23 @@ class AgentHarness:
 
         started = time.perf_counter()
         ok = True
-        if self.tool_runner is None:
+        if call.name == "lookup_tools" and self._deferred:
+            query = str(call.arguments.get("query", "")).strip().casefold()
+            matches = [name for name, tool in self._deferred.items()
+                       if query in name.casefold() or query in tool["function"].get("description", "").casefold()]
+            if query in self._deferred:
+                matches = [query]
+            if query and len(matches) <= 5:
+                self.tools.extend(self._deferred[name] for name in matches if self._deferred[name] not in self.tools)
+            output = json.dumps(matches, ensure_ascii=False)
+            if query and len(matches) > 5:
+                output += " Уточни имя для получения схемы."
+        elif call.name == "read_local_evidence":
+            try:
+                output = self.evidence.read(**call.arguments)
+            except (KeyError, TypeError, ValueError) as exc:
+                output, ok = f"Ошибка чтения локального результата: {exc}", False
+        elif self.tool_runner is None:
             output = f"Инструмент {call.name} недоступен."
             ok = False
         else:
@@ -416,12 +520,36 @@ class AgentHarness:
                 ok = False
         duration_ms = int((time.perf_counter() - started) * 1000)
 
-        text = "" if output is None else str(output)
-        if not self.unlimited_rounds and len(text) > self.tool_result_limit:
-            text = (text[: self.tool_result_limit]
-                    + f"\n… (результат обрезан на {self.tool_result_limit} символах; "
-                      "запроси нужный фрагмент отдельно через смещение/лимит)")
+        image_data = output if isinstance(output, dict) and "__image__" in output else None
+        text = ("Снимок экрана передан модели." if image_data else
+                "" if output is None else str(output))
+        if call.name != "read_local_evidence" and len(text) > self.tool_result_limit:
+            text = self.evidence.preview(text, self.tool_result_limit)
+        if ok and call.name in {"read_file", "search_in_project"} and len(text) > 1200:
+            previous = self._observations.get(signature)
+            if previous and previous[0] == text:
+                # Still execute the tool to check freshness, but send the same
+                # payload only once. The full text remains recoverable locally.
+                key = self.evidence.put(text)
+                text = (f"Результат не изменился с вызова {previous[1]}; "
+                        "используй текст выше без повторного чтения. "
+                        f"Полный результат: read_local_evidence(id={key!r}).")
+            else:
+                self._observations[signature] = (text, call.id)
         self._append_tool_result(messages, call, text)
+        if image_data:
+            data = image_data["__image__"]
+            mime = image_data.get("media_type", "image/png")
+            if self.service.is_anthropic:
+                messages[-1]["content"][0]["content"] = [
+                    {"type": "text", "text": text},
+                    {"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}},
+                ]
+            else:
+                messages.append({"role": "user", "content": [
+                    {"type": "text", "text": "Снимок экрана после вызова capture_screen."},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}},
+                ]})
         run = ToolRun(call.name, call.arguments, text, ok=ok, duration_ms=duration_ms)
         runs.append(run)
         if self.on_tool_end:
@@ -451,12 +579,16 @@ class AgentHarness:
     def _extend_truncated(self, messages: List[Dict[str, Any]], partial: str,
                           usage: AgentUsage) -> str:
         """Continue a text answer that hit the provider's output ceiling."""
+        def record_usage(value):
+            usage.add(value)
+            if self.on_usage:
+                self.on_usage(dict(value))
+
         working = list(messages) + [
             {"role": "assistant", "content": partial},
             {"role": "user", "content": self.service._continue_prompt()},
         ]
-        options = {"before_request": self.round_budget.take} if self.round_budget is not None else {}
         return self.service._stream_until_complete(
             working, self._text_callback, self._reasoning_callback,
-            on_usage=usage.add, should_stop=self.should_stop, **options,
+            on_usage=record_usage, should_stop=self.should_stop,
         )

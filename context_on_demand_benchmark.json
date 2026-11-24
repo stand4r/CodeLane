@@ -1,0 +1,40 @@
+{
+  "provider": "tokenator-vpn",
+  "model": "gpt-6-luna",
+  "results": [
+    {
+      "mode": "snapshot_before",
+      "seconds": 8.21,
+      "context_bytes": 850140,
+      "answer": "850000 services/ai_context.py",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 187960,
+        "completion_tokens": 11,
+        "total_tokens": 187971
+      },
+      "tools": []
+    },
+    {
+      "mode": "on_demand_after",
+      "seconds": 13.34,
+      "context_bytes": 8261,
+      "answer": "850_000 C:\\Users\\New\\CodeLane\\services\\ai_context.py",
+      "correct": true,
+      "usage": {
+        "prompt_tokens": 6923,
+        "completion_tokens": 50,
+        "total_tokens": 6973
+      },
+      "tools": [
+        {
+          "name": "search_in_project",
+          "args": {
+            "query": "PROJECT_CONTEXT_BYTES",
+            "glob": "services/ai_context.py"
+          }
+        }
+      ]
+    }
+  ]
+}

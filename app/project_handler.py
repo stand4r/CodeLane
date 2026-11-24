@@ -93,23 +93,31 @@ class ProjectHandler:
         QtCore.QTimer.singleShot(30, start_index)
         name = getattr(project_config, "name", Path(norm_root).name)
         self.main_window._analysis_failed = False
-        if analyze:
-            self.main_window.start_busy_indicator(f"Открытие и анализ проекта '{name}'...")
+        # Show the workspace first. Analysis, language servers and the task
+        # board scan the tree and used to freeze the window before it appeared.
+        def start_project_services():
+            if self.main_window.current_project is not project_config:
+                return
+            if analyze:
+                self.main_window.start_busy_indicator(f"Анализ проекта '{name}'...")
+                try:
+                    self.main_window.intelligence_panel.set_project(norm_root, analyzers)
+                except Exception:
+                    logger.exception("PyScribe operation failed")
+            self.main_window.extension_manager.set_project_root(
+                norm_root, confirm=self._confirm_project_extensions)
             try:
-                self.main_window.intelligence_panel.set_project(norm_root, analyzers)
+                from core.code_analysis.service import UnifiedCodeAnalysisService
+                UnifiedCodeAnalysisService.get_instance().set_project_root(norm_root)
             except Exception:
-                logger.exception("PyScribe operation failed")
-        self.main_window.extension_manager.set_project_root(norm_root, confirm=self._confirm_project_extensions)
-        try:
-            from core.code_analysis.service import UnifiedCodeAnalysisService
-            UnifiedCodeAnalysisService.get_instance().set_project_root(norm_root)
-        except Exception:
-            pass
-        try:
-            if hasattr(self.main_window, "todo_panel") and self.main_window.todo_panel:
-                self.main_window.todo_panel.set_project(norm_root)
-        except Exception:
-            pass
+                pass
+            try:
+                if hasattr(self.main_window, "todo_panel") and self.main_window.todo_panel:
+                    self.main_window.todo_panel.set_project(norm_root)
+            except Exception:
+                pass
+
+        QtCore.QTimer.singleShot(0, start_project_services)
         self.main_window.refresh_extensions_panel()
         self.main_window.search_panel.set_root(norm_root)
         database = getattr(self.main_window, "database_manager", None)

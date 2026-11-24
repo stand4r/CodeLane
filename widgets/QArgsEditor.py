@@ -1,4 +1,4 @@
-﻿"""PyScribe launch arguments editor widget."""
+"""PyScribe launch arguments editor widget."""
 from os import path
 from json import dumps, load
 from pathlib import Path

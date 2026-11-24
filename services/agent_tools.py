@@ -1,9 +1,9 @@
 """Local tools the AI agent can call: files, terminal, running applications.
 
 The agent runs model-requested actions through this module instead of touching
-the disk directly. Everything is confined to the open project and every
-mutating action goes through a confirmation callback, so the user stays in
-control (same model as DeepSeek Harness).
+the disk directly. Restricted modes confine file tools to the open project;
+full mode permits computer-wide paths and shell commands under the Windows
+user account.
 
 Plain Python on purpose — no Qt imports, fully unit-testable.
 """
@@ -13,6 +13,7 @@ import json
 from io import StringIO
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -27,7 +28,7 @@ from services.workbench_tools import TOOLS as WORKBENCH_TOOLS
 
 __all__ = ["ToolError", "LocalToolbox", "TOOL_DEFINITIONS"]
 
-MAX_READ_CHARS = 120_000
+MAX_READ_CHARS = 850_000
 MAX_READ_BYTES = 20 * 1024 * 1024
 MAX_OUTPUT_CHARS = 2_000_000     # safety valve against a runaway command only
 MAX_SEARCH_RESULTS = 500
@@ -38,7 +39,7 @@ MAX_WRITE_BYTES = 8 * 1024 * 1024
 ACCESS_MODES = {
     "read_only": "Только чтение",
     "write_only": "Только запись (с подтверждением)",
-    "full": "Полный доступ (без подтверждений)",
+    "full": "Полный доступ к компьютеру (без подтверждений CodeLane)",
 }
 # Compact labels for the header chip; the full text stays in the menu/tooltip.
 ACCESS_SHORT = {
@@ -59,6 +60,10 @@ _CONFIRM_POLICY = {
     "write_file": True,
     "run_terminal_command": True,
     "open_application": True,
+    "run_executable": True,
+    "run_admin_command": True,
+    "capture_screen": True,
+    "run_project_tests": True,
     "edit_file": True,
 }
 
@@ -96,62 +101,49 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     ),
     _tool(
         "read_file",
-        "Прочитать текстовый файл проекта. Путь указывается относительно корня проекта. "
-        "Большой файл можно читать частями: offset (первая строка, с 1) и limit (сколько строк).",
-        {"path": {"type": "string", "description": "Путь к файлу относительно корня проекта"},
-         "offset": {"type": "integer",
-                    "description": "С какой строки начинать (1 — начало файла)"},
-         "limit": {"type": "integer",
-                   "description": "Сколько строк вернуть (0 — до конца файла)"}},
+        "Чтение строк с offset (от 1), limit=200 по умолчанию, 0 — весь файл.",
+        {"path": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}},
         ["path"],
     ),
     _tool(
         "open_file",
-        "Открыть файл проекта в редакторе CodeLane и сделать его активной вкладкой.",
+        "Открыть файл проекта в редакторе CodeLane; внешний файл доступен для фонового чтения.",
         {"path": {"type": "string", "description": "Путь к файлу относительно корня проекта"}},
         ["path"],
     ),
     _tool(
         "list_directory",
-        "Показать содержимое каталога проекта (файлы и подкаталоги).",
-        {"path": {"type": "string",
-                  "description": "Каталог относительно корня; '.' — корень проекта"}},
+        "Содержимое каталога. Точка означает корень проекта.",
+        {"path": {"type": "string"}},
         ["path"],
     ),
     _tool(
         "search_in_project",
-        "Найти текст в файлах проекта; regex=true включает регулярное выражение. "
-        "Вернуть совпадения с путями и номерами строк.",
-        {"query": {"type": "string", "description": "Искомый текст"},
-         "glob": {"type": "string",
-                  "description": "Необязательная маска файлов, например '*.py' или '.py'"},
-         "regex": {"type": "boolean", "description": "Искать как регулярное выражение"}},
-        ["query"],
+        "Поиск с путями и номерами строк. query или до 24 queries (ИЛИ), glob ограничивает файлы.",
+        {"query": {"type": "string"}, "glob": {"type": "string"}, "regex": {"type": "boolean"},
+         "queries": {"type": "array", "items": {"type": "string"}},
+         "context_lines": {"type": "integer", "minimum": 0, "maximum": 10, "default": 2},
+         "max_results": {"type": "integer", "minimum": 1, "maximum": 500, "default": 40}},
+        [],
     ),
     _tool(
         "write_file",
-        "Создать файл или полностью заменить его содержимое. Для точечной правки используй edit_file. "
-        "Требует подтверждения пользователя.",
-        {"path": {"type": "string", "description": "Путь относительно корня проекта"},
-         "content": {"type": "string", "description": "Новое содержимое файла"}},
+        "Создать или перезаписать файл целиком.",
+        {"path": {"type": "string"}, "content": {"type": "string"}},
         ["path", "content"],
     ),
     _tool(
         "edit_file",
-        "Заменить точный фрагмент в файле проекта. old_text должен встречаться ровно один раз. "
-        "Если файл открыт, правка попадёт в редактор и останется несохранённой до обычного сохранения.",
-        {"path": {"type": "string", "description": "Путь относительно корня проекта"},
-         "old_text": {"type": "string", "description": "Точный исходный фрагмент"},
-         "new_text": {"type": "string", "description": "Новый фрагмент"}},
+        "Заменить единственное точное совпадение. Открытый файл меняется в буфере редактора.",
+        {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},
         ["path", "old_text", "new_text"],
     ),
     _tool(
         "run_terminal_command",
-        "Выполнить команду в терминале проекта и вернуть вывод и код возврата. "
-        "Требует подтверждения пользователя.",
-        {"command": {"type": "string", "description": "Команда оболочки"},
-         "timeout_sec": {"type": "integer",
-                         "description": "Таймаут в секундах (по умолчанию 30)"}},
+        "Команда Windows, включая python script.py. Возвращает вывод и код завершения.",
+        {"command": {"type": "string"}, "shell": {"type": "string", "enum": ["cmd", "powershell"]},
+         "cwd": {"type": "string", "description": "По умолчанию корень проекта"},
+         "timeout_sec": {"type": "integer", "default": 30}},
         ["command"],
     ),
     _tool(
@@ -162,6 +154,13 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
          "args": {"type": "string", "description": "Аргументы через пробел"}},
         ["program"],
     ),
+    _tool("capture_screen", "Сделать снимок экрана и показать его модели. Каждый снимок требует подтверждения пользователя.", {}, []),
+    _tool("run_admin_command", "Запустить CMD или PowerShell с правами администратора через Windows UAC. Вывод не перехватывается.",
+          {"command": {"type": "string"}, "shell": {"type": "string", "enum": ["cmd", "powershell"]}}, ["command"]),
+    _tool("run_executable", "Запустить исполняемый файл проекта без оболочки. Требует подтверждения пользователя.",
+          {"path": {"type": "string"}, "args": {"type": "string"}}, ["path"]),
+    _tool("run_project_tests", "Запустить тесты проекта локально (pytest или npm test) и вернуть код выхода и вывод.",
+          {"target": {"type": "string"}, "timeout_sec": {"type": "integer"}}, []),
 ]
 
 
@@ -212,8 +211,10 @@ class LocalToolbox:
             return self.access_mode != "write_only"
         if name in ("write_file", "edit_file"):
             return self.allow_write and self.access_mode != "read_only"
-        if name in ("run_terminal_command", "open_application"):
+        if name in ("run_terminal_command", "open_application", "run_executable", "run_admin_command", "run_project_tests"):
             return self.allow_commands and self.access_mode == "full"
+        if name == "capture_screen":
+            return self.ui_action is not None and self.access_mode == "full"
         return False
 
     # -- helpers -------------------------------------------------------
@@ -228,19 +229,22 @@ class LocalToolbox:
         return allowed
 
     def _resolve(self, raw: str) -> Path:
-        if self.root is None:
+        if self.root is None and self.access_mode != "full":
             raise ToolError("Проект не открыт — работа с файлами недоступна.")
         text = str(raw or ".").strip().strip('"').strip("'")
         candidate = Path(text)
         if not candidate.is_absolute():
-            candidate = self.root / candidate
+            candidate = (self.root or Path.cwd()) / candidate
         try:
             resolved = candidate.resolve()
         except OSError as exc:
             raise ToolError(f"Не удалось разрешить путь: {exc}") from exc
-        if resolved != self.root and self.root not in resolved.parents:
+        if self.access_mode != "full" and resolved != self.root and self.root not in resolved.parents:
             raise ToolError("Путь вне проекта: доступ разрешён только внутри проекта.")
         return resolved
+
+    def _outside_project(self, path: Path) -> bool:
+        return self.root is None or (path != self.root and self.root not in path.parents)
 
     def _ask(self, name: str, details: str, title: str = "") -> None:
         """Ask the user to confirm a mutating action.
@@ -259,7 +263,7 @@ class LocalToolbox:
             raise ToolError("Пользователь отклонил действие.")
 
     # -- tools ---------------------------------------------------------
-    def read_file(self, path: str, offset: int = 0, limit: int = 0) -> str:
+    def read_file(self, path: str, offset: int = 0, limit: Optional[int] = None) -> str:
         target = self._resolve(path)
         if not target.is_file():
             raise ToolError(f"Файл не найден: {path}")
@@ -267,7 +271,7 @@ class LocalToolbox:
         if target.suffix.lower() in DOCUMENT_SUFFIXES:
             raise ToolError("Для PDF, DOCX, ODT и XLSX используй read_document.")
         text = None
-        if self.ui_action is not None:
+        if self.ui_action is not None and not self._outside_project(target):
             try:
                 buffer = self.ui_action("read_buffer", {"path": str(target)})
                 if buffer != "__NO_OPEN_EDITOR_BUFFER__":
@@ -276,11 +280,12 @@ class LocalToolbox:
                 # The disk copy remains a useful fallback if a UI is closing.
                 text = None
         first = max(1, int(offset or 1))
-        count = max(0, int(limit or 0))
+        count = 200 if limit is None else max(0, int(limit))
         collected = []
-        remaining = MAX_READ_CHARS
+        remaining = MAX_READ_CHARS if limit == 0 else min(MAX_READ_CHARS, 24_000)
         read = 0
         truncated = False
+        partial_line = False
         try:
             source = (StringIO(text, newline=None) if text is not None else
                       target.open(encoding="utf-8", errors="replace", newline=None))
@@ -296,6 +301,8 @@ class LocalToolbox:
                         skipped += 1
                 if skipped == first:
                     while not count or read < count:
+                        if self.should_stop and self.should_stop():
+                            raise ToolError("Запрос остановлен.")
                         line = source.readline(remaining + 1)
                         if not line:
                             break
@@ -303,11 +310,14 @@ class LocalToolbox:
                             if read == 0:
                                 collected.append(line[:remaining])
                                 read += 1
+                                partial_line = True
                             truncated = True
                             break
                         collected.append(line)
                         remaining -= len(line)
                         read += 1
+                    if limit is None and count and read >= count and source.read(1):
+                        truncated = True
         except OSError as exc:
             raise ToolError(f"Не удалось прочитать файл: {exc}") from exc
         answer = "".join(collected)
@@ -317,14 +327,17 @@ class LocalToolbox:
             header = f"[строки {first}–{first + read - 1}]\n"
             answer = header + answer.rstrip("\n")
         if truncated:
-            answer += "\n[Достигнут предел размера ответа.]"
+            next_line = first + read - int(partial_line)
+            answer += ("\n[Достигнут предел размера ответа. "
+                       f"Продолжение: read_file(path={path!r}, offset={next_line}, limit=200). "
+                       "Если оборвана длинная строка, для полного чтения явно укажи limit=0.]")
         return answer
 
     def open_file(self, path: str) -> str:
         target = self._resolve(path)
         if not target.is_file():
             raise ToolError(f"Файл не найден: {path}")
-        if self.background:
+        if self.background or self._outside_project(target):
             return f"Файл доступен для фоновой работы: {target}. Используй read_file для чтения."
         if self.ui_action is None:
             raise ToolError("Открытие вкладки CodeLane недоступно в текущем режиме.")
@@ -340,7 +353,7 @@ class LocalToolbox:
             raise ToolError(f"Не удалось прочитать каталог: {exc}") from exc
         lines = []
         for entry in entries[:2000]:
-            if entry.name.startswith(".") and entry.name not in (".pyscribe",):
+            if self.access_mode != "full" and entry.name.startswith(".") and entry.name not in (".pyscribe",):
                 continue
             suffix = "/" if entry.is_dir() else ""
             lines.append(f"{entry.name}{suffix}")
@@ -350,41 +363,13 @@ class LocalToolbox:
             return "(пусто)"
         return "\n".join(lines)
 
-    def search_in_project(self, query: str, glob: str = "", regex: bool = False) -> str:
-        if not query:
-            raise ToolError("Пустой запрос поиска.")
-        if self.root is None:
-            raise ToolError("Проект не открыт.")
-        from core.ignore_rules import MAX_FILES_DEFAULT, walk_files
-        pattern = glob or None
-        extension = pattern if pattern and pattern.startswith(".") else None
-        scan = walk_files(self.root, extensions={extension} if extension else None,
-                          max_files=MAX_FILES_DEFAULT)
-        results: List[str] = []
-        needle = query.lower()
-        try:
-            matcher = re.compile(query, re.IGNORECASE) if regex else None
-        except re.error as exc:
-            raise ToolError(f"Некорректное регулярное выражение: {exc}") from None
-        for path in scan.files:
-            if extension and path.suffix.lower() != extension.lower():
-                continue
-            if pattern and not extension and not path.match(pattern):
-                continue
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for number, line in enumerate(text.splitlines(), 1):
-                matches = matcher.search(line) if matcher is not None else needle in line.lower()
-                if matches:
-                    relative = path.relative_to(self.root)
-                    results.append(f"{relative}:{number}: {line.strip()[:400]}")
-                    if len(results) >= MAX_SEARCH_RESULTS:
-                        results.append(f"… (показаны первые {MAX_SEARCH_RESULTS} совпадений, "
-                                       "уточни запрос или маску файлов)")
-                        return "\n".join(results)
-        return "\n".join(results) if results else "Совпадений не найдено."
+    def search_in_project(self, query: str = "", glob: str = "", regex: bool = False,
+                          queries: Optional[List[str]] = None, context_lines: int = 2,
+                          max_results: int = 40) -> str:
+        from services.project_search import search_project
+        return search_project(self.root, query=query, glob=glob, regex=regex,
+                              queries=queries, context_lines=context_lines,
+                              max_results=max_results, should_stop=self.should_stop)
 
     def write_file(self, path: str, content: str) -> str:
         if not self.allow_write:
@@ -399,7 +384,7 @@ class LocalToolbox:
         self._ask("write_file",
                   f"Файл: {target}\nРежим: {'перезапись' if existed else 'создание'}\n\n{preview}",
                   "Изменить файл проекта")
-        if self.ui_action is not None and existed:
+        if self.ui_action is not None and existed and not self._outside_project(target):
             try:
                 if not self.background:
                     self.ui_action("open_file", {"path": str(target)})
@@ -415,7 +400,7 @@ class LocalToolbox:
             write_if_unchanged(target, payload.encode("utf-8"), expected)
         except OSError as exc:
             raise ToolError(f"Не удалось записать файл: {exc}") from exc
-        if self.ui_action is not None and not self.background:
+        if self.ui_action is not None and not self.background and not self._outside_project(target):
             self.ui_action("open_file", {"path": str(target)})
         return f"{'Обновлён' if existed else 'Создан'} файл {path} ({len(payload)} символов)."
 
@@ -431,7 +416,7 @@ class LocalToolbox:
             current = data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
         except OSError as exc:
             raise ToolError(f"Не удалось прочитать файл: {exc}") from exc
-        if self.ui_action is not None:
+        if self.ui_action is not None and not self._outside_project(target):
             try:
                 buffer = self.ui_action("read_buffer", {"path": str(target)})
                 if buffer != "__NO_OPEN_EDITOR_BUFFER__":
@@ -444,7 +429,7 @@ class LocalToolbox:
         if not self._allowed("edit_file") or self.access_mode == "write_only":
             raise ToolError("Разрешите чтение и правку файлов в настройках агента.")
         target, _, _, current = self._edit_source(path)
-        return target.relative_to(self.root).as_posix(), current
+        return (str(target) if self._outside_project(target) else target.relative_to(self.root).as_posix()), current
 
     def edit_file(self, path: str, old_text: str, new_text: str, *, expected_source=None) -> str:
         if not self._allowed("edit_file"):
@@ -469,7 +454,7 @@ class LocalToolbox:
                   "Применить правку в редакторе")
         if self.should_stop and self.should_stop():
             raise ToolError("Правка отменена.")
-        if self.ui_action is not None:
+        if self.ui_action is not None and not self._outside_project(target):
             if self.background:
                 buffer = self.ui_action("read_buffer", {"path": str(target)})
                 if buffer == "__NO_OPEN_EDITOR_BUFFER__":
@@ -492,15 +477,30 @@ class LocalToolbox:
             raise ToolError(f"Не удалось изменить файл: {exc}") from exc
         return f"Изменён файл {path}."
 
-    def run_terminal_command(self, command: str, timeout_sec: int = DEFAULT_TIMEOUT) -> str:
+    def run_terminal_command(self, command: str, timeout_sec: int = DEFAULT_TIMEOUT,
+                             shell: str = "cmd", cwd: str = "") -> str:
         if not self.allow_commands:
             raise ToolError("Выполнение команд отключено в настройках агента.")
-        if self.root is None:
+        if self.root is None and self.access_mode != "full":
             raise ToolError("Проект не открыт.")
         command = str(command or "").strip()
         if not command:
             raise ToolError("Пустая команда.")
-        self._ask("run_terminal_command", f"$ {command}", "Выполнить команду в проекте")
+        shell = str(shell or "cmd").lower()
+        if shell not in {"cmd", "powershell"}:
+            raise ToolError("Укажи оболочку cmd или powershell.")
+        working_directory = self._resolve(cwd) if cwd else self.root or Path.cwd()
+        if not working_directory.is_dir():
+            raise ToolError(f"Рабочий каталог не найден: {working_directory}")
+        self._ask("run_terminal_command", f"{shell} · {working_directory}\n$ {command}",
+                  "Выполнить команду")
+        if shell == "powershell":
+            executable = shutil.which("pwsh") or shutil.which("powershell")
+            if executable is None:
+                raise ToolError("PowerShell не найден на компьютере.")
+            launch, shell_mode = [executable, "-NoProfile", "-NonInteractive", "-Command", command], False
+        else:
+            launch, shell_mode = command, True
         timeout = max(1, min(int(timeout_sec or DEFAULT_TIMEOUT), MAX_TIMEOUT))
         process = None
         was_stopped = False
@@ -525,7 +525,7 @@ class LocalToolbox:
             # the child promptly instead of waiting for the full command timeout.
             with tempfile.TemporaryFile(mode="w+t", encoding="utf-8", errors="replace") as capture:
                 process = popen_hidden(
-                    command, shell=True, cwd=str(self.root),
+                    launch, shell=shell_mode, cwd=str(working_directory),
                     stdout=capture, stderr=subprocess.STDOUT,
                 )
                 deadline = time.monotonic() + timeout
@@ -582,6 +582,76 @@ class LocalToolbox:
             raise ToolError(f"Не удалось запустить: {exc}") from exc
         return f"Приложение запущено: {command}"
 
+    def _explicit_approval(self, name, title, details):
+        if self.access_mode == "full":
+            return
+        if self.confirm is None or not self.confirm(name, title, details):
+            raise ToolError("Пользователь отклонил действие.")
+
+    def capture_screen(self):
+        if self.ui_action is None:
+            raise ToolError("Снимок экрана доступен только в окне CodeLane.")
+        self._explicit_approval("capture_screen", "Сделать снимок экрана?",
+                                "Агент получит изображение всего экрана, включая другие приложения.")
+        return json.loads(self.ui_action("capture_screen", {}))
+
+    def run_admin_command(self, command: str, shell: str = "cmd"):
+        if os.name != "nt":
+            raise ToolError("Повышение прав через UAC поддерживается только в Windows.")
+        command = str(command or "").strip()
+        if not command:
+            raise ToolError("Пустая команда.")
+        shell = str(shell or "cmd").lower()
+        if shell not in {"cmd", "powershell"}:
+            raise ToolError("Укажи оболочку cmd или powershell.")
+        if self.access_mode != "full":
+            raise ToolError("Запуск с повышением доступен только в режиме полного доступа.")
+        self._explicit_approval("run_admin_command", "Запустить от имени администратора?", command)
+        import ctypes
+        if shell == "powershell":
+            executable = shutil.which("pwsh") or shutil.which("powershell")
+            if executable is None:
+                raise ToolError("PowerShell не найден на компьютере.")
+            arguments = subprocess.list2cmdline(["-NoProfile", "-Command", command])
+        else:
+            executable, arguments = "cmd.exe", "/c " + command
+        result = ctypes.windll.shell32.ShellExecuteW(None, "runas", executable,
+                                                       arguments, str(self.root or Path.cwd()), 0)
+        if result <= 32:
+            raise ToolError(f"Команда не запущена (UAC или ShellExecute: {result}).")
+        return "Команда администратора запущена. Вывод и код завершения недоступны в CodeLane."
+
+    def run_executable(self, path: str, args: str = ""):
+        target = self._resolve(path)
+        if not target.is_file() or (os.name == "nt" and target.suffix.lower() != ".exe"):
+            raise ToolError("Укажите исполняемый файл (.exe).")
+        self._ask("run_executable", f"{target} {args}".strip(), "Запустить исполняемый файл")
+        arguments = [str(target), *shlex.split(str(args or ""), posix=os.name != "nt")]
+        process = popen_hidden(arguments, cwd=str(self.root or target.parent), stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+        return f"Исполняемый файл запущен: {target.name}, PID {process.pid}."
+
+    def run_project_tests(self, target: str = "", timeout_sec: int = DEFAULT_TIMEOUT):
+        if self.root is None:
+            raise ToolError("Проект не открыт.")
+        requested = [str(self._resolve(target))] if target else []
+        if any((self.root / name).exists() for name in ("pytest.ini", "pyproject.toml", "tests")):
+            from utils.toolchain_detector import python_interpreter
+            executable = next((str(path) for path in (
+                self.root / ".venv" / "Scripts" / "python.exe",
+                self.root / "venv" / "Scripts" / "python.exe",
+                self.root / ".venv" / "bin" / "python",
+            ) if path.is_file()), None)
+            arguments = [python_interpreter(executable), "-m", "pytest", "-q", *requested]
+        elif (self.root / "package.json").is_file():
+            if requested:
+                raise ToolError("Выбор файла теста поддерживается только для pytest.")
+            arguments = ["npm", "test"]
+        else:
+            raise ToolError("Конфигурация тестов проекта не обнаружена.")
+        command = subprocess.list2cmdline(arguments) if os.name == "nt" else shlex.join(arguments)
+        return self.run_terminal_command(command, timeout_sec=timeout_sec)
+
     # -- dispatch ------------------------------------------------------
     def workspace_state(self):
         if self.ui_action is None:
@@ -627,6 +697,10 @@ class LocalToolbox:
             "edit_file": self.edit_file,
             "run_terminal_command": self.run_terminal_command,
             "open_application": self.open_application,
+            "capture_screen": self.capture_screen,
+            "run_admin_command": self.run_admin_command,
+            "run_executable": self.run_executable,
+            "run_project_tests": self.run_project_tests,
         }
         handler = handlers.get(str(name))
         if handler is None and name not in WORKBENCH_TOOLS:

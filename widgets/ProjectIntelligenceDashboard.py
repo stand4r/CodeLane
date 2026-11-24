@@ -1316,6 +1316,11 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             '«Создать тест»: сохранить найденные падения как pytest-тесты')
         self.adversary_test_btn.clicked.connect(self._save_adversary_tests)
         actions.addWidget(self.adversary_test_btn)
+        self.offline_tests_btn = QtWidgets.QPushButton('Авто тест')
+        self.offline_tests_btn.setToolTip('Python: проверки синтаксиса и примеров doctest, без ИИ и сети')
+        self.offline_tests_btn.clicked.connect(self._generate_offline_tests)
+        actions.addWidget(self.offline_tests_btn)
+
 
         self.adversary_export_btn = QtWidgets.QPushButton('Отчёт')
         self.adversary_export_btn.setStyleSheet(secondary_button_qss("3px 5px", 6))
@@ -1496,6 +1501,31 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             return
         line = finding.line or 1
         self.open_file_requested.emit(str(self._adversary_path), int(line))
+
+    def _generate_offline_tests(self):
+        from services.offline_tests import generate_project_tests
+        from services.background import run_async
+        root = self._resolve_root_path()
+        if not root:
+            self.adversary_summary.setText('Сначала откройте проект.')
+            return
+        self.offline_tests_btn.setEnabled(False)
+        self.adversary_summary.setText('Создание тестов на ПК…')
+
+        def completed(result):
+            path, count = result
+            self.offline_tests_btn.setEnabled(True)
+            self.adversary_summary.setText(
+                f'Создан {path.name}: {count} Python-файлов. Проверки синтаксиса и doctest; '
+                'для проверки требований нужны дополнительные тесты. Запуск — через «Запустить тесты».')
+            self.open_file_requested.emit(str(path), 1)
+
+        def failed(message):
+            self.offline_tests_btn.setEnabled(True)
+            self.adversary_summary.setText(str(message))
+
+        self._offline_tests_job = run_async(lambda: generate_project_tests(root), parent=self,
+                                            on_done=completed, on_error=failed)
 
     def _save_adversary_tests(self):
         from core.adversary import failing_cases_pytest

@@ -151,7 +151,7 @@ def test_paths_outside_project_are_rejected():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         _make_project(root)
-        box, _ = _toolbox(root)
+        box, _ = _toolbox(root, access_mode="read_only")
         for payload in ({"path": "../secret.txt"}, {"path": "C:/Windows/win.ini"}):
             try:
                 box.run("read_file", json.dumps(payload))
@@ -268,7 +268,7 @@ def test_terminal_command_can_be_stopped_without_waiting_for_timeout():
 
 
 def test_project_root_required():
-    box = LocalToolbox(None, confirm=lambda *a: True)
+    box = LocalToolbox(None, confirm=lambda *a: True, access_mode="read_only")
     try:
         box.run("read_file", json.dumps({"path": "a.py"}))
         raise AssertionError("работа без проекта разрешена")
@@ -304,7 +304,7 @@ def test_access_modes_enforced_at_dispatch():
     expected = {
         "read_only": {"read_file", "open_file", "list_directory", "search_in_project"},
         "write_only": {"write_file", "edit_file"},
-        "full": {d["function"]["name"] for d in TOOL_DEFINITIONS} - WORKBENCH_TOOLS.keys(),
+        "full": {d["function"]["name"] for d in TOOL_DEFINITIONS} - WORKBENCH_TOOLS.keys() - {"capture_screen"},
         "invalid": {"read_file", "open_file", "list_directory", "search_in_project"},
     }
     with tempfile.TemporaryDirectory() as td:
@@ -331,6 +331,75 @@ def test_access_modes_enforced_at_dispatch():
         box, _ = _toolbox(root, access_mode="write_only")
         box.run("write_file", json.dumps({"path": "new.txt", "content": "written"}))
         assert (root / "new.txt").read_text() == "written"
+
+
+def test_screen_capture_in_full_mode_reaches_model(tmp_path):
+    from services.agent_harness import AgentHarness
+    from services.ai_service import ToolCall
+    from services.ide_mcp import IDEMCP
+
+    box, approvals = _toolbox(tmp_path, access_mode="full", ui_action=lambda *_: json.dumps({
+        "__image__": "ZmFrZQ==", "media_type": "image/png"}))
+    image = IDEMCP(box).call("capture_screen", {})
+    assert approvals == []
+
+    class Provider:
+        is_anthropic = False
+
+    harness = AgentHarness(Provider(), tools=box.definitions(), tool_runner=lambda *_: image)
+    messages, runs = [], []
+    harness._handle_call(messages, ToolCall("shot", "capture_screen", {}), runs, {})
+    assert messages[-1]["content"][1]["image_url"]["url"].endswith("ZmFrZQ==")
+    assert "ZmFrZQ==" not in runs[0].output
+
+
+def test_project_test_tool_uses_local_runner(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    box, _ = _toolbox(tmp_path, access_mode="full")
+    commands = []
+    box.run_terminal_command = lambda command, timeout_sec=30: commands.append(command) or "Код возврата: 0"
+    assert box.run("run_project_tests", "{}") == "Код возврата: 0"
+    assert "pytest" in commands[0] and " -q" in commands[0]
+
+
+def test_screen_capture_full_access_skips_app_confirmation(tmp_path):
+    box = LocalToolbox(str(tmp_path), access_mode="full", confirm=lambda *_: False,
+                       ui_action=lambda *_: json.dumps({"__image__": "ZmFrZQ=="}))
+    assert box.run("capture_screen", "{}") == {"__image__": "ZmFrZQ=="}
+
+
+def test_full_access_reads_and_edits_outside_project(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("before", encoding="utf-8")
+    box = LocalToolbox(str(project), access_mode="full")
+    assert "before" in box.run("read_file", json.dumps({"path": str(outside)}))
+    assert "Изменён" in box.run("edit_file", json.dumps({
+        "path": str(outside), "old_text": "before", "new_text": "after"}))
+    assert outside.read_text(encoding="utf-8") == "after"
+    box.run("write_file", json.dumps({"path": str(outside), "content": "final"}))
+    assert outside.read_text(encoding="utf-8") == "final"
+
+
+def test_full_access_runs_cmd_and_powershell_in_external_directory(tmp_path):
+    import os
+    import shutil
+    import pytest
+
+    if os.name != "nt" or not (shutil.which("pwsh") or shutil.which("powershell")):
+        pytest.skip("Windows PowerShell is unavailable")
+    project = tmp_path / "project"
+    other = tmp_path / "other"
+    project.mkdir()
+    other.mkdir()
+    box = LocalToolbox(str(project), access_mode="full")
+    cmd = box.run("run_terminal_command", json.dumps({
+        "command": "echo agent-cmd", "shell": "cmd", "cwd": str(other)}))
+    ps = box.run("run_terminal_command", json.dumps({
+        "command": "Write-Output agent-ps", "shell": "powershell", "cwd": str(other)}))
+    assert "Код возврата: 0" in cmd and "agent-cmd" in cmd
+    assert "Код возврата: 0" in ps and "agent-ps" in ps
 
 
 def test_workbench_permissions_and_project_paths(tmp_path):
@@ -462,3 +531,16 @@ if __name__ == "__main__":
             print(f"FAIL {name}: {type(exc).__name__}: {exc}")
     print(f"{len(tests) - failures}/{len(tests)} tests passed")
     sys.exit(1 if failures else 0)
+
+
+def test_default_read_is_bounded_and_can_continue(tmp_path):
+    path = tmp_path / 'large.py'
+    path.write_text(''.join(f'line {i}\n' for i in range(1, 501)))
+    box = LocalToolbox(str(tmp_path))
+    first = box.read_file('large.py')
+    assert 'line 200\n' in first and 'line 201' not in first
+    assert 'offset=201' in first
+    second = box.read_file('large.py', offset=201, limit=200)
+    assert 'line 201\n' in second and 'line 400' in second
+    whole = box.read_file('large.py', limit=0)
+    assert 'line 500' in whole and 'Достигнут предел' not in whole

@@ -7,8 +7,8 @@ from threading import RLock
 
 from services.agent_delegation import ROLES, delegate
 from services.agent_edits import EDIT_SCHEMA, EditCandidate, FileEdit
-from services.agent_harness import AgentUsage, RoundBudget
-from services.ai_service import AIError, AIService
+from services.agent_harness import AgentUsage
+from services.ai_service import AIError
 from services.team_scheduler import TeamScheduler
 from services.team_optimizer import TeamOptimizer
 
@@ -42,19 +42,21 @@ class TeamResult:
     complete: bool = True
     changed_files: list[str] = field(default_factory=list)
     optimization: dict = field(default_factory=dict)
-    budget_exhausted: bool = False
 
 
 def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelism=None, report=None, trace=None,
-             scheduled_role=None, relationship=None, attachment_paths=(), mcp_servers=()):
+             scheduled_role=None, relationship=None, attachment_paths=(), mcp_servers=(),
+             reasoning=None, usage_progress=None, previous_result="", strategy=None):
+    selected = strategy or getattr(service, 'config', {}).get('ai_team_strategy', 'single')
+    if selected == 'three_stage' and not mcp_servers and not scheduled_role:
+        from services.three_stage_team import run_three_stage
+        return run_three_stage(service, toolbox, goal, emit, stopped, report=report,
+                               trace=trace, reasoning=reasoning, usage_progress=usage_progress,
+                               previous_result=previous_result, attachment_paths=attachment_paths,
+                               relationship=relationship)
+    if selected == 'three_stage' and trace:
+        trace(0, 'Используется динамический режим: внешние MCP или запланированная роль пока требуют прежнего маршрута.')
     started = time.monotonic()
-    budget = None
-    if isinstance(service, AIService):
-        try:
-            rounds = int(service._setting("ai_agent_round_budget", 64))
-        except (TypeError, ValueError):
-            rounds = 64
-        budget = RoundBudget(min(200, max(1, rounds)))
     learning_warning = ""
     try:
         optimizer = TeamOptimizer(getattr(toolbox, "team_cache", None), str(getattr(toolbox, "root", "")),
@@ -62,22 +64,19 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
     except Exception as exc:
         learning_warning = f"История оптимизации недоступна: {exc}"
         optimizer = TeamOptimizer()
-    try:
-        initial_plan = optimizer.recommend()
-    except Exception as exc:
-        learning_warning = f"История оптимизации недоступна: {exc}"
-        optimizer = TeamOptimizer()
-        initial_plan = optimizer.recommend()
     team_description = {}
     optimize_tool = _tool("optimize_team", "Рассчитать рекомендуемое число исполнителей по сложности и истории. "
                           "Вызывай после оценки задачи, до назначения команды; work_units — независимые части работы.",
                           {key: {"type": "number"} for key in (
                               "work_units", "parallel_fraction", "risk", "quality_weight", "time_weight", "cost_weight")},
                           ["work_units", "parallel_fraction", "risk"])
-    assess_tool = _tool("assess_team", "Перед итогом запиши оценку состава команды. "
+    assess_tool = _tool("assess_team", "При необходимости сохрани оценку состава команды. "
                         "Отделяй фактические проверки от предположений.",
                         {key: {"type": "string"} for key in ("description", "evidence", "inefficiencies", "next_structure")},
                         ["description", "evidence", "inefficiencies", "next_structure"])
+    previous_tool = _tool("read_previous_result", "Прочитать предыдущую задачу и итог, только если текущий вопрос ссылается на них.",
+                          {"offset": {"type": "integer", "minimum": 0},
+                           "length": {"type": "integer", "minimum": 1, "maximum": 12000}}, [])
     definitions = toolbox.definitions()
     from services.ide_mcp import IDEMCP
     ide = IDEMCP(toolbox)
@@ -99,7 +98,6 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
     assigned = 0
     failed_agents = 0
     requirements_ready = False
-    requirements_assigned = False
     completed = {}
     published = set()
     mutation_lock = RLock()
@@ -115,7 +113,7 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
                 if cache is not None and name in {"edit_file", "write_file"}:
                     try:
                         target = toolbox._resolve(payload["path"])
-                        if target.is_file():
+                        if target.is_file() and not toolbox._outside_project(target):
                             path, before = toolbox.preview_edit_source(payload["path"])
                             if name == "write_file":
                                 after = payload["content"]
@@ -154,8 +152,10 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
                 options["trace"] = lambda text: trace(agent_id, text)
             options["assign_children"] = children
             options["tool_runner"] = run_ide
-            if budget is not None:
-                options["round_budget"] = budget
+            if reasoning:
+                options["on_reasoning"] = lambda piece: reasoning(agent_id, piece)
+            if usage_progress:
+                options["on_round_usage"] = usage_progress
             if dependency_context:
                 options["dependency_context"] = dependency_context
             result = json.loads(delegate(service, toolbox, definitions, {"role": role, "task": task},
@@ -172,9 +172,17 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
     scheduler = TeamScheduler(run_agent, emit, stopped, capacity, parallelism, relationship)
 
     def route(name, args):
-        nonlocal assigned, question, failed_agents, requirements_ready, requirements_assigned
+        nonlocal assigned, question, failed_agents, requirements_ready
         if stopped() or question:
             return "Запуск остановлен."
+        if name == "read_previous_result" and previous_result:
+            offset, length = args.get("offset", 0), args.get("length", 6000)
+            if type(offset) is not int or offset < 0 or type(length) is not int or not 1 <= length <= 12000:
+                return "Укажи offset >= 0 и length от 1 до 12000."
+            excerpt = previous_result[offset:offset + length]
+            if offset + length < len(previous_result):
+                excerpt += f"\n[Продолжение доступно с offset={offset + length}.]"
+            return excerpt
         if name in mcp_resource_names or name in mcp_tool_names:
             from services.mcp_client import MCPError, run_resource_tool, run_tool
 
@@ -186,7 +194,10 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
                 return f"Ошибка MCP: {exc}"
         if name == "optimize_team":
             try:
-                return json.dumps(optimizer.recommend(**args), ensure_ascii=False)
+                recommendation = optimizer.recommend(**args)
+                return json.dumps({key: recommendation[key] for key in
+                                   ("recommendation", "total_with_supervisor", "history_samples")},
+                                  ensure_ascii=False)
             except (ValueError, TypeError) as exc:
                 return f"Ошибка параметров оптимизации: {exc}"
         if name == "assess_team":
@@ -228,8 +239,6 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
             if not isinstance(role, str) or role not in ROLES or not isinstance(task, str) or not task.strip():
                 return "Укажите допустимую роль и цель."
             batch.append((role, task.strip()))
-        if not requirements_assigned and sum(role == "requirements" for role, _ in batch) != 1:
-            return "Первым пакетом назначьте одного агента постановки и независимые поручения."
         if assigned == 0 and scheduled_role and all(role != scheduled_role for role, _ in batch):
             return f"В первом пакете назначь запланированного агента с ролью {scheduled_role}."
         if len(set(batch)) != len(batch) or seen.intersection(batch):
@@ -239,7 +248,6 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
         except ValueError as exc:
             return f"Ошибка заданий: {exc}"
         seen.update(batch)
-        requirements_assigned |= any(role == "requirements" for role, _ in batch)
         assigned = scheduler.assigned
         for number, (result, tokens) in sorted(scheduler.results.items()):
             if number not in completed:
@@ -266,46 +274,20 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
             trace(0, name + "\n" + json.dumps(args, ensure_ascii=False, indent=2))
         value = route(name, args)
         if trace:
-            trace(0, value)
+            trace(0, "Снимок экрана передан модели." if isinstance(value, dict) and "__image__" in value else str(value))
         return value
 
     emit(0, "Руководитель", goal, "Координирует")
     prompt = (
-        "Ты руководитель CodeLane. Простую задачу выполняй напрямую через инструменты IDE и MCP. "
-        "Прочитай вложения сам; при необходимости передай исполнителю только нужные факты. "
-        "Для диагностики сначала используй analysis_details, lsp_query и dependency_graph. "
-        "Для независимых частей сложной задачи собери минимальную команду. "
-        "При необходимости оцени её размер через optimize_team. "
-        "Не запускай каскады повторного ревью и исследования уже подтверждённых фактов. "
-        "Субагентов создавай для самостоятельных частей, когда это экономит общее время и стоимость. "
-        "После целевых тестов и одного ревью заверши задачу, если не найден воспроизводимый дефект. "
-        "Если делегируешь, первым вызовом assign_team отправь единый пакет: агент постановки и независимые задачи. "
-        "Агент постановки формулирует критерии и вопросы. Если без ответа нельзя продолжить, "
-        "вызови ask_user. Иначе сам выбери число, роли и разные конкретные цели исполнителей. "
-        "Независимые задания отправляй одним пакетом. Для правок подключи тестировщика, для интерфейса — дизайнера. "
-        "Используй key и depends_on для зависимых задач внутри пакета: ядро дождётся их завершения "
-        "и передаст результаты исполнителю. Исполнители могут создавать собственных субагентов, "
-        "их результаты и предложения также доступны тебе по agent_id. "
-        "Перепроверь выводы, согласуй пересечения по файлам и символам, "
-        "при необходимости поручай уточняющие проверки. Если доступен propose_edit, принимай "
-        "готовые предложения исполнителей по ID через accept_proposal, собственные — через propose_edit. "
-        "При пересечении прочитай оба предложения и отправь общий охватывающий фрагмент через reconcile_edit. "
-        "Инструменты IDE доступны всем участникам. Для независимых изменений и проверок "
-        "используй подходящие инструменты напрямую. Сообщай о фактически выполненных действиях. "
-        "При сбое отдельного агента используй успешные результаты и прямое чтение проекта. "
-        "Если агент постановки упал, сформулируй критерии из исходной цели и продолжи. "
-        "Для веб-исследования найди страницы через browser_search, открой и прочитай источники и дай ссылки. "
-        "Не проси пользователя выбирать способ повторного запуска команды. "
-        "Если работа шла командой, через assess_team опиши состав, подтверждения результата, лишние затраты "
-        "и что изменить в составе следующей похожей команды. Не выдавай самооценку за результаты тестов. "
-        "Заверши общим результатом и укажи ограничения проверки.\n"
-        "Начальная оценка (уточни под задачу): " + json.dumps(initial_plan, ensure_ascii=False) + "\n\nЦель:\n" + goal
+        "Выполни задачу напрямую; делегируй независимые части только при необходимости. "
+        "Для зависимых задач используй key/depends_on. Проверяй выводы и пересечения правок. "
+        "Готовые предложения принимай по ID; пересечения согласуй через reconcile_edit. "
+        "Если без уточнения продолжить нельзя, вызови ask_user. Верни краткий результат и фактические проверки."
+        "\n\nЗадача:\n" + goal
     )
     if scheduled_role:
         prompt += f"\nНазначь исполнителя с запланированной ролью {scheduled_role}."
     options = {"attachment_paths": attachment_paths} if attachment_paths else {}
-    if budget is not None:
-        options["round_budget"] = budget
     external_tools = []
     error = ""
     try:
@@ -332,10 +314,15 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
             resources = resource_tools(mcp_clients)
             mcp_resource_names.update(tool["function"]["name"] for tool in resources)
             external_tools.extend(resources)
+        from services.ai_service import AIService
+        live_options = ({"on_reasoning": (lambda piece: reasoning(0, piece)) if reasoning else None,
+                         "on_usage": usage_progress} if isinstance(service, AIService) else {})
         answer = service.converse(
             prompt, tools=TOOLS + [optimize_tool, assess_tool] + supervisor_tools + external_tools
+            + ([previous_tool] if previous_result else [])
             + ([EDIT_SCHEMA, accept, reconcile] if edits_enabled else []),
-            tool_runner=traced_route, should_stop=lambda: stopped() or bool(question), **options,
+            tool_runner=traced_route, should_stop=lambda: stopped() or bool(question),
+            unlimited_rounds=True, **options, **live_options,
         )
         usage.add(service.last_usage)
     except Exception as exc:
@@ -345,19 +332,17 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
             client.close()
     edits = candidate.files() if not question and not stopped() else []
     reason = getattr(service, "last_stop_reason", None)
-    budget_exhausted = reason == "limit" and budget is not None and budget.exhausted
     incomplete = not question and not stopped() and (
-        bool(error) or reason in {"empty", "limit"} or not answer.strip() or (scheduled_role and not assigned)
+        bool(error) or reason == "empty" or not answer.strip() or (scheduled_role and not assigned)
         or failed_agents > 0
     )
     if incomplete:
         detail = error or {
-            "limit": "Исчерпан общий бюджет раундов команды." if budget_exhausted else "Исчерпан лимит раундов руководителя.",
             "empty": "Модель руководителя вернула пустой ответ.",
         }.get(reason, "Есть незавершённые задания агентов." if failed_agents else
               "Руководитель не завершил работу команды.")
         lines = [f"**Частичный итог.** {detail}", f"Файлов в подготовленных правках: {len(edits)}."]
-        if answer.strip() and not error and (budget_exhausted or reason not in {"empty", "limit"}):
+        if answer.strip() and not error and reason != "empty":
             lines.append(answer)
         for number, result in sorted(completed.items()):
             title = ROLES[result["role"]][0]
@@ -388,4 +373,4 @@ def run_team(service, toolbox, goal, emit, stopped, *, capacity=None, parallelis
     if trace:
         trace(0, "Оптимизация команды:\n" + json.dumps(experience, ensure_ascii=False, indent=2))
     return TeamResult(answer, question, usage.as_dict(), failed_agents, edits, not incomplete,
-                      sorted(changed_files), experience, budget_exhausted)
+                      sorted(changed_files), experience)

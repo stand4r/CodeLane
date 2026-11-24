@@ -26,8 +26,10 @@ TOOLS = {
                         {"path": TEXT}, ["path"]),
     "explorer_open": ("read", "Открыть файл проекта в подходящей вкладке CodeLane.",
                        {"path": TEXT}, ["path"]),
-    "explorer_edit": ("write", "Создать папку, переименовать или переместить путь проекта. move требует destination.",
-                      {"action": choice("mkdir", "move"), "path": TEXT, "destination": TEXT},
+    "explorer_edit": ("write", "Создать папку, удалить, переименовать или переместить путь проекта. "
+                               "move требует destination, для папки при delete нужен recursive=true.",
+                      {"action": choice("mkdir", "move", "delete"), "path": TEXT, "destination": TEXT,
+                       "recursive": {"type": "boolean"}},
                       ["action", "path"]),
     "editor_control": ("read", "Выбрать или закрыть сохранённую вкладку с файлом, разделить редактор или объединить панели.",
                        {"action": choice("select", "close", "split_right", "split_down", "merge"), "path": TEXT},

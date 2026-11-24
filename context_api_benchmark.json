@@ -1,0 +1,12 @@
+{
+  "date": "2026-11-23",
+  "provider": "tokenator-vpn",
+  "model": "deepseek-v4.1-flash-1017",
+  "live_api": true,
+  "runs": [
+    {"case": "control", "seconds": 12.66, "prompt_tokens": 986, "correct": true},
+    {"case": "project_snapshot", "seconds": 12.29, "first_text_seconds": 10.85, "prompt_tokens": 204414, "correct": true},
+    {"case": "large_file_tool", "seconds": 13.31, "prompt_tokens": 45277, "correct": true, "tool_calls": ["read_file"]}
+  ],
+  "local_checks": {"passed": 56}
+}

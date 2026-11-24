@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
+from widgets.AgentMark import AgentMark
 
 from core.logging_config import get_logger
 from design.icons import codicon_icon, line_icon
@@ -77,10 +78,10 @@ TEXT_DIM = "#6E6E70"
 BUBBLE_TEXT = "#EDEDED"
 
 QUICK_ACTIONS = (
-    ("Объяснить", "Объясни, что делает этот код, шаг за шагом."),
-    ("Найти ошибки", "Найди возможные ошибки и потенциальные падения в этом коде."),
-    ("Отрефакторить", "Отрефактори код по принципам Clean Code и покажи исправленный вариант."),
-    ("Тесты", "Сгенерируй модульные тесты (pytest) для этого кода."),
+    ("Объяснить", "Объясни, что делает этот код"),
+    ("Найти ошибки", "Найди возможные ошибки"),
+    ("Отрефакторить", "Отрефактори код"),
+    ("Тесты", "Сгенерируй модульные тесты для этого кода."),
     ("Документация", "Добавь docstring'и и комментарии к публичным функциям и классам."),
     ("Ревью", "Сделай короткое code review: сильные стороны и что улучшить."),
 )
@@ -319,10 +320,12 @@ class AIWorker(QtCore.QThread):
 
             context = self.context
             project_context = getattr(self, "project_context", None)
+            # The compact project map is the introductory context for every request.
             if project_context is not None and not self._stop:
                 from services.ai_context import render_project_context
                 root, mentions = project_context
-                rendered = render_project_context(Path(root), mentions)
+                rendered = render_project_context(Path(root), mentions,
+                                                  should_stop=lambda: self._stop)
                 context = "\n\n".join(part for part in (context, rendered) if part)
             answer = self.service.converse(
                 self.prompt, self.history, context,
@@ -567,6 +570,9 @@ class _TranscriptView(QtWidgets.QTextBrowser, QtGui.QTextObjectInterface):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Ctrl+C should copy selected text from the chat transcript without
+        # triggering the workbench's global copy action.
+        self.setShortcutEnabled(QtGui.QKeySequence.StandardKey.Copy, True)
         self._interfaces = {}
         try:
             self.document().documentLayout().registerHandler(self.USER_OBJECT_TYPE, self)
@@ -968,6 +974,16 @@ class AIAgentPanel(QtWidgets.QWidget):
                 lambda _=False, sid=session_id: self.switch_chat_session(sid))
         sessions.setEnabled(self._session_path() is not None)
 
+        if self.main_window is not None:
+            menu.addSeparator()
+            journals = menu.addAction("Журналы команды…")
+            journals.triggered.connect(lambda: self._show_team_archive("show_journals"))
+            snapshots = menu.addAction("Снимки команды…")
+            snapshots.triggered.connect(lambda: self._show_team_archive("show_snapshots"))
+            available = self._project_root() is not None
+            journals.setEnabled(available)
+            snapshots.setEnabled(available)
+
         if self.pending_count():
             act_clear_queue = menu.addAction(f"Очистить очередь ({self.pending_count()})")
             act_clear_queue.triggered.connect(self.clear_queue)
@@ -993,6 +1009,19 @@ class AIAgentPanel(QtWidgets.QWidget):
         act_settings.triggered.connect(self._open_settings)
         return menu
 
+    def _show_team_archive(self, action_name: str):
+        window = self.main_window
+        find = getattr(window, "_find_special_tab", None)
+        if not callable(find):
+            return
+        self._open_agent_team(background=True)
+        existing = find("agentTeam")
+        if existing is None:
+            self._append_notice("Вкладка команды недоступна.", "warn")
+            return
+        group, index = existing
+        getattr(group.widget(index), action_name)()
+
     def _show_context_menu(self, global_pos: QtCore.QPoint):
         menu = self._build_context_menu()
         menu.exec(global_pos)
@@ -1007,13 +1036,14 @@ class AIAgentPanel(QtWidgets.QWidget):
         header.setObjectName("aiHeader")
         try:
             from app.ui_scale import scale_px
-            header.setFixedHeight(scale_px(40))
+            header.setFixedHeight(scale_px(48))
         except Exception:  # noqa: BLE001 - headless/tests
-            header.setFixedHeight(40)
+            header.setFixedHeight(48)
         layout = QtWidgets.QHBoxLayout(header)
         layout.setContentsMargins(12, 0, 8, 0)
         layout.setSpacing(6)
 
+        layout.addWidget(AgentMark(small=True))
         title = QtWidgets.QLabel("Агент")
         title.setObjectName("aiHeaderTitle")
         self.header_title = title
@@ -1100,7 +1130,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         wrapper = QtWidgets.QWidget()
         wrapper.setObjectName("aiComposerWrap")
         outer_layout = QtWidgets.QVBoxLayout(wrapper)
-        outer_layout.setContentsMargins(14, 4, 14, 10)
+        outer_layout.setContentsMargins(16, 8, 16, 16)
         outer_layout.setSpacing(4)
 
         card_row = QtWidgets.QWidget()
@@ -1113,10 +1143,11 @@ class AIAgentPanel(QtWidgets.QWidget):
         self.composer.setObjectName("aiComposer")
         self.composer.setMaximumWidth(772)
         box = QtWidgets.QVBoxLayout(self.composer)
-        box.setContentsMargins(12, 10, 10, 9)
+        box.setContentsMargins(16, 13, 12, 11)
         box.setSpacing(6)
 
         self.input = _ComposerInput(self.composer)
+        self.input.setObjectName("aiComposerInput")
         self.input.setPlaceholderText("Сообщение")
         self.input.submitted.connect(self.send_message)
         self.input.files_dropped.connect(self._attach_files)
@@ -1164,7 +1195,7 @@ class AIAgentPanel(QtWidgets.QWidget):
 
         self.model_btn = QtWidgets.QToolButton()
         self.model_btn.setObjectName("aiModelButton")
-        self.model_btn.setToolTip("Выбор модели (Ctrl+Shift+M)")
+        self.model_btn.setToolTip("Выбор профиля или модели (Ctrl+Shift+M)")
         self.model_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.model_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         self.model_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
@@ -1283,7 +1314,45 @@ class AIAgentPanel(QtWidgets.QWidget):
     def _service(self) -> AIService:
         from utils.settings_manager import get_settings_manager
         settings = get_settings_manager().get_all_settings()
+        profile_id = str(settings.get("ai_active_profile") or "")
+        profiles = settings.get("ai_profiles") or []
+        profile = self._active_profile()
+        if profile is not None:
+            previous_provider = str(settings.get("ai_provider") or "deepseek")
+            provider = str(profile.get("provider") or settings.get("ai_provider") or "custom")
+            settings["ai_provider"] = provider
+            settings["ai_model"] = str(profile.get("model") or settings.get("ai_model") or "")
+            try:
+                default_url = get_provider(provider).base_url
+            except KeyError:
+                default_url = settings.get("ai_base_url", "")
+            settings["ai_base_url"] = str(profile.get("base_url") or default_url)
+            settings["ai_protocol"] = str(profile.get("protocol") or (
+                "anthropic" if "anthropic" in settings["ai_base_url"].lower() else "openai"))
+            keys = settings.get("ai_provider_keys") or {}
+            stored = ""
+            if isinstance(keys, dict):
+                # One key can serve several routes of the same account.
+                credential = get_provider(provider).credential_key
+                stored = str(keys.get(credential) or keys.get(provider) or "")
+            profile_key = profile.get("api_key") or stored
+            if not profile_key and provider == previous_provider:
+                profile_key = settings.get("ai_api_key", "")
+            settings["ai_api_key"] = str(profile_key or "")
+            profile_prompt = str(profile.get("system_prompt") or "").strip()
+            base_prompt = str(settings.get("ai_system_prompt") or "").strip()
+            if profile_prompt:
+                settings["ai_system_prompt"] = "\n\n".join(
+                    part for part in (base_prompt, profile_prompt) if part)
         return AIService(config=settings)
+
+    def _active_profile(self):
+        from utils.settings_manager import get_settings_manager
+        settings = get_settings_manager().get_all_settings()
+        profile_id = str(settings.get("ai_active_profile") or "")
+        profiles = settings.get("ai_profiles") or []
+        return next((item for item in profiles if isinstance(item, dict)
+                     and str(item.get("id") or "") == profile_id), None)
 
     # ------------------------------------------------------------------
     # MCP
@@ -1332,7 +1401,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         sm.save_settings()
         self._sync_access_button()
 
-    def _build_local_tools(self, should_stop=None, *, full_access=False):
+    def _build_local_tools(self, should_stop=None, *, full_access=False, background=False):
         """Project tools (files, terminal, apps) for the agent."""
         from services.agent_tools import LocalToolbox
         from utils.settings_manager import get_settings_manager
@@ -1344,11 +1413,11 @@ class AIAgentPanel(QtWidgets.QWidget):
             allow_commands=full_access or bool(sm.get_setting("ai_allow_commands", True)),
             access_mode="full" if full_access else self._access_mode(),
             ui_action=lambda kind, payload: self._request_ui_tool(
-                kind, {**payload, **({"_background": True} if full_access and kind.startswith("browser_") else {})},
+                kind, {**payload, **({"_background": True} if (full_access or background) and kind.startswith("browser_") else {})},
                 should_stop),
             should_stop=should_stop,
         )
-        toolbox.background = full_access
+        toolbox.background = full_access or background
         return toolbox
 
     def _request_ui_tool(self, kind: str, payload: dict, should_stop=None) -> str:
@@ -1537,9 +1606,22 @@ class AIAgentPanel(QtWidgets.QWidget):
                 else:
                     editor.set_code(updated)
                 result["value"] = f"Открытая вкладка {Path(path).name} обновлена; файл отмечен как изменённый."
+            elif kind == "capture_screen":
+                import base64
+                screen = QtGui.QGuiApplication.primaryScreen()
+                if screen is None:
+                    raise RuntimeError("Экран недоступен.")
+                pixmap = screen.grabWindow(0)
+                if pixmap.isNull():
+                    raise RuntimeError("Не удалось сделать снимок экрана.")
+                buffer = QtCore.QBuffer()
+                buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+                if not pixmap.save(buffer, "PNG"):
+                    raise RuntimeError("Не удалось сохранить снимок экрана.")
+                result["value"] = json.dumps({"__image__": base64.b64encode(bytes(buffer.data())).decode("ascii"),
+                                               "media_type": "image/png"})
             elif kind == "open_file":
-                window.file_manager.open_text_editor(path)
-                editor = window.get_current_editor()
+                editor = window.file_manager.open_text_editor(path, activate=False)
                 if editor is None or not same_path(getattr(editor, "file_path", ""), path):
                     raise RuntimeError("Файл не открылся как редактируемая вкладка.")
                 result["value"] = f"Открыт в редакторе: {Path(path).name}"
@@ -1948,71 +2030,168 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._refresh_mode_menu(service.mode)
         self._refresh_reasoning_menu()
 
-        # Models: only providers with a usable API (key present, or local server).
+        # Profiles created by the user come first, then every provider that
+        # already has a key — grouped by model family so a large aggregator
+        # catalogue stays navigable.
         self._model_menu.clear()
-        spec = service.provider
-        ready = {s.key for s in PROVIDERS.values() if self._provider_ready(s)}
-        if spec.key not in ready and not spec.local:
-            # The active provider has no key: say so instead of listing models
-            # that cannot answer.
-            warn = self._model_menu.addAction("Нет API-ключа для " + spec.label)
+        from utils.settings_manager import get_settings_manager
+        stored_profiles = get_settings_manager().get_setting("ai_profiles", [])
+        profiles = [item for item in stored_profiles if isinstance(item, dict) and item.get("id")] \
+            if isinstance(stored_profiles, list) else []
+        active_profile = str((service.config or {}).get("ai_active_profile") or "")
+        profile_group = QtGui.QActionGroup(self._model_menu)
+        profile_group.setExclusive(True)
+        for profile in profiles:
+            profile_id = str(profile["id"])
+            action = self._model_menu.addAction(str(profile.get("name") or profile.get("model") or "Профиль"))
+            action.setCheckable(True)
+            profile_group.addAction(action)
+            action.setChecked(profile_id == active_profile)
+            action.setToolTip(str(profile.get("model") or ""))
+            action.triggered.connect(lambda _=False, key=profile_id: self._set_profile(key))
+        offered = self._add_provider_menus(service)
+        if offered:
+            self._model_menu.addSeparator()
+        elif not profiles and not service.provider.local:
+            # Nothing selectable: explain why instead of an empty menu.
+            has_key = bool(getattr(self, "_provider_keys", {}).get(
+                service.provider.credential_key))
+            if has_key:
+                warn = self._model_menu.addAction(
+                    "Список моделей пуст — выберите модель в настройках")
+            else:
+                warn = self._model_menu.addAction(
+                    "Нет API-ключа для " + service.provider.label)
             warn.setEnabled(False)
             hint = self._model_menu.addAction("Настройки → ИИ-агент")
             hint.triggered.connect(self._open_settings)
-
-        if spec.key in ready:
-            head = self._model_menu.addAction(spec.label)
-            head.setEnabled(False)
             self._model_menu.addSeparator()
-            for model in models_for(spec.key):
-                label = model.label + (" · бесплатно" if model.free else "")
-                action = self._model_menu.addAction(label)
-                action.setCheckable(True)
-                action.setChecked(model.id == service.model)
-                action.setToolTip(model.id + ((" — " + model.note) if model.note else ""))
-                action.triggered.connect(lambda _=False, m=model.id: self._set_model(m))
-            self._model_menu.addSeparator()
-
-        for other in PROVIDERS.values():
-            if other.key == spec.key or not other.models:
-                continue
-            if other.key not in ready:
-                continue
-            sub = self._model_menu.addMenu(other.label)
-            for model in other.models:
-                act = sub.addAction(model.label + (" · бесплатно" if model.free else ""))
-                act.setToolTip(model.id)
-                act.triggered.connect(
-                    lambda _=False, p=other.key, m=model.id: self._switch_provider_model(p, m)
-                )
-        fetch = self._model_menu.addAction("Загрузить список моделей…")
-        fetch.triggered.connect(lambda: self._show_models(service))
+        self._model_menu.addAction("Добавить профиль…", self._open_settings)
         self.refresh_model_label()
+
+    def _add_provider_menus(self, service) -> int:
+        """Offer the models of every provider that already has a key.
+
+        Providers are folded by ``credential_key``: the four Tokenator routes
+        share one key and one catalogue, so they get a single submenu and a
+        "Подключение" switch (protocol/route) instead of four identical lists.
+        Returns how many provider submenus were added.
+        """
+        offered = 0
+        from services.ai_providers import family_of
+        groups: List[tuple] = []
+        for spec in PROVIDERS.values():
+            if not spec.models:
+                continue
+            for entry in groups:
+                if entry[0] == spec.credential_key:
+                    entry[1].append(spec)
+                    break
+            else:
+                groups.append((spec.credential_key, [spec]))
+        active_provider = service.provider_key
+        active_model = service.model
+        for _credential, specs in groups:
+            if not any(self._provider_ready(spec) for spec in specs):
+                continue
+            # A local server is only advertised while it is the active choice:
+            # we cannot know whether Ollama/LM Studio is running right now.
+            if specs[0].local and active_provider not in {s.key for s in specs}:
+                continue
+            primary = next((spec for spec in specs if spec.key == active_provider),
+                           specs[0])
+            title = specs[0].label.split(" · ")[0]
+            submenu = self._model_menu.addMenu(f"{title} · {len(primary.models)}")
+            submenu.setToolTipsVisible(True)
+            offered += 1
+            if len(specs) > 1:
+                connection = submenu.addMenu("Подключение")
+                connection.setToolTipsVisible(True)
+                connection_group = QtGui.QActionGroup(connection)
+                for spec in specs:
+                    route = spec.label.split(" · ", 1)[-1]
+                    action = connection.addAction(route)
+                    action.setCheckable(True)
+                    action.setChecked(spec.key == active_provider)
+                    action.setToolTip(spec.base_url)
+                    connection_group.addAction(action)
+                    action.triggered.connect(
+                        lambda _=False, k=spec.key, m=active_model:
+                        self._switch_provider_model(k, m))
+                submenu.addSeparator()
+            families: List[tuple] = []
+            for model in primary.models:
+                family = family_of(model.id)
+                bucket = next((item[1] for item in families if item[0] == family), None)
+                if bucket is None:
+                    bucket = []
+                    families.append((family, bucket))
+                bucket.append(model)
+            for family, items in families:
+                branch = submenu.addMenu(f"{family} · {len(items)}") \
+                    if len(families) > 1 else submenu
+                branch.setToolTipsVisible(True)
+                model_group = QtGui.QActionGroup(branch)
+                for model in items:
+                    label = model.label + (" · бесплатно" if model.free else "")
+                    action = branch.addAction(label)
+                    action.setCheckable(True)
+                    action.setChecked(primary.key == active_provider
+                                       and model.id.casefold() == active_model.casefold())
+                    tip = f"`{model.id}`" + (f" — {model.note}" if model.note else "")
+                    if model.version:
+                        tip += f" ({model.version})"
+                    action.setToolTip(tip)
+                    model_group.addAction(action)
+                    action.triggered.connect(
+                        lambda _=False, k=primary.key, m=model.id:
+                        self._switch_provider_model(k, m))
+        return offered
 
     def _load_provider_keys(self):
         """Collect which providers already have an API key configured."""
         from utils.settings_manager import get_settings_manager
         sm = get_settings_manager()
         settings = sm.get_all_settings()
-        keys = {str(settings.get("ai_provider") or "deepseek"):
-                str(settings.get("ai_api_key") or "").strip()}
+        keys = {}
+        active = str(settings.get("ai_provider") or "deepseek")
+        flat = str(settings.get("ai_api_key") or "").strip()
+        if flat:
+            keys[get_provider(active).credential_key] = flat
         # Optional per-provider key store: {"openai": "sk-...", "gemini": "AIza..."}
+        # Entries are grouped by ``credential_key`` so providers that share one
+        # account (the Tokenator routes) only need the key once.
         extra = settings.get("ai_provider_keys") or {}
         if isinstance(extra, dict):
             for key, value in extra.items():
-                if str(value or "").strip():
-                    keys[str(key)] = str(value).strip()
+                text = str(value or "").strip()
+                if text and str(key) in PROVIDERS:
+                    keys[get_provider(key).credential_key] = text
         self._provider_keys = keys
 
     def _switch_provider_model(self, provider_key: str, model_id: str):
         from utils.settings_manager import get_settings_manager
         spec = get_provider(provider_key)
         sm = get_settings_manager()
+        # The key belongs to the credential group, not to one route. Park the
+        # key that is currently in the flat field with its own account before
+        # pointing the field at another one.
+        keys = sm.settings.get("ai_provider_keys")
+        keys = dict(keys) if isinstance(keys, dict) else {}
+        previous = str(sm.settings.get("ai_provider") or "")
+        flat = str(sm.settings.get("ai_api_key") or "").strip()
+        if flat and previous:
+            keys[get_provider(previous).credential_key] = flat
+        sm.settings["ai_provider_keys"] = keys
+        sm.settings["ai_api_key"] = str(keys.get(spec.credential_key) or "")
         sm.settings["ai_provider"] = spec.key
         sm.settings["ai_base_url"] = spec.base_url
         sm.settings["ai_model"] = model_id
+        sm.settings["ai_active_profile"] = ""
         sm.save_settings()
-        self._refresh_menus()
+        # The click comes from this very menu: rebuilding it inside the action
+        # handler would delete the QAction that is still emitting.
+        QtCore.QTimer.singleShot(0, self._refresh_menus)
         self.refresh_status()
         self._append_step(f"{spec.label} · {model_id}")
 
@@ -2020,14 +2199,18 @@ class AIAgentPanel(QtWidgets.QWidget):
         """A provider appears in the picker only when its API is usable."""
         if spec.local:
             return True          # local servers need no key
-        key = getattr(self, "_provider_keys", {}).get(spec.key, "")
+        key = getattr(self, "_provider_keys", {}).get(spec.credential_key, "")
         return bool(key)
 
     def refresh_model_label(self):
         service = self._service()
+        profile = self._active_profile()
         model = service.model or "модель не выбрана"
-        self._set_button_label(self.model_btn, model)
-        self.model_btn.setToolTip(f"{service.provider.label} · {service.model}")
+        label = str(profile.get("name") or model) if profile else model
+        self._set_button_label(self.model_btn, label)
+        self.model_btn.setToolTip(
+            f"{profile.get('name')} · {service.provider.label} · {service.model}"
+            if profile else f"{service.provider.label} · {service.model}")
         self._fit_composer_buttons()
 
     def refresh_status(self):
@@ -2127,13 +2310,43 @@ class AIAgentPanel(QtWidgets.QWidget):
                 pass
 
     def _append_welcome(self):
-        label = QtWidgets.QLabel("/ — команды · @ — файлы")
-        label.setObjectName("aiWelcome")
-        label.setWordWrap(True)
-        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
-        self._welcome_widget = label
+        welcome = QtWidgets.QWidget()
+        welcome.setObjectName("agentWelcomePage")
+        layout = QtWidgets.QVBoxLayout(welcome)
+        layout.setContentsMargins(4, 12, 4, 12)
+        layout.setSpacing(12)
+        layout.addStretch()
+        center = QtCore.Qt.AlignmentFlag.AlignHCenter
+        layout.addWidget(AgentMark(), 0, center)
+        title = QtWidgets.QLabel("Над чем поработаем?")
+        title.setObjectName("agentWelcomeTitle")
+        title.setAlignment(center)
+        title.setWordWrap(True)
+        layout.addWidget(title)
+        actions = QtWidgets.QHBoxLayout()
+        actions.setSpacing(8)
+        actions.addStretch()
+        for prefix, caption in (("/", "команды"), ("@", "файлы")):
+            button = QtWidgets.QPushButton(f"{prefix}  {caption.capitalize()}")
+            button.setObjectName("agentWelcomeAction")
+            button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _, key=prefix: self._welcome_completion(key))
+            actions.addWidget(button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        layout.addStretch()
+        welcome.setAccessibleDescription("/ — команды · @ — файлы")
+        self._welcome_widget = welcome
         self._welcome_visible = True
-        self._add_message_widget(label)
+        self._add_message_widget(welcome, stretch=10)
+
+    def _welcome_completion(self, prefix):
+        self.input.setFocus()
+        cursor = self.input.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+        draft = self.input.toPlainText()
+        cursor.insertText((" " if draft and not draft[-1].isspace() else "") + prefix)
+        self.input.setTextCursor(cursor)
 
     def _insert_bubble(self, bubble, first_margin: int = 0):
         """Append a chat bubble widget to the message list, animated in."""
@@ -2237,6 +2450,8 @@ class AIAgentPanel(QtWidgets.QWidget):
                 continue
             if isinstance(widget, _UserBubble):
                 chunks.append(widget.label.text())
+            elif widget is getattr(self, "_welcome_widget", None):
+                chunks.append(widget.accessibleDescription())
             elif isinstance(widget, QtWidgets.QLabel):
                 raw = widget.text()
                 if widget.textFormat() == QtCore.Qt.TextFormat.RichText:
@@ -2341,6 +2556,20 @@ class AIAgentPanel(QtWidgets.QWidget):
         bubble.copy_requested.connect(self._copy_bubble_text)
         bubble.regenerate_requested.connect(self._regenerate_from_bubble)
         self._insert_bubble(bubble, 0 if grouped else 6)
+        # Subtle entrance: fade the assistant response in without affecting layout.
+        try:
+            effect = QtWidgets.QGraphicsOpacityEffect(bubble)
+            bubble.setGraphicsEffect(effect)
+            effect.setOpacity(0.0)
+            animation = QtCore.QPropertyAnimation(effect, b"opacity", bubble)
+            animation.setDuration(220)
+            animation.setStartValue(0.0)
+            animation.setEndValue(1.0)
+            animation.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
+            bubble._entrance_animation = animation
+            animation.start()
+        except Exception:
+            logger.debug("Не удалось анимировать появление ответа", exc_info=True)
         if mark_thinking:
             if getattr(self, "_thinking_bubbles", None) is None:
                 self._thinking_bubbles = []
@@ -2460,7 +2689,10 @@ class AIAgentPanel(QtWidgets.QWidget):
 
     def _session_preferences(self) -> dict:
         service = self._service()
+        from utils.settings_manager import get_settings_manager
+        active_profile = str(get_settings_manager().get_setting("ai_active_profile", "") or "")
         return {"provider": service.provider.key, "model": service.model,
+                "profile": active_profile,
                 "mode": service.mode, "context": self._scope(),
                 "include_file": self.include_file.isChecked(),
                 "include_selection": self.include_selection.isChecked(),
@@ -2637,11 +2869,17 @@ class AIAgentPanel(QtWidgets.QWidget):
             sm.settings["ai_context_scope"] = preferences["context"]
         if preferences.get("mode") in ("solve", "teach"):
             sm.settings["ai_mode"] = preferences["mode"]
-        if preferences.get("provider") in PROVIDERS:
+        profiles = sm.get_setting("ai_profiles", [])
+        profile_id = str(preferences.get("profile") or "")
+        profile_exists = isinstance(profiles, list) and any(
+            isinstance(item, dict) and str(item.get("id") or "") == profile_id
+            for item in profiles)
+        sm.settings["ai_active_profile"] = profile_id if profile_exists else ""
+        if not profile_exists and preferences.get("provider") in PROVIDERS:
             spec = get_provider(preferences["provider"])
             sm.settings["ai_provider"] = spec.key
             sm.settings["ai_base_url"] = spec.base_url
-        if preferences.get("model"):
+        if not profile_exists and preferences.get("model"):
             sm.settings["ai_model"] = str(preferences["model"])
         self.include_file.setChecked(bool(preferences.get("include_file", False)))
         self.include_selection.setChecked(bool(preferences.get("include_selection", False)))
@@ -2934,7 +3172,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._append_welcome()
 
     def _collect_project_context(self, mentions=None) -> str:
-        """Attach @-mentioned files, or a compact project map.
+        """Attach @-mentioned files, or a compact map for on-demand reads.
 
         File contents come from the stat-cache in ``services.ai_context``: an
         unchanged file is sent from memory, so repeated requests and repeated
@@ -3030,8 +3268,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         if host is not None:
             group, index = host
             team = group.widget(index)
-            # Team mode is always on: the mode toggle was removed, so every
-            # message goes to the agent team (busy team queues it).
+            # An already open team tab keeps its queue. New chats stay single-model.
             if self._worker is not None:
                 self._append_notice("Дождитесь завершения текущего ответа.", "warn")
             elif team.busy:
@@ -3233,11 +3470,15 @@ class AIAgentPanel(QtWidgets.QWidget):
     def _show_free_models(self):
         from services.ai_providers import models_for
         lines = []
+        seen = set()
         for spec in PROVIDERS.values():
-            free = [m for m in models_for(spec.key) if m.free]
+            free = [m for m in models_for(spec.key)
+                    if m.free and m.id.casefold() not in seen]
             if not free:
                 continue
-            lines.append(f"**{spec.label}** — ключ: {spec.key_url}")
+            seen.update(m.id.casefold() for m in free)
+            key_line = f" — ключ: {spec.key_url}" if spec.key_url else ""
+            lines.append(f"**{spec.label}**{key_line}")
             lines.extend(f"- `{m.id}` — {m.label}" for m in free)
         self._append_assistant("Бесплатные варианты:\n\n" + "\n".join(lines) +
                                "\n\nСменить: `/provider openrouter` и `/model <id>`.",
@@ -3287,6 +3528,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         from utils.settings_manager import get_settings_manager
         sm = get_settings_manager()
         sm.settings["ai_model"] = model.strip()
+        sm.settings["ai_active_profile"] = ""
         sm.save_settings()
         self.refresh_model_label()
         self._append_step(f"Модель: {model.strip()}")
@@ -3299,14 +3541,27 @@ class AIAgentPanel(QtWidgets.QWidget):
             self._append_notice(f"Неизвестный провайдер «{key}». "
                                 f"Доступны: {', '.join(PROVIDERS)}", "warn")
             return
+        self._switch_provider_model(spec.key, spec.default_model)
+        self._append_step(f"Провайдер: {spec.label} · модель {spec.default_model or '—'}")
+
+    def _set_profile(self, profile_id: str):
         from utils.settings_manager import get_settings_manager
         sm = get_settings_manager()
-        sm.settings["ai_provider"] = spec.key
-        sm.settings["ai_base_url"] = spec.base_url
-        sm.settings["ai_model"] = spec.default_model
+        profiles = sm.get_setting("ai_profiles", [])
+        profile = next((item for item in profiles if isinstance(item, dict)
+                        and str(item.get("id") or "") == str(profile_id)), None) \
+            if isinstance(profiles, list) else None
+        if profile is None:
+            self._append_notice("Профиль не найден. Проверьте настройки ИИ-агента.", "warn")
+            sm.settings["ai_active_profile"] = ""
+        else:
+            sm.settings["ai_active_profile"] = str(profile_id)
         sm.save_settings()
-        self.refresh_model_label()
-        self._append_step(f"Провайдер: {spec.label} · модель {spec.default_model or '—'}")
+        # Rebuild the picker outside this QAction's own signal emission.
+        QtCore.QTimer.singleShot(0, self._refresh_menus)
+        self.refresh_status()
+        if profile is not None:
+            self._append_step(f"Профиль: {profile.get('name') or profile_id}")
 
     def _send(self, prompt: str, context: str, mentions=None, *, attachment_paths=()):
         # A message typed while the model is still answering is queued instead
@@ -3557,7 +3812,8 @@ class AIAgentPanel(QtWidgets.QWidget):
             self._session_stats = {"total": 0, "measured": 0, "unreported": 0}
         stats = self._session_stats
         stats["last"] = {"total": total, "input": prompt, "output": output,
-                         "cached": tokens("cache_read_input_tokens")}
+                         "cached": tokens("cache_read_input_tokens"),
+                         "uncached": tokens("uncached_input_tokens")}
         if total is None:
             stats["unreported"] += 1
         else:
@@ -3586,6 +3842,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         detail = f"Последний запрос · вход {number(last['input'])} · выход {number(last['output'])}"
         if last.get("cached") is not None:
             detail += f" · из кэша {number(last['cached'])}"
+        if last.get("uncached") is not None:
+            detail += f" · без кэша {number(last['uncached'])}"
         if stats["unreported"]:
             detail += f"\nЗапросов без полного отчёта провайдера: {stats['unreported']}"
         label.setToolTip(detail)
@@ -3594,7 +3852,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._session_stats = None
         if isinstance(value, dict) and isinstance(value.get("last"), dict):
             counts = {key: value.get(key) for key in ("total", "measured", "unreported")}
-            last = {key: value["last"].get(key) for key in ("total", "input", "output", "cached")}
+            last = {key: value["last"].get(key) for key in ("total", "input", "output", "cached", "uncached")}
             if (all(type(n) is int and n >= 0 for n in counts.values())
                     and all(n is None or type(n) is int and n >= 0 for n in last.values())):
                 self._session_stats = {**counts, "last": last}

@@ -51,6 +51,7 @@ class TestResultsPanel(QtWidgets.QWidget):
         self.root = Path(root).resolve()
         self.executable = executable
         self.navigate = navigate
+        self.current_file = None
         self._report = None
         self._cancelled = False
         self.exit_code = None
@@ -60,12 +61,13 @@ class TestResultsPanel(QtWidgets.QWidget):
         toolbar = QtWidgets.QHBoxLayout()
         layout.addLayout(toolbar)
         self.run_button = QtWidgets.QPushButton("Запустить все", self)
+        self.run_file_button = QtWidgets.QPushButton("Текущий файл", self)
         self.rerun_button = QtWidgets.QPushButton("Повторить выбранный", self)
         self.open_button = QtWidgets.QPushButton("Открыть строку", self)
         self.stop_button = QtWidgets.QPushButton("Остановить", self)
         self.failures_only = QtWidgets.QCheckBox("Только ошибки", self)
         self.status = QtWidgets.QLabel(self)
-        for widget in (self.run_button, self.rerun_button, self.open_button,
+        for widget in (self.run_button, self.run_file_button, self.rerun_button, self.open_button,
                        self.stop_button, self.failures_only, self.status):
             toolbar.addWidget(widget)
         toolbar.addStretch()
@@ -84,6 +86,7 @@ class TestResultsPanel(QtWidgets.QWidget):
         self.process.finished.connect(self._finished)
         self.process.errorOccurred.connect(self._process_error)
         self.run_button.clicked.connect(lambda: self.start())
+        self.run_file_button.clicked.connect(self._run_file)
         self.rerun_button.clicked.connect(self._rerun)
         self.open_button.clicked.connect(self._open)
         self.stop_button.clicked.connect(self.shutdown)
@@ -116,6 +119,17 @@ class TestResultsPanel(QtWidgets.QWidget):
             args.extend(["--", nodeid])
         self.process.start(self.executable, args)
         self._update_actions()
+
+    def _run_file(self):
+        path = self.current_file() if callable(self.current_file) else self.current_file
+        if not path:
+            self.status.setText("Откройте файл с тестами.")
+            return
+        candidate = Path(path).resolve()
+        if not candidate.is_relative_to(self.root) or not candidate.is_file():
+            self.status.setText("Файл тестов должен находиться в проекте.")
+            return
+        self.start(str(candidate.relative_to(self.root)))
 
     def _read_output(self):
         data = bytes(self.process.readAllStandardOutput())
@@ -178,6 +192,7 @@ class TestResultsPanel(QtWidgets.QWidget):
         running = self._report is not None
         selected = self._selected()
         self.run_button.setEnabled(not running)
+        self.run_file_button.setEnabled(not running)
         self.rerun_button.setEnabled(not running and bool(selected and not selected["collection"]))
         self.open_button.setEnabled(bool(selected))
         self.stop_button.setEnabled(running)

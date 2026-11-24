@@ -3,6 +3,8 @@ from threading import Barrier, Event
 
 from services import agent_team
 
+_MENU_TEST_APP = None
+
 
 class Toolbox:
     def definitions(self):
@@ -49,7 +51,7 @@ def test_supervisor_uses_mcp_and_attachment_without_delegation(monkeypatch, tmp_
     assert closed == ["docs"]
 
 
-def test_team_stops_with_a_continuable_result_at_the_shared_budget(monkeypatch, tmp_path):
+def test_team_continues_without_a_round_budget(monkeypatch, tmp_path):
     from services.agent_tools import LocalToolbox
     from services.ai_service import AIService, ToolCall
 
@@ -60,18 +62,20 @@ def test_team_stops_with_a_continuable_result_at_the_shared_budget(monkeypatch, 
 
     def model_round(*_args):
         calls.append(True)
-        return "Прочитаю файл", [ToolCall("read", "read_file", {"path": "demo.py"})]
+        if len(calls) == 1:
+            return "Прочитаю файл", [ToolCall("read", "read_file", {"path": "demo.py"})]
+        return "Готово", []
 
     monkeypatch.setattr(service, "_openai_tool_round", model_round)
     result = agent_team.run_team(service, LocalToolbox(str(tmp_path)), "Проверка",
                                  lambda *_: None, Event().is_set)
-    assert len(calls) == 1
-    assert not result.complete and result.budget_exhausted
-    assert "Прочитаю файл" in result.answer
+    assert len(calls) == 2
+    assert result.complete
+    assert result.answer == "Готово"
 
 
 def test_supervisor_assigns_roles_and_collects_parallel_results(monkeypatch):
-    ready = Barrier(4)
+    ready = Barrier(3)
     events = []
 
     def delegate(service, toolbox, definitions, args, stopped, on_usage, **kwargs):
@@ -83,19 +87,17 @@ def test_supervisor_assigns_roles_and_collects_parallel_results(monkeypatch):
 
     def script(route, stopped):
         tasks = [{"role": role, "task": role} for role in ("design", "code", "test")]
-        assert "Первым" in route("assign_team", {"tasks": tasks})
-        batch = [{"role": "requirements", "task": "Критерии"}, *tasks]
-        reports = json.loads(route("assign_team", {"tasks": batch}))
-        assert [report["result"] for report in reports] == ["Критерии", "design", "code", "test"]
+        reports = json.loads(route("assign_team", {"tasks": tasks}))
+        assert [report["result"] for report in reports] == ["design", "code", "test"]
         assert "повторные" in route("assign_team", {"tasks": tasks})
         return "Согласованный результат"
 
     result = agent_team.run_team(Supervisor(script), Toolbox(), "Идея",
                                  lambda *event: events.append(event), Event().is_set)
     assert result.answer == "Согласованный результат"
-    assert result.usage["total_tokens"] == 18
+    assert result.usage["total_tokens"] == 16
     assert [event[1] for event in events if event[0] == 0] == ["Руководитель"] * 2
-    assert sorted(event[0] for event in events if event[3] == "Готово") == [0, 1, 2, 3, 4]
+    assert sorted(event[0] for event in events if event[3] == "Готово") == [0, 1, 2, 3]
 
 
 def test_supervisor_pauses_for_a_clarification(monkeypatch):
@@ -140,8 +142,11 @@ def test_team_tab_displays_worker_updates(monkeypatch, tmp_path):
 
     owner._record_team_message = record
 
-    def work(service, tools, goal, emit, stopped, *, report, trace, scheduled_role, relationship):
+    def work(service, tools, goal, emit, stopped, *, report, trace, scheduled_role, relationship,
+             reasoning, usage_progress):
         emit(0, "Руководитель", goal, "Готово")
+        reasoning(0, "Проверяю изменения")
+        usage_progress({"total_tokens": 20})
         emit(1, "Тестировщик", "Проверить изменения", "Готово")
         trace(1, "read_file: demo.py")
         report(1, "Результат проверки")
@@ -163,6 +168,7 @@ def test_team_tab_displays_worker_updates(monkeypatch, tmp_path):
     loop.exec()
     app.processEvents()
     assert transcript == [("user", "Проверить проект"), ("assistant", "Отчёт")]
+    assert "Проверяю изменения" in tab.reasoning_view.text()
     assert set(tab._cards) == {0, 1}
     assert tab.graph.nodes[1] is tab._cards[1]
     assert len(tab.graph.edges) == 1
@@ -171,6 +177,8 @@ def test_team_tab_displays_worker_updates(monkeypatch, tmp_path):
     tab._show_report(tab._cards[1])
     assert "read_file: demo.py" in group.currentWidget().toPlainText()
     assert tab.planner.cache.journal("project", tab._run_id, 1).endswith("Результат проверки")
+
+
     assert not tab.graph.grab().isNull()
     assert tab.stats.text() == "Токены: 42"
     assert not tab.stop_button.isEnabled()
@@ -193,6 +201,36 @@ def test_team_tab_displays_worker_updates(monkeypatch, tmp_path):
     owner._project_root = lambda: "other-project"
     tab._next_pending()
     assert not tab._pending
+
+
+def test_chat_header_menu_opens_team_archives(monkeypatch, tmp_path):
+    global _MENU_TEST_APP
+    from pathlib import Path
+    from types import SimpleNamespace
+    from PyQt6 import QtWidgets
+    from utils.settings_manager import init_settings_manager
+    from widgets.AIAgentPanel import AIAgentPanel
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    _MENU_TEST_APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    init_settings_manager(str(Path(__file__).resolve().parents[1]))
+    panel = AIAgentPanel()
+    calls = []
+    team = SimpleNamespace(show_journals=lambda: calls.append("journals"),
+                           show_snapshots=lambda: calls.append("snapshots"))
+    group = SimpleNamespace(widget=lambda _index: team)
+    panel.main_window = SimpleNamespace(_find_special_tab=lambda _kind: (group, 0))
+    monkeypatch.setattr(panel, "_open_agent_team", lambda **_kwargs: None)
+    monkeypatch.setattr(panel, "_project_root", lambda: str(tmp_path))
+    menu = panel._build_context_menu()
+    actions = {action.text(): action for action in menu.actions()}
+    assert "Журналы команды…" in actions and "Снимки команды…" in actions
+    actions["Журналы команды…"].trigger()
+    actions["Снимки команды…"].trigger()
+    assert calls == ["journals", "snapshots"]
+    menu.deleteLater()
+    panel.deleteLater()
+    _MENU_TEST_APP.processEvents()
 
 
 def test_team_finish_accounts_usage_in_chat_session(monkeypatch):
@@ -355,15 +393,15 @@ def test_supervisor_incomplete_answer_preserves_successes_and_reports_errors(mon
     assert events[-1][3] == "Частичный итог"
 
 
-def test_nested_limit_is_reported_even_when_supervisor_says_done(monkeypatch):
+def test_nested_error_is_reported_even_when_supervisor_says_done(monkeypatch):
     states = []
 
     def fake_delegate(service, toolbox, definitions, args, stopped, on_usage, **options):
         if args["task"] == "parent":
             children = options["assign_children"]([{"role": "test", "task": "child"}])
-            assert "лимит" in children[0]["error"]
+            assert "ошиб" in children[0]["error"]
         if args["task"] == "child":
-            raise RuntimeError("Субагент исчерпал лимит раундов.")
+            raise RuntimeError("Субагент завершился с ошибкой.")
         return json.dumps({"role": args["role"], "result": "Готово"})
 
     monkeypatch.setattr(agent_team, "delegate", fake_delegate)
@@ -379,7 +417,7 @@ def test_nested_limit_is_reported_even_when_supervisor_says_done(monkeypatch):
                                  lambda *state: states.append(state), Event().is_set, parallelism=1)
     assert not result.complete and result.failed_agents == 1
     assert "Частичный итог" in result.answer
-    assert "исчерпал лимит" in result.answer
+    assert "завершился с ошибкой" in result.answer
     assert states[-1][-1] == "Частичный итог"
 
 
@@ -408,7 +446,7 @@ def test_long_dependency_result_does_not_invalidate_dependent_task(tmp_path):
     assert result.complete and result.failed_agents == 0
 
 
-def test_subagent_round_limit_preserves_its_proposals(tmp_path):
+def test_subagent_empty_result_preserves_its_proposals(tmp_path):
     from services.agent_delegation import delegate
     from services.agent_tools import LocalToolbox
 
@@ -417,16 +455,16 @@ def test_subagent_round_limit_preserves_its_proposals(tmp_path):
 
         def converse(self, prompt, *, tools, tool_runner, should_stop, max_rounds=None, unlimited_rounds=False):
             tool_runner("propose_edit", {"path": "file.py", "old_text": "a", "new_text": "b"})
-            self.last_stop_reason = "limit"
+            self.last_stop_reason = "empty"
             return ""
 
     result = json.loads(delegate(Provider(), LocalToolbox(str(tmp_path)), [], {"role": "code", "task": "edit"},
                                  lambda: False, collect_edits=True))
-    assert "лимит" in result["error"]
+    assert "не вернул итоговый ответ" in result["error"]
     assert result["proposed_edits"][0]["new_text"] == "b"
 
 
-def test_bounded_team_agent_can_use_editor_and_terminal_tools(tmp_path):
+def test_team_agent_can_use_editor_and_terminal_tools_without_round_limit(tmp_path):
     from services.agent_tools import LocalToolbox
     from services.team_cache import TeamCache
 
@@ -436,7 +474,7 @@ def test_bounded_team_agent_can_use_editor_and_terminal_tools(tmp_path):
         last_usage = {}
 
         def converse(self, prompt, *, tools, tool_runner, should_stop, unlimited_rounds=False, **kwargs):
-            assert not unlimited_rounds
+            assert unlimited_rounds
             names = {tool["function"]["name"] for tool in tools}
             if prompt.startswith("Роль:"):
                 if "Постановка задачи" in prompt:
@@ -462,6 +500,51 @@ def test_bounded_team_agent_can_use_editor_and_terminal_tools(tmp_path):
     assert result.changed_files == ["demo.txt"]
     box.team_cache.restore_run(str(tmp_path), "run", box)
     assert (tmp_path / "demo.txt").read_text(encoding="utf-8") == "before"
+
+
+def test_supervisor_can_edit_external_file_in_full_mode(tmp_path):
+    from services.agent_tools import LocalToolbox
+    from services.team_cache import TeamCache
+
+    project = tmp_path / "project"
+    project.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("before", encoding="utf-8")
+
+    class Provider:
+        last_usage = {}
+
+        def converse(self, _prompt, *, tool_runner, **_kwargs):
+            assert "Изменён" in tool_runner("edit_file", {
+                "path": str(external), "old_text": "before", "new_text": "after"})
+            return "Готово"
+
+    box = LocalToolbox(str(project), access_mode="full")
+    box.team_cache = TeamCache(tmp_path / "cache")
+    result = agent_team.run_team(Provider(), box, "Edit external file",
+                                 lambda *_: None, Event().is_set)
+    assert result.complete
+    assert external.read_text(encoding="utf-8") == "after"
+
+
+def test_worker_receives_role_tools_even_with_nested_delegation(tmp_path):
+    from services.agent_delegation import delegate
+    from services.agent_tools import LocalToolbox
+
+    class Provider:
+        last_usage = {}
+
+        def converse(self, prompt, *, tools, **_kwargs):
+            names = {item["function"]["name"] for item in tools}
+            assert {"read_file", "assign_team"} <= names
+            assert "run_admin_command" not in names
+            assert "edit_file" not in names
+            assert "capture_screen" not in names
+            return "Критерии готовы"
+
+    box = LocalToolbox(str(tmp_path), access_mode="full")
+    delegate(Provider(), box, box.definitions(), {"role": "requirements", "task": "Критерии"},
+             lambda: False, assign_children=lambda _tasks: [])
 
 
 def test_team_collects_and_checks_proposals_before_explicit_apply(tmp_path):
@@ -491,13 +574,13 @@ def test_team_collects_and_checks_proposals_before_explicit_apply(tmp_path):
                 assert "добавлена" in tool_runner("accept_proposal", {"id": report["proposal_ids"][0]})
             assert "пересекается" in tool_runner("propose_edit", {
                 "path": "./demo.py", "old_text": "left = 1\nright = 2", "new_text": "other = 0"})
-            self.last_stop_reason = "limit"
+            self.last_stop_reason = "empty"
             return ""
 
     result = agent_team.run_team(Provider(), toolbox, "Изменить проект",
                                  lambda *_: None, Event().is_set)
     edit, = result.edits
-    assert "Исчерпан лимит" in result.answer
+    assert "пустой ответ" in result.answer
     assert "+right = 8" in edit.diff()
     assert path.read_text(encoding="utf-8") == initial
     path.write_text(initial + "newer = True\n", encoding="utf-8")
@@ -538,3 +621,28 @@ def test_candidate_preserves_a_newer_unsaved_buffer(tmp_path):
     assert edit.apply(toolbox) == "Изменено во вкладке"
     action, payload = operations[0]
     assert action == "edit_file" and payload["expected"] == buffer
+
+def test_team_prompt_excludes_optimizer_history_and_previous_result(monkeypatch):
+    from services.team_optimizer import TeamOptimizer
+    monkeypatch.setattr(TeamOptimizer, 'recommend', lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('must be on demand')))
+    class Capture:
+        last_usage = {}
+        def converse(self, prompt, *, tools, tool_runner, **kwargs):
+            assert len(prompt) < 700
+            assert 'old-private-goal' not in prompt
+            assert 'recent_lessons' not in prompt and 'Начальная оценка' not in prompt
+            assert 'read_previous_result' in {t['function']['name'] for t in tools}
+            assert tool_runner('read_previous_result', {'offset': 0, 'length': 100}) == 'old-private-goal\n'
+            return '4'
+    result = agent_team.run_team(Capture(), Toolbox(), 'Сколько 2+2?', lambda *_: None, lambda: False,
+                                 previous_result='old-private-goal\n')
+    assert result.complete and result.answer == '4'
+
+
+def test_previous_result_tool_is_absent_in_new_team_run():
+    class Capture:
+        last_usage = {}
+        def converse(self, prompt, *, tools, **kwargs):
+            assert 'read_previous_result' not in {t['function']['name'] for t in tools}
+            return 'done'
+    assert agent_team.run_team(Capture(), Toolbox(), 'task', lambda *_: None, lambda: False).complete

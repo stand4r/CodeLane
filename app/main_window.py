@@ -1784,12 +1784,6 @@ class ModernMainWindow(QMainWindow):
         """Выполняет операцию action copy.
         """
         focused = QtWidgets.QApplication.focusWidget()
-        if focused is not None and hasattr(focused, "write_signal_interrupt"):
-            if focused.textCursor().hasSelection():
-                focused.copy()
-            else:
-                focused.write_signal_interrupt()
-            return
         if focused is not None and callable(getattr(focused, "copy", None)):
             focused.copy()
             return
@@ -2344,10 +2338,12 @@ class ModernMainWindow(QMainWindow):
                 group, index = location
                 panel = group.widget(index)
                 panel.executable = executable
+                panel.root = root.resolve()
             else:
                 group = self.active_tab_widget
                 panel = TestResultsPanel(root, executable, self.open_analysis_location, group)
                 index = group.addTab(panel, "Тесты")
+            panel.current_file = lambda: getattr(self.get_current_editor(), "file_path", None)
             self._set_active_group(group)
             group.setCurrentIndex(index)
             panel.start()
@@ -2475,7 +2471,8 @@ class ModernMainWindow(QMainWindow):
         if hasattr(ed, 'textChanged'):
             ed.textChanged.connect(self.on_text_changed)
 
-    def create_editor_tab(self, content: str, file_path: str, *, snapshot=..., text_format=None):
+    def create_editor_tab(self, content: str, file_path: str, *, snapshot=..., text_format=None,
+                          activate=True):
         """Создает и инициализирует новый экземпляр editor tab.
 
         Args:
@@ -2504,7 +2501,8 @@ class ModernMainWindow(QMainWindow):
 
             tab_name = Path(file_path).name
             tab_index = self.active_tab_widget.addTab(editor, tab_name)
-            self.active_tab_widget.setCurrentIndex(tab_index)
+            if activate:
+                self.active_tab_widget.setCurrentIndex(tab_index)
             self.save_current_session()
         except Exception as e:
             CustomDialog(f"Ошибка создания вкладки редактора: {str(e)}").exec()

@@ -105,8 +105,8 @@ QToolButton#windowClose:hover { background: #E81123; color: #FFFFFF; }
 
 /* Activity bar: 48px column, 48x48 hits, 24px icons, 2px left indicator */
 QToolButton#activityAction {
-    min-width: 48px; max-width: 48px;
-    min-height: 48px; max-height: 48px;
+    min-width: 38px; max-width: 38px;
+    min-height: 38px; max-height: 38px;
     padding: 0;
     margin: 0;
     border: 0;
@@ -453,6 +453,7 @@ QFrame#panelToolbar {
 QTabWidget#consoleTabs QTabBar {
     background: #181818;
     padding: 0;
+    border: none;
     border-bottom: 1px solid #2B2B2B;
 }
 QTabWidget#consoleTabs QTabBar::tab {
@@ -499,7 +500,7 @@ QPushButton#panelToolButton:hover { background: #2A2D2E; border-color: transpare
 QTabWidget#terminalTabs QTabBar {
     background: #181818;
     padding: 0;
-    border-bottom: 1px solid #2B2B2B;
+    border: none;
 }
 QTabWidget#terminalTabs QTabBar::tab {
     background: transparent;
@@ -602,7 +603,7 @@ QLabel#consoleBadge {
 }
 
 /* Panel strip actions (new terminal / stop / clear / hide) */
-QWidget#consoleCorner { background: transparent; border: none; }
+QWidget#consoleCorner { background: #181818; border: none; border-bottom: 1px solid #2B2B2B; }
 QToolButton#consoleAction {
     background: transparent;
     border: none;
@@ -1240,12 +1241,12 @@ QTreeWidget#agentPlannerTree::item { padding: 5px 6px; border-radius: 5px; }
 QTreeWidget#agentPlannerTree::item:hover, QTreeWidget#agentPlannerTree::item:selected {
     background: @glass_hover@; color: @glass_text@;
 }
-QToolButton#agentPlannerButton, QToolButton#agentPlannerAdd,
+QToolButton#agentPlannerAdd,
 QPushButton#agentStopButton, QPushButton#agentChangesButton {
     background: @glass_surface@; color: @glass_text@; border: 1px solid @glass_border@;
     border-radius: 6px; padding: 5px 9px; min-height: 18px;
 }
-QToolButton#agentPlannerButton:hover, QToolButton#agentPlannerAdd:hover,
+QToolButton#agentPlannerAdd:hover,
 QPushButton#agentStopButton:hover, QPushButton#agentChangesButton:hover {
     background: @glass_hover@;
 }
@@ -1777,10 +1778,9 @@ QFrame#omniSearchPill:hover { background: @glass_hover@; }
 QFrame#omniSearchPill:focus { border-color: @glass_focus@; }
 QLabel#omniSearchPrompt { background: transparent; color: @glass_text@; }
 QLabel#omniSearchShortcut {
-    background: @glass_menu@;
+    background: transparent;
     color: @muted_text@;
-    border: 1px solid @soft_border@;
-    border-radius: 4px;
+    border: none;
     padding: 0 4px;
     font-size: 11px;
 }
@@ -1878,12 +1878,19 @@ QLabel#agentWorkspaceActivity {
     border-radius: 7px;
     padding: 6px 9px;
 }
+
 QGraphicsView#agentGraph {
     background: @glass_menu@;
     border: 1px solid @soft_border@;
     border-radius: 8px;
 }
 QLabel#agentGraphEmpty, QLabel#agentWorkspaceStats { color: @muted_text@; }
+QLabel#agentTeamReasoning {
+    color: @muted_text@;
+    background: transparent;
+    border: none;
+    font-size: 11px;
+}
 QLabel#sideTitle, QLabel#explorerSectionTitle {
     letter-spacing: 0px;
     font-size: 12px;
@@ -1938,3 +1945,45 @@ QToolTip {
     border-radius: 6px;
     padding: 6px 9px;
 }
+
+/* Agent workspace: a quiet canvas, one floating composer and a separate activity rail. */
+QWidget#agentWorkspace, QWidget#aiAgentPanel, QWidget#aiTranscript,
+QWidget#aiColumnHost, QWidget#aiChatColumn, QWidget#aiComposerWrap,
+QWidget#aiComposerWrap QWidget {
+    background: @agent_canvas@; border: none;
+}
+QFrame#aiHeader { background: @agent_canvas@; border: none; }
+QLabel#aiHeaderTitle { font-size: 15px; color: @glass_text@; }
+QLabel#agentWelcomeTitle { font-size: 27px; font-weight: 600; color: @glass_text@; background: transparent; }
+QPushButton#agentWelcomeAction {
+    background: @agent_panel@; color: @glass_text@; border: 1px solid @agent_edge@;
+    border-radius: 15px; padding: 6px 13px;
+}
+QPushButton#agentWelcomeAction:hover, QPushButton#agentWelcomeAction:focus {
+    background: @agent_tint@; border-color: @agent_accent@;
+}
+QFrame#aiComposer { background: @agent_card@; border: 1px solid @agent_edge@; border-radius: 21px; }
+QPlainTextEdit#aiComposerInput { background: transparent; border: none; color: @glass_text@; }
+QFrame#aiComposer:hover { border-color: @muted_text@; }
+QFrame#aiComposer[inputFocused="true"] { border-color: @agent_accent@; }
+QToolButton#aiAccessMode, QToolButton#aiScopeButton, QToolButton#aiModelButton,
+QToolButton#aiAttachButton { background: transparent; color: @glass_text@; border: none; border-radius: 10px; }
+QToolButton#aiScopeButton:hover, QToolButton#aiModelButton:hover, QToolButton#aiAccessMode:hover,
+QToolButton#aiAttachButton:hover { background: @agent_tint@; }
+QFrame#aiUserBubblePill { background: @agent_tint@; border: none; border-radius: 17px; }
+QLabel#aiActivityLine { background: @agent_panel@; border: none; border-radius: 10px; padding: 5px 10px; }
+QWidget#chatCodeSnippet { background: @agent_panel@; border: 1px solid @agent_edge@; border-radius: 13px; }
+QFrame#chatCodeHeader { background: @agent_card@; border-bottom: none; border-top-left-radius: 12px; border-top-right-radius: 12px; }
+QPlainTextEdit#chatCodeView { background: @agent_panel@; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
+QSplitter#agentWorkspaceSplit::handle { background: @agent_canvas@; }
+QSplitter#agentWorkspaceSplit::handle:hover { background: @agent_edge@; }
+QFrame#agentWorkspacePanel { background: @agent_panel@; border: 1px solid @agent_edge@; border-radius: 19px; }
+QLabel#agentWorkspaceTitle { background: transparent; color: @glass_text@; font-size: 17px; font-weight: 600; }
+QLabel#agentWorkspaceActivity { background: @agent_tint@; color: @glass_text@; border: none; border-radius: 12px; padding: 7px 12px; }
+QGraphicsView#agentGraph, QWidget#agentStageGuide { background: transparent; border: none; }
+QLabel#agentStageHeading { background: transparent; color: @glass_text@; font-weight: 600; }
+QLabel#agentStageHint, QLabel#agentWorkspaceStats { background: transparent; color: @muted_text@; }
+QFrame#agentStageDot { background: @agent_accent@; border: none; border-radius: 4px; }
+QWidget#agentPlanner { border-top: 1px solid @agent_edge@; }
+QPushButton#agentStopButton, QPushButton#agentChangesButton { background: @agent_card@; border: 1px solid @agent_edge@; border-radius: 13px; padding: 4px 11px; }
+QPushButton#agentStopButton:disabled { background: transparent; color: @muted_text@; border-color: @agent_edge@; }

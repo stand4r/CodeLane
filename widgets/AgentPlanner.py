@@ -40,25 +40,17 @@ class AgentPlanner(QtWidgets.QWidget):
         self.collapse_button = QtWidgets.QToolButton()
         self.collapse_button.clicked.connect(self._toggle_collapsed)
         row.addWidget(self.collapse_button)
-        title = QtWidgets.QLabel("Отложенные агенты")
+        title = QtWidgets.QLabel("Расписание")
         title.setObjectName("agentPlannerTitle")
         row.addWidget(title)
         row.setSpacing(6)
         row.addStretch()
-        archive = QtWidgets.QToolButton()
-        archive.setObjectName("agentPlannerButton")
-        archive.setText("Журналы")
-        archive.clicked.connect(team.show_journals)
-        row.addWidget(archive)
-        history = QtWidgets.QToolButton()
-        history.setObjectName("agentPlannerButton")
-        history.setText("Снимки")
-        history.clicked.connect(team.show_snapshots)
-        row.addWidget(history)
         add = QtWidgets.QToolButton()
         add.setObjectName("agentPlannerAdd")
         add.setText("+")
         add.setToolTip("Добавить задание")
+        add.setFixedSize(22, 22)
+        add.setStyleSheet("QToolButton#agentPlannerAdd { padding: 0; font-size: 14px; }")
         add.clicked.connect(lambda: self.edit())
         row.addWidget(add)
         box.addLayout(row)
@@ -115,6 +107,9 @@ class AgentPlanner(QtWidgets.QWidget):
 
     def _toggle_collapsed(self):
         self._set_collapsed(not self.tree.isHidden())
+        if not self.tree.isHidden():
+            from widgets.animations import slide_reveal
+            slide_reveal(self.tree, 160)
 
     def _set_collapsed(self, collapsed: bool):
         self.tree.setVisible(not collapsed)

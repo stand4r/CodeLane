@@ -5,6 +5,7 @@ from html.parser import HTMLParser
 
 DOCUMENT_SUFFIXES = {".pdf", ".docx", ".odt", ".xlsx"}
 TEXT_LIMIT = 24000
+ATTACHMENT_TEXT_LIMIT = 32000
 
 
 class _TextExtractor(HTMLParser):
@@ -60,10 +61,14 @@ def _document_lines(path):
     yield from "".join(parser.parts).splitlines()
 
 
-def document_text(path):
+def document_text(path, *, limit=None):
+    """Extract all document text locally; an explicit limit is optional."""
     if path.suffix.lower() == ".pdf":
-        return "\n\n".join(f"[Страница {page}]\n{text}" for _, page, text in _pdf_pages(path) if text.strip())
-    return "\n".join(_document_lines(path))
+        text = "\n\n".join(f"[Страница {page}]\n{content.strip()}"
+                            for _, page, content in _pdf_pages(path) if content.strip())
+    else:
+        text = "\n".join(_document_lines(path))
+    return text if limit is None else text[:max(0, int(limit))]
 
 
 def read_document(path, *, offset=1, limit=5):

@@ -11,6 +11,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from services.ai_service import AIService
 from services.chat_attachments import build_attachment_content
+from services.local_evidence import LocalEvidence
 from utils.settings_manager import init_settings_manager
 from widgets.AIAgentPanel import AIAgentPanel
 
@@ -86,16 +87,22 @@ def test_documents_and_photo_reach_the_provider_payload(tmp_path, monkeypatch, a
     assert service.converse("Summarize", attachment_paths=[markdown, word, spreadsheet, pdf, photo]) == "OK"
     blocks = seen[0]
     docs = {item["name"]: item["text"] for item in json.loads(blocks[0]["text"].split("\n", 3)[-1])}
-    assert docs["notes.md"] == original
+    assert "Полный результат сохранён на ПК" in docs["notes.md"]
+    assert len(docs["notes.md"]) < 7_000
     assert "Text from Word" in docs["brief.docx"]
     assert "Revenue" in docs["table.xlsx"] and "January\t42" in docs["table.xlsx"]
     assert "Expenses" in docs["table.xlsx"] and "Rent\t7" in docs["table.xlsx"]
     assert "Text from PDF" in docs["paper.pdf"]
-    encoded = base64.b64encode(photo.read_bytes()).decode("ascii")
     if anthropic:
-        assert blocks[-1]["source"] == {"type": "base64", "media_type": "image/png", "data": encoded}
+        assert blocks[-1]["source"]["media_type"] == "image/jpeg"
+        encoded = blocks[-1]["source"]["data"]
     else:
-        assert blocks[-1]["image_url"]["url"] == f"data:image/png;base64,{encoded}"
+        url = blocks[-1]["image_url"]["url"]
+        assert url.startswith("data:image/jpeg;base64,")
+        encoded = url.split(",", 1)[1]
+    optimized = pymupdf.open(stream=base64.b64decode(encoded), filetype="jpeg")
+    assert optimized.page_count == 1
+    optimized.close()
 
 
 def test_image_only_pdf_is_sent_as_page_images(tmp_path):
@@ -104,5 +111,47 @@ def test_image_only_pdf_is_sent_as_page_images(tmp_path):
         doc.new_page(width=72, height=72)
         doc.save(pdf)
     content = build_attachment_content("Read", [pdf])
-    assert content[1]["text"] == "scan.pdf, страница 1"
+    assert content[1]["text"].startswith("scan.pdf, страница 1")
     assert content[2]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_large_document_is_locally_retrievable_without_repeating_it_in_prompt(tmp_path):
+    path = tmp_path / "method.md"
+    original = "Introduction\n" + ("Background\n" * 12_000) + "Critical finding\n"
+    path.write_text(original, encoding="utf-8")
+    evidence = LocalEvidence()
+    content = build_attachment_content("Find the result", [path], evidence=evidence)
+    preview = json.loads(content.split("\n", 3)[-1])[0]["text"]
+    assert len(preview) < 7_000
+    assert original not in content
+    assert evidence.read(next(iter(evidence.values))).replace("\r\n", "\n") == original
+    assert "Critical finding" in evidence.read(next(iter(evidence.values)), query="Critical finding")
+
+
+def test_agent_reads_large_attachment_on_demand(tmp_path, monkeypatch):
+    import re
+    from services.ai_service import ToolCall
+
+    path = tmp_path / "manual.md"
+    original = "Start\n" + ("Background\n" * 10_000) + "Required answer\n"
+    path.write_text(original, encoding="utf-8")
+    service = AIService(config={"ai_provider": "openai", "ai_model": "gpt-4.1"})
+    monkeypatch.setattr(service, "configuration_problem", lambda: None)
+    seen = []
+
+    def model_round(messages, tools, *_callbacks):
+        seen.append(messages)
+        names = {tool["function"]["name"] for tool in tools}
+        assert "read_local_evidence" in names
+        if len(seen) == 1:
+            prompt = messages[-1]["content"]
+            assert len(prompt) < 8_000
+            key = re.search(r"id=([0-9a-f]{64})", prompt).group(1)
+            return "", [ToolCall("read", "read_local_evidence", {"id": key, "query": "Required answer"})]
+        assert "Required answer" in messages[-1]["content"]
+        assert len(messages[1]["content"]) < 8_000
+        return "Found it", []
+
+    monkeypatch.setattr(service, "_openai_tool_round", model_round)
+    assert service.converse("Find the answer", attachment_paths=[path]) == "Found it"
+    assert len(seen) == 2

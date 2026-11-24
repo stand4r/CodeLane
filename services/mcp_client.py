@@ -71,7 +71,7 @@ class MCPTool:
         prefix = f"{server}__"
         budget = 64 - len(prefix)
         if tool != self.name or len(tool) > budget:
-            digest = hashlib.sha1(self.name.encode("utf-8", errors="replace")).hexdigest()[:8]
+            digest = hashlib.sha1(self.name.encode("utf-8", errors="replace"), usedforsecurity=False).hexdigest()[:8]
             tool = f"{tool[:max(1, budget - 9)]}_{digest}"
         return prefix + tool
 

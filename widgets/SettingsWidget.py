@@ -7,7 +7,7 @@ from utils.settings_manager import get_settings_manager
 
 from utils.settings_manager import DEFAULT_SETTINGS
 from design.themes import THEMES, THEME_NAMES
-from services.ai_providers import get_provider, provider_choices
+from services.ai_providers import PROVIDERS, get_provider, provider_choices
 from services.ai_service import REASONING_HINTS, REASONING_LABELS, TEACH_STRICTNESS_HINTS
 from services.background import run_async
 
@@ -760,8 +760,10 @@ class SettingsWidget(QtWidgets.QWidget):
 
         intro = QtWidgets.QLabel(
             'ИИ-агент CodeLane работает через API чат-моделей (OpenAI-совместимый '
-            'формат). Поддерживаются DeepSeek, OpenAI, OpenRouter, локальные '
-            'серверы (LM Studio, Ollama) и любые другие совместимые провайдеры.'
+            'формат). Поддерживаются DeepSeek, OpenAI, OpenRouter, Tokenator '
+            '(партнёрский агрегатор: один ключ на ~80 моделей, из России без VPN), '
+            'локальные серверы (LM Studio, Ollama) и любые другие совместимые '
+            'провайдеры.'
         )
         intro.setWordWrap(True)
         intro.setObjectName('settingsHint')
@@ -779,7 +781,8 @@ class SettingsWidget(QtWidgets.QWidget):
 
         provider = QtWidgets.QComboBox()
         # Provider list comes from the shared registry (deepseek, openai,
-        # anthropic, gemini, opencode, openrouter, groq, ollama, lmstudio, custom).
+        # anthropic, gemini, opencode, tokenator…, openrouter, groq, ollama,
+        # lmstudio, custom).
         for spec in provider_choices():
             label = spec.label
             if any(m.free for m in spec.models) and not spec.local:
@@ -789,6 +792,13 @@ class SettingsWidget(QtWidgets.QWidget):
         provider.setCurrentIndex(max(0, idx))
         self.controls['ai_provider'] = provider
         form.addRow('Провайдер', provider)
+
+        provider_hint = QtWidgets.QLabel(str(get_provider(
+            provider.currentData() or 'deepseek').hint))
+        provider_hint.setWordWrap(True)
+        provider_hint.setObjectName('settingsHint')
+        self.controls['ai_provider_hint'] = provider_hint
+        form.addRow('', provider_hint)
 
         base_url = QtWidgets.QLineEdit(str(self._value('ai_base_url')))
         base_url.setPlaceholderText('https://api.deepseek.com/v1')
@@ -845,30 +855,6 @@ class SettingsWidget(QtWidgets.QWidget):
         tls_verify.toggled.connect(lambda _checked: _sync_tls_fields())
         _sync_tls_fields()
 
-        model = QtWidgets.QComboBox()
-        model.setEditable(True)
-        self.controls['ai_model'] = model
-        form.addRow('Модель', model)
-
-        def _fill_models(provider_key, keep_current=False):
-            spec = get_provider(provider_key)
-            current = model.currentText() if keep_current else spec.default_model
-            # Migrate values saved by older releases that stored the display
-            # label instead of the provider's API model ID.
-            for item in spec.models:
-                if current.casefold() == item.label.casefold():
-                    current = item.id
-                    break
-            model.blockSignals(True)
-            model.clear()
-            for item in spec.models:
-                label = item.label + (" · бесплатно" if item.free else "")
-                model.addItem(label, item.id)
-            model.setCurrentText(current or spec.default_model)
-            model.blockSignals(False)
-
-        _fill_models(provider.currentData() or 'deepseek', keep_current=True)
-
         key_edit = QtWidgets.QLineEdit(str(self._value('ai_api_key')))
         key_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         key_edit.setPlaceholderText('sk-...')
@@ -889,7 +875,13 @@ class SettingsWidget(QtWidgets.QWidget):
         key_lay.addWidget(show_btn)
         # One-click way to get a *real* key: opens the provider's key page.
         get_key_btn = QtWidgets.QPushButton('Получить ключ…')
-        get_key_btn.setToolTip('Открыть страницу API-ключей провайдера в браузере')
+        _initial_spec = get_provider(provider.currentData() or 'deepseek')
+        if _initial_spec.key_url:
+            get_key_btn.setToolTip(f'Открыть {_initial_spec.key_url}')
+        else:
+            get_key_btn.setToolTip(
+                'Ключ для этого провайдера выдаёт партнёр — вставьте его в поле ниже')
+            get_key_btn.setEnabled(False)
         get_key_btn.clicked.connect(self._open_provider_keys_page)
         key_lay.addWidget(get_key_btn)
         form.addRow('API-ключ', key_row)
@@ -917,16 +909,6 @@ class SettingsWidget(QtWidgets.QWidget):
         tokens.setValue(0 if stored_tokens <= 8192 else stored_tokens)
         self.controls['ai_max_tokens'] = tokens
         form.addRow('Лимит токенов ответа', tokens)
-
-        rounds = QtWidgets.QSpinBox()
-        rounds.setRange(1, 200)
-        try:
-            rounds.setValue(int(self._value('ai_agent_round_budget') or 64))
-        except (TypeError, ValueError):
-            rounds.setValue(64)
-        rounds.setToolTip("Общий лимит раундов руководителя и субагентов для одной задачи.")
-        self.controls['ai_agent_round_budget'] = rounds
-        form.addRow("Бюджет раундов команды", rounds)
 
         reasoning = QtWidgets.QComboBox()
         for key in ("auto", "none", "low", "medium", "high"):
@@ -995,6 +977,73 @@ class SettingsWidget(QtWidgets.QWidget):
         _sync_strictness_state()
 
         layout.addLayout(form)
+
+        profiles_box = QtWidgets.QGroupBox("Пользовательские профили агента")
+        profiles_layout = QtWidgets.QVBoxLayout(profiles_box)
+        profile_list = QtWidgets.QListWidget()
+        profile_list.setMinimumHeight(96)
+        profiles = self.settings_manager.get_setting("ai_profiles", [])
+        self._ai_profiles = [item for item in profiles if isinstance(item, dict)] if isinstance(profiles, list) else []
+        active_profile = QtWidgets.QComboBox()
+        self.controls["ai_active_profile"] = active_profile
+
+        def refresh_profiles(selected_id=None):
+            if selected_id is None:
+                selected_id = active_profile.currentData() or self._value("ai_active_profile") or ""
+            profile_list.clear()
+            active_profile.blockSignals(True)
+            active_profile.clear()
+            if not self._ai_profiles:
+                active_profile.addItem("Добавьте профиль модели", "")
+            for item in self._ai_profiles:
+                name = str(item.get("name") or "Профиль")
+                model_id = str(item.get("model") or "")
+                active_profile.addItem(name, str(item.get("id") or ""))
+                row = QtWidgets.QListWidgetItem(f"{name}  ·  {model_id}")
+                row.setData(QtCore.Qt.ItemDataRole.UserRole, str(item.get("id") or ""))
+                profile_list.addItem(row)
+            index = active_profile.findData(selected_id)
+            active_profile.setCurrentIndex(index if index >= 0 else 0)
+            active_profile.blockSignals(False)
+
+        self._ai_profiles_list = profile_list
+        profiles_layout.addWidget(profile_list)
+        profiles_layout.addWidget(QtWidgets.QLabel("Профиль, который использует ИИ-агент"))
+        profiles_layout.addWidget(active_profile)
+        profile_buttons = QtWidgets.QHBoxLayout()
+        add_profile = QtWidgets.QPushButton("Добавить")
+        edit_profile = QtWidgets.QPushButton("Изменить")
+        remove_profile = QtWidgets.QPushButton("Удалить")
+        profile_buttons.addWidget(add_profile)
+        profile_buttons.addWidget(edit_profile)
+        profile_buttons.addWidget(remove_profile)
+        profile_buttons.addStretch(1)
+        profiles_layout.addLayout(profile_buttons)
+
+        def selected_profile():
+            item = profile_list.currentItem()
+            key = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else None
+            return next((p for p in self._ai_profiles if str(p.get("id")) == str(key)), None)
+
+        def add_or_edit(profile=None):
+            result = self._edit_ai_profile(profile)
+            if result is None:
+                return
+            entries = [p for p in self._ai_profiles if p.get("id") != result["id"]]
+            if len(entries) >= 40:
+                QtWidgets.QMessageBox.information(self, "Профили ИИ", "Доступно до 40 профилей.")
+                return
+            self._ai_profiles = [*entries, result]
+            refresh_profiles(result["id"])
+
+        add_profile.clicked.connect(lambda: add_or_edit())
+        edit_profile.clicked.connect(lambda: add_or_edit(selected_profile()) if selected_profile() else None)
+        remove_profile.clicked.connect(lambda: self._remove_ai_profile(selected_profile(), refresh_profiles)
+                                       if selected_profile() else None)
+        profile_list.itemDoubleClicked.connect(lambda _item: add_or_edit(selected_profile()))
+        refresh_profiles()
+        layout.addWidget(profiles_box)
+
         tools_box = QtWidgets.QGroupBox('Разрешения и инструменты')
         tools_layout = QtWidgets.QVBoxLayout(tools_box)
         tools_layout.setSpacing(6)
@@ -1003,19 +1052,20 @@ class SettingsWidget(QtWidgets.QWidget):
         for key, label in ACCESS_MODES.items():
             access.addItem(label, key)
         access.setCurrentIndex(access.findData(normalize_access_mode(self._value('ai_access_mode'))))
-        access.setToolTip('Только чтение: просмотр и поиск. Только запись: создание и перезапись файлов без чтения. '
-                          'Полный доступ: также терминал, приложения и MCP. Применяется со следующего запроса.')
+        access.setToolTip('Только чтение: просмотр и поиск в проекте. Только запись: создание файлов проекта с подтверждением. '
+                          'Полный доступ: файлы всего компьютера, CMD, PowerShell и приложения без подтверждений CodeLane. '
+                          'Повышение прав всё ещё требует согласия Windows UAC. Применяется со следующего запроса.')
         self.controls['ai_access_mode'] = access
         tools_layout.addWidget(QtWidgets.QLabel('Разрешения агента'))
         tools_layout.addWidget(access)
-        allow_edits = QtWidgets.QCheckBox('Разрешить агенту изменять файлы проекта')
+        allow_edits = QtWidgets.QCheckBox('Разрешить агенту изменять файлы')
         allow_edits.setChecked(bool(self._value('ai_allow_file_edits')))
-        allow_edits.setToolTip('Каждое изменение подтверждается отдельно')
+        allow_edits.setToolTip('В полном режиме доступны файлы всего компьютера без отдельных подтверждений CodeLane')
         self.controls['ai_allow_file_edits'] = allow_edits
         tools_layout.addWidget(allow_edits)
         allow_cmds = QtWidgets.QCheckBox('Разрешить команды в терминале и запуск приложений')
         allow_cmds.setChecked(bool(self._value('ai_allow_commands')))
-        allow_cmds.setToolTip('Команда выполняется только после подтверждения')
+        allow_cmds.setToolTip('В полном режиме команды CMD и PowerShell выполняются без отдельных подтверждений CodeLane')
         self.controls['ai_allow_commands'] = allow_cmds
         tools_layout.addWidget(allow_cmds)
         layout.addWidget(tools_box)
@@ -1073,21 +1123,39 @@ class SettingsWidget(QtWidgets.QWidget):
         layout.addWidget(self.ai_status_label)
 
         def _stored_keys() -> dict:
+            """Per-account keys, normalised to ``credential_key``.
+
+            Older settings stored a key per provider key; routes that share one
+            account are folded together so the key is asked for only once.
+            """
             raw = self._value('ai_provider_keys') or {}
-            return dict(raw) if isinstance(raw, dict) else {}
+            if not isinstance(raw, dict):
+                return {}
+            keys = {}
+            for key, value in raw.items():
+                text = str(value or '').strip()
+                if not text:
+                    continue
+                group = (get_provider(key).credential_key
+                         if str(key) in PROVIDERS else str(key))
+                keys[group] = text
+            return keys
 
         state = {'provider': provider.currentData() or 'deepseek'}
         self.controls['ai_provider_keys'] = _stored_keys()
 
         def _remember_current_key():
-            """Store the typed key under the provider it belongs to."""
+            """Store the typed key under the account it belongs to."""
             keys = self.controls['ai_provider_keys']
             value = key_edit.text().strip()
             current = state['provider']
+            # Routes that share one account (Tokenator OpenAI/Claude, RF/VPN)
+            # keep a single key, so it does not have to be typed again.
+            group = get_provider(current).credential_key
             if value:
-                keys[current] = value
+                keys[group] = value
             else:
-                keys.pop(current, None)
+                keys.pop(group, None)
             # Keep the flat setting in sync with the active provider.
             if current == (provider.currentData() or 'deepseek'):
                 self.settings_manager.settings['ai_api_key'] = value
@@ -1103,9 +1171,15 @@ class SettingsWidget(QtWidgets.QWidget):
                 if spec.key == key:
                     if spec.base_url:
                         base_url.setText(spec.base_url)
-                    _fill_models(spec.key)
-                    get_key_btn.setToolTip(f'Открыть {spec.key_url or "страницу ключей"}')
-                    saved = self.controls['ai_provider_keys'].get(key, '')
+                    if spec.key_url:
+                        get_key_btn.setToolTip(f'Открыть {spec.key_url}')
+                        get_key_btn.setEnabled(True)
+                    else:
+                        get_key_btn.setToolTip(
+                            'Ключ для этого провайдера выдаёт партнёр — вставьте его в поле ниже')
+                        get_key_btn.setEnabled(False)
+                    saved = self.controls['ai_provider_keys'].get(
+                        spec.credential_key, '')
                     key_edit.setText(saved)
                     key_edit.setPlaceholderText(
                         'Ключ сохранён для этого провайдера' if saved
@@ -1113,6 +1187,12 @@ class SettingsWidget(QtWidgets.QWidget):
                     break
 
         provider.currentIndexChanged.connect(_provider_changed)
+        # Restore the key stored for the active provider's account (it may have
+        # been entered through another route of the same account).
+        _active_key = self.controls['ai_provider_keys'].get(
+            get_provider(state['provider']).credential_key)
+        if _active_key:
+            key_edit.setText(_active_key)
         layout.addStretch()
         return page
 
@@ -1164,8 +1244,75 @@ class SettingsWidget(QtWidgets.QWidget):
         from PyQt6.QtCore import QUrl
         provider = self.controls.get('ai_provider')
         key = provider.currentData() if provider is not None else 'deepseek'
-        url = get_provider(key).key_url or "https://platform.deepseek.com/api_keys"
+        url = get_provider(key).key_url
+        if not url:
+            label = getattr(self, 'ai_status_label', None)
+            if label is not None:
+                label.setText('Ключ для этого провайдера выдаёт партнёр — '
+                              'вставьте полученную строку в поле «API-ключ».')
+            return
         QDesktopServices.openUrl(QUrl(url))
+
+    def _edit_ai_profile(self, profile=None):
+        """Create an API profile with user-supplied endpoint, key and model ID."""
+        from uuid import uuid4
+        profile = dict(profile or {})
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Профиль модели")
+        dialog.setMinimumWidth(480)
+        form = QtWidgets.QFormLayout(dialog)
+        name = QtWidgets.QLineEdit(str(profile.get("name") or ""))
+        name.setPlaceholderText("Название модели в меню")
+        url = QtWidgets.QLineEdit(str(profile.get("base_url") or ""))
+        url.setPlaceholderText("https://api.example.com/v1")
+        key = QtWidgets.QLineEdit(str(profile.get("api_key") or ""))
+        key.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+        key.setPlaceholderText("API-ключ профиля")
+        model = QtWidgets.QLineEdit(str(profile.get("model") or ""))
+        model.setPlaceholderText("Точный ID модели для API")
+        for label, widget in (("Название модели", name), ("URL API", url),
+                              ("API-ключ", key), ("ID модели", model)):
+            form.addRow(label, widget)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Save |
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        while dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            if not all((name.text().strip(), url.text().strip(), model.text().strip())):
+                QtWidgets.QMessageBox.information(self, "Профиль модели",
+                                                  "Заполните название, URL и ID модели.")
+                continue
+            if not url.text().strip().startswith(("https://", "http://")):
+                QtWidgets.QMessageBox.information(self, "Профиль модели",
+                                                  "URL должен начинаться с https:// или http://.")
+                continue
+            return {
+                "id": str(profile.get("id") or uuid4().hex),
+                "name": name.text().strip(),
+                "provider": str(profile.get("provider") or "custom"),
+                "base_url": url.text().strip(),
+                "api_key": key.text().strip(),
+                "model": model.text().strip(),
+                "protocol": str(profile.get("protocol") or (
+                    "anthropic" if profile.get("provider") == "anthropic" or
+                    "anthropic" in url.text().lower() else "openai")),
+                "system_prompt": str(profile.get("system_prompt") or ""),
+            }
+        return None
+
+    def _remove_ai_profile(self, profile, refresh):
+        if profile is None:
+            return
+        profile_id = str(profile.get("id") or "")
+        self._ai_profiles = [item for item in self._ai_profiles
+                             if str(item.get("id") or "") != profile_id]
+        active = self.controls.get("ai_active_profile")
+        if active is not None and str(active.currentData() or "") == profile_id:
+            refresh("")
+        else:
+            refresh()
 
     def _collect_ai_settings(self):
         """Read the AI controls into a plain dict (without touching the store)."""
@@ -1185,13 +1332,22 @@ class SettingsWidget(QtWidgets.QWidget):
         keys = dict(self.controls.get('ai_provider_keys') or {})
         current_provider = self.controls['ai_provider'].currentData() or 'custom'
         typed_key = text('ai_api_key')
+        # Providers that share one account (Tokenator routes) also share a key.
+        group = get_provider(current_provider).credential_key
         if typed_key:
-            keys[current_provider] = typed_key
+            keys[group] = typed_key
+        saved_provider = str(self.settings_manager.get_setting('ai_provider') or '')
+        model_control = self.controls.get('ai_model')
+        if isinstance(model_control, QtWidgets.QComboBox):
+            model_id = str(model_control.currentData() or model_control.currentText() or '')
+        else:
+            model_id = (str(self.settings_manager.get_setting('ai_model') or '')
+                        if current_provider == saved_provider else get_provider(current_provider).default_model)
         return {
             'ai_enabled': bool(self.controls['ai_enabled'].isChecked()),
             'ai_provider': current_provider,
             'ai_base_url': text('ai_base_url'),
-            'ai_model': text('ai_model'),
+            'ai_model': model_id,
             'ai_api_key': typed_key,
             'ai_provider_keys': keys,
             'ai_tls_verify': bool(self.controls['ai_tls_verify'].isChecked()),
@@ -1203,7 +1359,8 @@ class SettingsWidget(QtWidgets.QWidget):
                                     or 'normal'),
             'ai_temperature': temperature,
             'ai_max_tokens': int(self.controls['ai_max_tokens'].value()),
-            'ai_agent_round_budget': int(self.controls['ai_agent_round_budget'].value()),
+            'ai_profiles': list(getattr(self, '_ai_profiles', [])),
+            'ai_active_profile': str(self.controls['ai_active_profile'].currentData() or ''),
             'ai_reasoning_effort': str(self.controls['ai_reasoning_effort'].currentData()
                                        or 'auto'),
             'ai_system_prompt': text('ai_system_prompt'),
@@ -1236,6 +1393,10 @@ class SettingsWidget(QtWidgets.QWidget):
         self._persist_ai_settings()
         self.settings_manager.save_settings()
         window = self.main_window
+        panel = getattr(window, "ai_panel", None) if window is not None else None
+        if panel is not None:
+            panel._refresh_menus()
+            panel.refresh_status()
         if window is not None and hasattr(window, 'show_ai_agent'):
             window.show_ai_agent()
 
@@ -1293,8 +1454,14 @@ class SettingsWidget(QtWidgets.QWidget):
             return
         self._apply_status.setText("Настройки применены" if not save_file else "Настройки сохранены")
 
+        if self.main_window:
+            if hasattr(self.main_window, 'app_manager'):
+                self.main_window.app_manager.settings = sm.get_all_settings()
+            panel = getattr(self.main_window, 'ai_panel', None)
+            if panel is not None:
+                panel._refresh_menus()
+                panel.refresh_status()
         if self.main_window and hasattr(self.main_window, 'app_manager'):
-            self.main_window.app_manager.settings = sm.get_all_settings()
             if hasattr(self.main_window, 'auto_save_timer') and self.main_window.auto_save_timer:
                 interval = int(sm.get_setting('auto_save_interval', 30)) * 1000
                 self.main_window.auto_save_timer.start(interval) if interval else self.main_window.auto_save_timer.stop()

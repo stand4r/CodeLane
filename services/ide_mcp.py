@@ -26,9 +26,15 @@ class IDEMCP:
             value = self.toolbox.run(name, json.dumps(arguments, ensure_ascii=False))
         except Exception as exc:
             return {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+        if isinstance(value, dict) and "__image__" in value:
+            return {"content": [{"type": "image", "data": value["__image__"],
+                                 "mimeType": value.get("media_type", "image/png")}],
+                    "imageResult": value}
         return {"content": [{"type": "text", "text": str(value)}]}
 
     def call(self, name, args):
         result = self.request("tools/call", {"name": name, "arguments": args or {}})
+        if "imageResult" in result:
+            return result["imageResult"]
         text = result["content"][0]["text"]
         return f"Ошибка MCP CodeLane: {text}" if result.get("isError") else text

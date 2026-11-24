@@ -7,6 +7,8 @@ import pytest
 
 def test_planner_collapse_keeps_scheduling_active(panel):
     planner = panel.planner
+    from PyQt6 import QtWidgets
+    assert planner.findChild(QtWidgets.QToolButton, "agentPlannerButton") is None
     assert planner.tree.isHidden()
     assert planner.timer.isActive()
     planner.collapse_button.click()

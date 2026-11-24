@@ -352,6 +352,7 @@ class WebBrowserWidget(QtWidgets.QWidget):
                 path = Path(base) / "PyScribe" / "browser" / settings["id"]
                 profile.setPersistentStoragePath(str(path / "storage"))
                 profile.setCachePath(str(path / "cache"))
+                profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
                 profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
             else:
                 profile = QWebEngineProfile(self)

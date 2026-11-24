@@ -604,11 +604,86 @@ def test_deepseek_models_are_current():
 
 
 def test_ai_service_normalizes_legacy_model_labels():
+    from services.ai_providers import get_provider
     from services.ai_service import AIService
 
     assert AIService(config={"ai_provider": "deepseek", "ai_model": "DeepSeek Flash"}).model == "deepseek-flash"
     # The Anthropic-format endpoint is declared for Claude-compatible clients.
-    assert spec.anthropic_base_url.endswith("/anthropic")
+    assert get_provider("deepseek").anthropic_base_url \
+        == "https://api.deepseek.com/anthropic"
+
+
+def test_tokenator_provider_is_one_account_with_four_routes():
+    """Tokenator: one key, four route/protocol entries (RF and VPN)."""
+    from services.ai_providers import PROVIDERS, get_provider
+
+    for key in ("tokenator", "tokenator-claude", "tokenator-vpn",
+                "tokenator-claude-vpn"):
+        assert key in PROVIDERS, f"missing provider {key}"
+        spec = get_provider(key)
+        assert spec.models, f"{key} needs models"
+        assert spec.credential_key == "tokenator", "all routes share one key"
+        assert spec.base_url.startswith("https://api.tokenator.")
+    # Russia without a VPN vs. the VPN route.
+    assert get_provider("tokenator").base_url == "https://api.tokenator.top/v1"
+    assert get_provider("tokenator-claude").base_url == \
+        "https://api.tokenator.top/anthropic/v1"
+    assert get_provider("tokenator-vpn").base_url == "https://api.tokenator.cloud/v1"
+    assert get_provider("tokenator-claude-vpn").base_url == \
+        "https://api.tokenator.cloud/anthropic/v1"
+    # OpenAI-compatible vs. the native Claude wire protocol.
+    assert get_provider("tokenator").kind == "openai"
+    assert get_provider("tokenator-vpn").kind == "openai"
+    assert get_provider("tokenator-claude").kind == "anthropic"
+    assert get_provider("tokenator-claude-vpn").kind == "anthropic"
+
+
+def test_tokenator_catalogue_is_distinct_and_shared():
+    from services.ai_providers import family_of, get_provider
+
+    spec = get_provider("tokenator")
+    ids = [m.id for m in spec.models]
+    assert len(ids) == len(set(ids)), "duplicate model ids in the catalogue"
+    assert len(ids) >= 80
+    for model_id in ("claude-opus-5.5", "gpt-6.2-sol", "gemini-4-neon",
+                     "deepseek-v4.1-flash-1017", "kimi-k3.1-pro", "qwen-4-max"):
+        assert model_id in ids, f"{model_id} missing from the catalogue"
+    # Every route serves the same catalogue, and a route's default is current.
+    for key in ("tokenator-claude", "tokenator-vpn", "tokenator-claude-vpn"):
+        assert [m.id for m in get_provider(key).models] == ids
+    assert spec.default_model == "claude-opus-5.5"
+    # The picker folds the catalogue into families.
+    assert family_of("claude-opus-5.5") == "Claude"
+    assert family_of("free-gpt-6.2-sol") == "GPT"
+    assert family_of("qwen3.8-27b") == "Qwen"
+    assert family_of("hy-mt2-7b") == "HY"
+
+
+def test_tokenator_endpoints_and_key_format():
+    from services.ai_providers import get_provider
+    from services.ai_service import AIService
+
+    key = "sk-tkn-00000000-0000-0000-0000-000000000000"
+    openai = AIService(config={"ai_provider": "tokenator",
+                               "ai_base_url": get_provider("tokenator").base_url,
+                               "ai_model": "gpt-6.2-sol", "ai_api_key": key})
+    assert openai._endpoint("/chat/completions") == \
+        "https://api.tokenator.top/v1/chat/completions"
+    assert openai._headers()["Authorization"] == f"Bearer {key}"
+    assert openai.key_format_problem() is None
+
+    claude = AIService(config={"ai_provider": "tokenator-claude",
+                               "ai_base_url": get_provider("tokenator-claude").base_url,
+                               "ai_model": "claude-opus-5.5", "ai_api_key": key})
+    assert claude._endpoint("/messages") == \
+        "https://api.tokenator.top/anthropic/v1/messages"
+    assert claude._headers()["x-api-key"] == key
+    assert "Authorization" not in claude._headers()
+
+    wrong = AIService(config={"ai_provider": "tokenator",
+                              "ai_base_url": get_provider("tokenator").base_url,
+                              "ai_model": "gpt-6.2-sol", "ai_api_key": "abc"})
+    assert "sk-tkn-" in (wrong.key_format_problem() or "")
 
 
 def test_no_stale_models_advertised():
@@ -705,6 +780,47 @@ def test_context_menu_is_exclusive():
     assert len(checked) == 1
 
 
+def test_tokenator_settings_share_one_key_between_routes():
+    """Choosing Tokenator in Settings fills the endpoint/model list and keeps
+    the single partner key when switching protocol or route."""
+    from utils.settings_manager import init_settings_manager, get_settings_manager
+    from widgets.SettingsWidget import SettingsWidget
+
+    try:
+        init_settings_manager(ROOT)
+    except Exception:
+        pass
+    settings = get_settings_manager().settings
+    settings.update({"ai_provider": "tokenator", "ai_model": "gpt-6-luna",
+                     "ai_api_key": "", "ai_provider_keys": {},
+                     "ai_base_url": "https://api.tokenator.top/v1"})
+    settings["ai_active_profile"] = ""
+    widget = SettingsWidget(parent=None)
+    widget._select_page(widget._compact_navigation.findText("ИИ-агент"))
+    provider = widget.controls['ai_provider']
+    offered = {provider.itemData(i) for i in range(provider.count())}
+    assert {"tokenator", "tokenator-claude", "tokenator-vpn",
+            "tokenator-claude-vpn"} <= offered
+    provider.setCurrentIndex(provider.findData("tokenator"))
+    assert widget.controls['ai_base_url'].text() == "https://api.tokenator.top/v1"
+    assert widget.controls['ai_model'].count() == 82
+    # The saved model survives opening the page (it is not reset to the default).
+    assert widget.controls['ai_model'].currentData() == "gpt-6-luna"
+    assert widget._collect_ai_settings()['ai_model'] == "gpt-6-luna"
+    key_edit = widget.controls['ai_api_key']
+    key_edit.setText("sk-tkn-test")
+    key_edit.editingFinished.emit()
+    # Switching the wire protocol keeps the same account key in the field.
+    provider.setCurrentIndex(provider.findData("tokenator-claude"))
+    assert widget.controls['ai_api_key'].text() == "sk-tkn-test"
+    assert widget.controls['ai_base_url'].text() == \
+        "https://api.tokenator.top/anthropic/v1"
+    values = widget._collect_ai_settings()
+    assert values['ai_provider'] == "tokenator-claude"
+    assert values['ai_model'] == "claude-opus-5.5"
+    assert values['ai_provider_keys']['tokenator'] == "sk-tkn-test"
+
+
 def test_models_hidden_without_api_key():
     """Providers without a key must not appear in the model menu."""
     from widgets import AIAgentPanel as panel_module
@@ -716,13 +832,58 @@ def test_models_hidden_without_api_key():
     settings = get_settings_manager().settings
     settings.update({"ai_provider": "deepseek", "ai_api_key": "sk-test",
                      "ai_model": "deepseek-flash"})
+    settings["ai_provider_keys"] = {}
+    settings["ai_active_profile"] = ""
     panel = panel_module.AIAgentPanel(None)
     panel._refresh_menus()
     labels = " | ".join(a.text() for a in panel._model_menu.actions() if a.text())
     assert "Claude" not in labels, "Claude has no key and must be hidden"
     assert "Google Gemini" not in labels
     assert "OpenAI" not in labels
-    assert "DeepSeek Flash" in labels
+    assert "DeepSeek Flash" not in labels
+    assert "Добавить профиль" in labels
+
+
+def test_tokenator_models_are_selectable_in_chat():
+    """The partner's catalogue is reachable from the chat model picker."""
+    from widgets import AIAgentPanel as panel_module
+    from utils.settings_manager import init_settings_manager, get_settings_manager
+    try:
+        init_settings_manager(ROOT)
+    except Exception:
+        pass
+    settings = get_settings_manager().settings
+    settings.update({"ai_provider": "tokenator", "ai_model": "claude-opus-5.5",
+                     "ai_api_key": "sk-tkn-test",
+                     "ai_base_url": "https://api.tokenator.top/v1"})
+    settings["ai_active_profile"] = ""
+    settings["ai_provider_keys"] = {}
+    panel = panel_module.AIAgentPanel(None)
+    panel._refresh_menus()
+    submenu = next((a.menu() for a in panel._model_menu.actions()
+                    if a.text().startswith("Tokenator")), None)
+    assert submenu is not None, "a provider with a key must be offered"
+    families = {a.text(): a.menu() for a in submenu.actions() if a.menu() is not None}
+    assert any(title.startswith("Claude") for title in families)
+    assert any(title.startswith("GPT") for title in families)
+    # The four routes share one catalogue: a "Подключение" switch, not 4 lists.
+    connection = families.get("Подключение")
+    assert connection is not None
+    routes = [a.text() for a in connection.actions()]
+    assert set(routes) == {"РФ (OpenAI API)", "РФ (Claude API)",
+                           "VPN (OpenAI API)", "VPN (Claude API)"}
+    claude = next(a.menu() for a in submenu.actions()
+                  if a.text().startswith("Claude"))
+    models = {a.text(): a for a in claude.actions()}
+    assert models["Claude Opus 5.5"].isChecked()
+    models["Claude Sonnet 5.5"].trigger()
+    _APP.processEvents()
+    saved = get_settings_manager().settings
+    assert saved["ai_model"] == "claude-sonnet-5.5"
+    assert saved["ai_provider"] == "tokenator"
+    # The key stays parked with its account, so switching routes keeps it.
+    assert saved["ai_provider_keys"]["tokenator"] == "sk-tkn-test"
+    assert saved["ai_api_key"] == "sk-tkn-test"
 
 
 def test_messages_queue_while_busy(monkeypatch):

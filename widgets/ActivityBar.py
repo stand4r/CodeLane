@@ -79,7 +79,7 @@ class ActivityBar(QtWidgets.QFrame):
 
     def _build(self):
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 6, 0, 6)
+        layout.setContentsMargins(4, 6, 4, 6)
         layout.setSpacing(3)
 
         for key, icon_name, tooltip in self.ITEMS:

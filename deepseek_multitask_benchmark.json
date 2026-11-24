@@ -1,0 +1,203 @@
+[
+  {
+    "task": "fact",
+    "mode": "full",
+    "correct": true,
+    "answer": "ZX-819274",
+    "expected": "ZX-819274",
+    "usage": {
+      "prompt_tokens": 23725,
+      "completion_tokens": 68,
+      "total_tokens": 23793,
+      "cache_read_input_tokens": 0,
+      "reasoning_tokens": 63
+    },
+    "rounds": 1,
+    "seconds": 2.32,
+    "calls": []
+  },
+  {
+    "task": "fact",
+    "mode": "local_search",
+    "correct": true,
+    "answer": "ZX-819274",
+    "expected": "ZX-819274",
+    "usage": {
+      "prompt_tokens": 2762,
+      "completion_tokens": 227,
+      "total_tokens": 2989,
+      "cache_read_input_tokens": 1536,
+      "reasoning_tokens": 30
+    },
+    "rounds": 2,
+    "seconds": 3.26,
+    "calls": [
+      {
+        "name": "read_local_evidence",
+        "arguments": {
+          "id": "78664e58c2c60f77921ce8229bcbd1d7c1ed33fd672fee69ff06fc9a22dfdf1e",
+          "query": "target_invoice",
+          "context_lines": 3
+        }
+      },
+      {
+        "name": "read_local_evidence",
+        "arguments": {
+          "id": "78664e58c2c60f77921ce8229bcbd1d7c1ed33fd672fee69ff06fc9a22dfdf1e",
+          "length": 3000
+        }
+      }
+    ]
+  },
+  {
+    "task": "logs",
+    "mode": "full",
+    "correct": true,
+    "answer": "PoolExhaustedError",
+    "expected": "PoolExhaustedError",
+    "usage": {
+      "prompt_tokens": 23743,
+      "completion_tokens": 170,
+      "total_tokens": 23913,
+      "cache_read_input_tokens": 0,
+      "reasoning_tokens": 164
+    },
+    "rounds": 1,
+    "seconds": 2.83,
+    "calls": []
+  },
+  {
+    "task": "logs",
+    "mode": "local_search",
+    "correct": true,
+    "answer": "PoolExhaustedError",
+    "expected": "PoolExhaustedError",
+    "usage": {
+      "prompt_tokens": 3667,
+      "completion_tokens": 386,
+      "total_tokens": 4053,
+      "cache_read_input_tokens": 2688,
+      "reasoning_tokens": 148
+    },
+    "rounds": 3,
+    "seconds": 52.43,
+    "calls": [
+      {
+        "name": "read_local_evidence",
+        "arguments": {
+          "id": "4995c84811baf45c61c49b01490853daaf95799c0edffb1074ecf3e82e656440",
+          "queries": [
+            "INC-72",
+            "root exception",
+            "Root exception",
+            "incident"
+          ],
+          "context_lines": 3
+        }
+      },
+      {
+        "name": "read_local_evidence",
+        "arguments": {
+          "id": "4995c84811baf45c61c49b01490853daaf95799c0edffb1074ecf3e82e656440",
+          "offset": 54300,
+          "length": 1200
+        }
+      }
+    ]
+  },
+  {
+    "task": "code",
+    "mode": "full",
+    "correct": true,
+    "answer": "27.0",
+    "expected": "27",
+    "usage": {
+      "prompt_tokens": 23755,
+      "completion_tokens": 93,
+      "total_tokens": 23848,
+      "cache_read_input_tokens": 0,
+      "reasoning_tokens": 89
+    },
+    "rounds": 1,
+    "seconds": 2.7,
+    "calls": []
+  },
+  {
+    "task": "code",
+    "mode": "local_search",
+    "correct": true,
+    "answer": "27.0",
+    "expected": "27",
+    "usage": {
+      "prompt_tokens": 2097,
+      "completion_tokens": 459,
+      "total_tokens": 2556,
+      "cache_read_input_tokens": 1536,
+      "reasoning_tokens": 327
+    },
+    "rounds": 2,
+    "seconds": 4.15,
+    "calls": [
+      {
+        "name": "read_local_evidence",
+        "arguments": {
+          "id": "cac31eecc4c17b5ca321ff5b0ad01b927f7fc0a5efea35fed298216f2e544505",
+          "queries": [
+            "calculate_total",
+            "calculate total",
+            "def calculate_t",
+            "tax",
+            "rate"
+          ],
+          "context_lines": 3
+        }
+      }
+    ]
+  },
+  {
+    "task": "join",
+    "mode": "full",
+    "correct": true,
+    "answer": "Kazan",
+    "expected": "Kazan",
+    "usage": {
+      "prompt_tokens": 35349,
+      "completion_tokens": 45,
+      "total_tokens": 35394,
+      "cache_read_input_tokens": 0,
+      "reasoning_tokens": 42
+    },
+    "rounds": 1,
+    "seconds": 1.72,
+    "calls": []
+  },
+  {
+    "task": "join",
+    "mode": "local_search",
+    "correct": true,
+    "answer": "Kazan",
+    "expected": "Kazan",
+    "usage": {
+      "prompt_tokens": 2188,
+      "completion_tokens": 158,
+      "total_tokens": 2346,
+      "cache_read_input_tokens": 1536,
+      "reasoning_tokens": 32
+    },
+    "rounds": 2,
+    "seconds": 2.84,
+    "calls": [
+      {
+        "name": "read_local_evidence",
+        "arguments": {
+          "id": "26db7a1c803c1149a31eb9233c32d2e5cc9a15a13ed8bedff656c8aab5efad44",
+          "queries": [
+            "ORD-17",
+            "shipping_city"
+          ],
+          "context_lines": 4
+        }
+      }
+    ]
+  }
+]

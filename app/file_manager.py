@@ -304,16 +304,23 @@ class FileManager:
         except Exception as e:
             CustomDialog(f"Ошибка предпросмотра: {e}").exec()
 
-    def open_text_editor(self, file_path: str):
+    def open_text_editor(self, file_path: str, *, activate=True):
         """Force open a file in code/text editor mode."""
         try:
             path_str = str(Path(file_path).resolve())
-            if self._focus_tab(self._find_text_tab(path_str)) is not None:
-                return
+            existing = self._find_text_tab(path_str)
+            if existing is not None:
+                if activate:
+                    self._focus_tab(existing)
+                return existing[2]
 
             content, snapshot, text_format = self._read_text(Path(file_path))
-            self.main_window.close_special_tab("welcome")
-            self.main_window.create_editor_tab(content, path_str, snapshot=snapshot, text_format=text_format)
+            if activate:
+                self.main_window.close_special_tab("welcome")
+            self.main_window.create_editor_tab(content, path_str, snapshot=snapshot,
+                                               text_format=text_format, activate=activate)
+            existing = self._find_text_tab(path_str)
+            return existing[2] if existing is not None else None
         except Exception as e:
             CustomDialog(f"Ошибка открытия в редакторе: {str(e)}").exec()
 
