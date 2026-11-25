@@ -115,7 +115,7 @@ def test_supervisor_pauses_for_a_clarification(monkeypatch):
     assert result.question == "Какой размер проекта считать большим?"
 
 
-def test_team_tab_displays_worker_updates(monkeypatch, tmp_path):
+def test_team_tab_displays_worker_updates(monkeypatch, tmp_path, qtbot):
     from types import SimpleNamespace
 
     from PyQt6 import QtCore, QtWidgets
@@ -134,6 +134,7 @@ def test_team_tab_displays_worker_updates(monkeypatch, tmp_path):
     owner._service = lambda: SimpleNamespace(configuration_problem=lambda: None)
     owner._build_local_tools = lambda stopped, **kwargs: toolbox
     transcript = []
+    finish = Event()
 
     def record(role, text):
         transcript.append((role, text))
@@ -144,8 +145,12 @@ def test_team_tab_displays_worker_updates(monkeypatch, tmp_path):
 
     def work(service, tools, goal, emit, stopped, *, report, trace, scheduled_role, relationship,
              reasoning, usage_progress):
+        emit(0, "Руководитель", goal, "Ожидает ответ модели")
+        reasoning(0, "Ищу файлы.\n")
+        reasoning(0, "Проверяю ")
+        reasoning(0, "изменения")
+        finish.wait(3)
         emit(0, "Руководитель", goal, "Готово")
-        reasoning(0, "Проверяю изменения")
         usage_progress({"total_tokens": 20})
         emit(1, "Тестировщик", "Проверить изменения", "Готово")
         trace(1, "read_file: demo.py")
@@ -159,27 +164,27 @@ def test_team_tab_displays_worker_updates(monkeypatch, tmp_path):
     group.resize(1040, 620)
     group.show()
     owner.main_window = SimpleNamespace(_find_special_tab=lambda kind: (group, index), active_tab_widget=group)
-    assert tab.team_mode.isChecked()
     owner.input.setPlainText("Проверить проект")
     AIAgentPanel.send_message(owner)
     assert owner.input.toPlainText() == ""
-    assert 0 in tab._cards
+    try:
+        qtbot.waitUntil(lambda: tab.activity.text() == "Проверяю изменения", timeout=2000)
+        assert not tab.activity.wordWrap()
+        assert not tab.findChildren(QtWidgets.QGraphicsView)
+    finally:
+        finish.set()
     QtCore.QTimer.singleShot(3000, loop.quit)
     loop.exec()
     app.processEvents()
     assert transcript == [("user", "Проверить проект"), ("assistant", "Отчёт")]
-    assert "Проверяю изменения" in tab.reasoning_view.text()
-    assert set(tab._cards) == {0, 1}
-    assert tab.graph.nodes[1] is tab._cards[1]
-    assert len(tab.graph.edges) == 1
-    assert "Проверить изменения" in tab._cards[1].toolTip()
-    assert tab._cards[1].report == "Результат проверки"
-    tab._show_report(tab._cards[1])
-    assert "read_file: demo.py" in group.currentWidget().toPlainText()
+    assert tab.journal_button.isEnabled()
+    tab.journal_button.click()
+    journal = group.currentWidget().toPlainText()
+    assert "read_file: demo.py" in journal and "Результат проверки" in journal
+    assert "Проверяю изменения" not in journal
     assert tab.planner.cache.journal("project", tab._run_id, 1).endswith("Результат проверки")
 
 
-    assert not tab.graph.grab().isNull()
     assert tab.stats.text() == "Токены: 42"
     assert not tab.stop_button.isEnabled()
     assert tab.activity.text() == "Задача завершена"
@@ -646,3 +651,138 @@ def test_previous_result_tool_is_absent_in_new_team_run():
             assert 'read_previous_result' not in {t['function']['name'] for t in tools}
             return 'done'
     assert agent_team.run_team(Capture(), Toolbox(), 'task', lambda *_: None, lambda: False).complete
+
+
+def test_team_does_not_report_an_edit_on_read_only_evidence(tmp_path):
+    from services.agent_tools import LocalToolbox
+
+    states = []
+
+    def script(route, stopped):
+        route("read_file", {"path": "theme.qss"})
+        return "Граница добавлена."
+
+    (tmp_path / "theme.qss").write_text("QFrame {}")
+    result = agent_team.run_team(Supervisor(script), LocalToolbox(str(tmp_path)),
+                                 "Добавь границу", lambda *state: states.append(state), Event().is_set)
+    assert not result.complete
+    assert states[-1][-1] == "Частичный итог"
+    assert "не подтверждены" in result.answer
+    assert "Граница добавлена" not in result.answer
+
+
+def test_team_reports_actual_exit_codes_after_the_latest_edit(tmp_path, monkeypatch):
+    from services.agent_tools import LocalToolbox
+
+    path = tmp_path / "main.py"
+    path.write_text("value = 0")
+    box = LocalToolbox(str(tmp_path))
+    statuses = iter([0, 1])
+    monkeypatch.setattr(box, "run_project_tests",
+                        lambda **_: f"Код возврата: {next(statuses)}\nПодробный вывод")
+
+    def script(route, stopped):
+        route("run_project_tests", {"target": "tests/test_old.py"})
+        route("edit_file", {"path": path.name, "old_text": "value = 0", "new_text": "value = 1"})
+        route("run_project_tests", {"target": "tests/test_main.py"})
+        return "Тесты прошли."
+
+    result = agent_team.run_team(Supervisor(script), box, "Измени файл и запусти тесты",
+                                 lambda *_: None, Event().is_set)
+    assert not result.complete and result.changed_files == ["main.py"]
+    assert "успешно, до последних изменений" in result.answer
+    assert "tests/test_main.py · ошибка" in result.answer
+    assert "Тесты прошли" not in result.answer
+
+
+def test_team_does_not_accept_test_claim_without_a_run():
+    result = agent_team.run_team(Supervisor(lambda *_: "Запустил тесты. Тесты прошли."),
+                                 Toolbox(), "Проверка", lambda *_: None, Event().is_set)
+    assert not result.complete and "не подтверждён" in result.answer
+    assert "Тесты прошли" not in result.answer
+
+
+def test_disk_tests_do_not_verify_unsaved_editor_changes(tmp_path):
+    from services.task_evidence import TaskEvidence
+
+    evidence = TaskEvidence("Исправь файл и запусти тесты", tmp_path)
+    evidence.observe("edit_file", {"path": "main.py", "old_text": "old", "new_text": "new"},
+                     "Правка применена во вкладке main.py; файл отмечен как изменённый.")
+    evidence.observe("run_project_tests", {}, "Код возврата: 0")
+    assert evidence.blocking_reason("Тесты прошли.", ())
+    assert "при несохранённых правках" in evidence.report()
+    evidence.observe("editor_save", {"path": str(tmp_path / "main.py")}, '{"action":"save"}')
+    assert evidence.blocking_reason("Тесты прошли.", ())
+    evidence.observe("run_project_tests", {}, "Код возврата: 0")
+    assert not evidence.blocking_reason("Тесты прошли.", ())
+
+
+def test_open_document_context_is_available_before_first_model_round(tmp_path, monkeypatch):
+    from docx import Document
+
+    from services.agent_tools import LocalToolbox
+    from services.ai_service import AIService
+
+    path = tmp_path / "lab.docx"
+    document = Document()
+    document.add_paragraph("Method for lab three")
+    document.save(path)
+    statuses = []
+    service = AIService({"ai_provider": "ollama"})
+
+    def model_round(messages, tools, *_):
+        assert "Method for lab three" in messages[-1]["content"]
+        assert "read_document" in messages[-1]["content"]
+        return "Готово", []
+
+    monkeypatch.setattr(service, "_openai_tool_round", model_round)
+    result = agent_team.run_team(service, LocalToolbox(str(tmp_path)), "Посмотри открытую работу",
+                                 lambda *state: statuses.append(state[-1]), Event().is_set,
+                                 context_document=str(path))
+    assert result.complete
+    assert "Читает открытый документ" in statuses and "Ожидает ответ модели" in statuses
+
+
+def test_reports_missing_test_runner_as_a_failed_attempt():
+    from services.task_evidence import TaskEvidence
+
+    evidence = TaskEvidence("Сделай 3 лабу")
+    evidence.observe("run_project_tests", {}, "Ошибка MCP CodeLane: Конфигурация тестов проекта не обнаружена.")
+    assert "запуск не выполнен" in evidence.report()
+    assert evidence.unconfirmed_test_claim("Запустил тесты.")
+    assert evidence.blocking_reason("Готово", ())
+
+
+def test_background_shell_does_not_confirm_visible_terminal_launch():
+    from services.task_evidence import TaskEvidence
+
+    evidence = TaskEvidence("Теперь запуски во встроенном терминале этот проект")
+    evidence.observe("run_terminal_command", {"command": "echo ready"}, "Код возврата: 0")
+    assert evidence.blocking_reason("Запущено", ()) == "Запуск во встроенном терминале не подтверждён."
+    evidence.observe("terminal_execute", {"command": "echo ready"}, '{"started":false,"completed":true,"exit_code":1}')
+    assert evidence.blocking_reason("Запущено", ())
+    evidence.observe("terminal_execute", {"command": "echo ready"}, '{"started":true,"completed":false}')
+    assert not evidence.blocking_reason("Запущено", ())
+    assert "Подтверждён запуск во встроенном терминале" in evidence.report()
+
+
+def test_provider_failure_retains_already_reported_usage(tmp_path, monkeypatch):
+    from services.agent_tools import LocalToolbox
+    from services.ai_service import AIError, AIService, ToolCall
+
+    (tmp_path / "app.js").write_text("const enabled = true;")
+    service = AIService({"ai_provider": "ollama"})
+    turns = iter((True, False))
+
+    def model_round(instance, *_):
+        if next(turns):
+            instance.last_usage = {"prompt_tokens": 85, "completion_tokens": 5, "total_tokens": 90}
+            return "", [ToolCall("read", "read_file", {"path": "app.js"})]
+        raise AIError("Провайдер перестал присылать данные.")
+
+    monkeypatch.setattr(AIService, "_openai_tool_round", model_round)
+    result = agent_team.run_team(service, LocalToolbox(str(tmp_path)), "Посмотри файл",
+                                 lambda *_: None, Event().is_set)
+    assert not result.complete
+    assert result.usage["total_tokens"] == 90
+    assert "Провайдер перестал" in result.answer

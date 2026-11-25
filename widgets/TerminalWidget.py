@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from core.activity_log import record_action
+from core.subprocess_utils import refreshed_user_path
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from utils.settings_manager import get_settings_manager
@@ -1100,6 +1101,8 @@ class TerminalTab(QtWidgets.QWidget):
         self.process.started.connect(self._on_process_started)
         try:
             env = QtCore.QProcessEnvironment.systemEnvironment()
+            if IS_WINDOWS:
+                env.insert("PATH", refreshed_user_path(env.value("PATH")))
             env.insert("PYTHONIOENCODING", "utf-8")
             env.insert("PYTHONUTF8", "1")
             env.insert("PYTHONLEGACYWINDOWSSTDIO", "0")
@@ -1827,6 +1830,8 @@ class TerminalTab(QtWidgets.QWidget):
         proc.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.SeparateChannels)
         try:
             env = QtCore.QProcessEnvironment.systemEnvironment()
+            if IS_WINDOWS:
+                env.insert("PATH", refreshed_user_path(env.value("PATH")))
             env.insert("PYTHONIOENCODING", "utf-8")
             env.insert("PYTHONUTF8", "1")
             env.insert("PYTHONUNBUFFERED", "1")

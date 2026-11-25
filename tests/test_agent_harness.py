@@ -11,13 +11,15 @@ import tempfile
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from services.ai_service import AIError, AIMessage, AIService, ToolCall  # noqa: E402
-from services.agent_harness import (SAME_CALL_LIMIT, AgentHarness,  # noqa: E402
-                                    AgentResult)
+from services.agent_harness import (DISCOVERY_PREVIEW_CHARS, SAME_CALL_LIMIT,  # noqa: E402
+                                    STALLED_ROUND_LIMIT, AgentHarness, AgentResult)
 
 
 class ScriptedService:
@@ -132,10 +134,12 @@ def test_old_discovery_output_is_compacted_only_in_provider_requests():
         assert len(tool_output(service.seen[1][2])) < 49_000
         preview = tool_output(service.seen[-1][2])
         assert preview.startswith("начало") and preview.endswith("конец")
-        assert len(preview) < 2000
+        assert len(preview) <= DISCOVERY_PREVIEW_CHARS + 1_000
         assert tool_output(result.messages[2]) == large
         edit = service.seen[-1][4]["content"]
-        assert (edit[0]["content"] if anthropic else edit) == large
+        edit_preview = edit[0]["content"] if anthropic else edit
+        assert (len(edit_preview) <= DISCOVERY_PREVIEW_CHARS + 1_000
+                and "read_local_evidence" in edit_preview)
 
 
 def test_request_keeps_recent_turn_and_limits_automatic_context():
@@ -151,7 +155,7 @@ def test_request_keeps_recent_turn_and_limits_automatic_context():
     assert len(messages) == 4
     attached = messages[-1]["content"]
     assert attached.startswith(prompt + "\n\nначало") and attached.endswith("конец")
-    assert attached == prompt + "\n\n" + context
+    assert "Контекст сокращён" in attached and len(attached) < len(context)
 
     follow_up = service.build_messages(prompt, history[:2])
     assert follow_up[1] == history[0].as_dict()
@@ -160,7 +164,9 @@ def test_request_keeps_recent_turn_and_limits_automatic_context():
 
 
 def test_repeated_identical_calls_do_not_loop_forever():
-    rounds = [("", [ToolCall("c", "read_file", {"path": "same.py"})]) for _ in range(6)]
+    repeats = STALLED_ROUND_LIMIT + 2
+    rounds = [("", [ToolCall("c", "read_file", {"path": "same.py"})])
+              for _ in range(repeats)]
     rounds.append(("Хватит", []))
     service = ScriptedService(rounds)
     executed = []
@@ -170,10 +176,29 @@ def test_repeated_identical_calls_do_not_loop_forever():
         return "файл прочитан"
 
     result = AgentHarness(service, tools=[{}], tool_runner=runner).run(_user_messages())
-    assert len(executed) == SAME_CALL_LIMIT, executed
+    assert len(executed) == 1, executed
     joined = "\n".join(str(message.get("content")) for message in result.messages)
     assert "повторно" in joined.lower() or "повтор" in joined.lower()
-    assert result.text.endswith("Хватит")
+    assert result.stop_reason == "stalled"
+    assert service.requests < repeats + 1
+
+
+def test_rejected_internal_calls_stop_even_when_the_arguments_change():
+    from services.agent_harness import STALLED_ROUND_LIMIT
+
+    read = ("", [ToolCall("read", "read_file", {"path": "app.js"})])
+    repeated = [
+        ("", [ToolCall(str(i), "call_tool", {"name": "unknown", "arguments": {"attempt": i}})])
+        for i in range(30)
+    ]
+    service = ScriptedService([read, *repeated])
+    events = []
+    result = AgentHarness(service, tools=[{}], tool_runner=lambda *_: "const enabled = true;",
+                          on_tool_end=events.append).run(_user_messages())
+    assert result.stop_reason == "stalled"
+    assert service.requests == 1 + STALLED_ROUND_LIMIT
+    assert len(events) == service.requests
+    assert all(not event.ok for event in events[1:])
 
 
 def test_narration_before_tools_is_not_part_of_the_answer():
@@ -375,7 +400,28 @@ def test_read_file_has_no_character_budget_and_supports_paging():
         assert page.splitlines()[1] == "line 10"
 
 
+def test_request_references_duplicate_observations_but_preserves_changes():
+    from services.local_evidence import LocalEvidence
+
+    outputs = ["file version one", "file version one", "file version two"]
+    messages = [{"role": "user", "content": "Inspect file"}]
+    results = []
+    for index, output in enumerate(outputs):
+        call_id = f"read-{index}"
+        messages.append({"role": "assistant", "tool_calls": [{"id": call_id,
+                         "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]})
+        results.append((len(messages), index + 1))
+        messages.append({"role": "tool", "tool_call_id": call_id, "content": output})
+    request = AgentHarness._request_messages(messages, results, 3, evidence=LocalEvidence())
+    assert request[2]["content"] == "file version one"
+    assert "read-0" in request[4]["content"]
+    assert "file version one" not in request[4]["content"]
+    assert request[6]["content"] == "file version two"
+    assert messages[4]["content"] == "file version one"
+
+
 TESTS = [
+    test_request_references_duplicate_observations_but_preserves_changes,
     test_harness_runs_far_beyond_the_old_round_limit,
     test_tool_results_are_passed_back_whole,
     test_old_discovery_output_is_compacted_only_in_provider_requests,
@@ -415,16 +461,21 @@ def main():
 if __name__ == "__main__":
     sys.exit(main())
 
-def test_repeated_read_deduplicates_payload_but_checks_for_changes():
-    outputs = iter(['first' * 1000, 'first' * 1000, 'updated' * 1000])
+def test_repeated_read_reuses_evidence_without_executing_the_tool():
+    executed = []
     service = ScriptedService([
         ('', [ToolCall(str(i), 'read_file', {'path': 'a.py'})]) for i in range(3)
     ] + [('done', [])])
-    result = AgentHarness(service, tools=[{}], tool_runner=lambda *_: next(outputs)).run(_user_messages())
+    harness = AgentHarness(service, tools=[{}],
+                           tool_runner=lambda *args: executed.append(args) or 'first' * 1000)
+    result = harness.run(_user_messages())
+    assert len(executed) == 1
     assert result.tool_runs[0].output == 'first' * 1000
-    assert 'не изменился' in result.tool_runs[1].output
+    assert 'Повторное чтение не выполнено' in result.tool_runs[1].output
     assert len(result.tool_runs[1].output) < 500
-    assert result.tool_runs[2].output == 'updated' * 1000
+    assert result.tool_runs[2].repeated
+    evidence_id = next(iter(harness._file_reads.values()))[1]
+    assert 'first' * 1000 in harness.evidence.read(evidence_id)
 
 
 def test_edit_allows_fresh_read_after_repeat_limit():
@@ -437,5 +488,281 @@ def test_edit_allows_fresh_read_after_repeat_limit():
         executed.append(name)
         return 'output'
     result = AgentHarness(ScriptedService(calls), tools=[{}], tool_runner=runner).run(_user_messages())
-    assert executed.count('read_file') == SAME_CALL_LIMIT + 1
+    assert executed.count('read_file') == 2
     assert not result.tool_runs[-1].repeated
+
+
+@pytest.mark.parametrize("name", ["read_file", "read_document"])
+@pytest.mark.parametrize("anthropic", [False, True])
+def test_duplicate_read_in_one_batch_preserves_tool_pairing(name, anthropic):
+    class Provider(ScriptedService):
+        is_anthropic = anthropic
+
+        def _anthropic_tool_round(self, *args):
+            text, calls = self._openai_tool_round(*args)
+            return [{"type": "text", "text": text}], calls
+
+    calls = [ToolCall(str(i), name, {"path": "a.py"}) for i in range(2)]
+    service = Provider([("", calls), ("done", [])])
+    executed, started, ended = [], [], []
+    result = AgentHarness(service, tools=[{}],
+                          tool_runner=lambda *args: executed.append(args) or "content",
+                          on_tool_start=lambda *args: started.append(args),
+                          on_tool_end=ended.append).run(_user_messages())
+    assert len(executed) == len(started) == 1
+    assert len(ended) == 2 and ended[-1].repeated and ended[-1].ok
+    for message, call in zip(result.messages[2:], calls):
+        if anthropic:
+            assert message["content"][0]["tool_use_id"] == call.id
+        else:
+            assert message["tool_call_id"] == call.id
+
+
+def test_read_defaults_are_deduplicated_but_new_ranges_are_read():
+    arguments = [
+        {"path": "a.py"},
+        {"path": "a.py", "offset": 1, "limit": 200, "column": 0},
+        {"path": "a.py", "offset": 201, "limit": 200},
+        {"path": "a.py", "offset": 201, "limit": 200, "column": 12000},
+        {"path": "b.py"},
+    ]
+    service = ScriptedService([("", [ToolCall(str(i), "read_file", args)])
+                               for i, args in enumerate(arguments)] + [("done", [])])
+    executed = []
+    result = AgentHarness(service, tools=[{}],
+                          tool_runner=lambda _, args: executed.append(args) or str(args)).run(_user_messages())
+    assert executed == [arguments[i] for i in (0, 2, 3, 4)]
+    assert result.tool_runs[1].repeated
+
+
+@pytest.mark.parametrize("action", ["edit_file", "editor_save", "run_terminal_command",
+                                    "run_project_tests", "accept_proposal"])
+def test_actions_invalidate_read_cache_even_on_failure(action):
+    read = ToolCall("before", "read_file", {"path": "a.py"})
+    service = ScriptedService([("", [read, ToolCall("action", action, {}),
+                                    ToolCall("after", "read_file", read.arguments)]), ("done", [])])
+    reads = []
+
+    def runner(name, args):
+        if name == "read_file":
+            reads.append(name)
+            return f"version {len(reads)}"
+        raise RuntimeError("Action failed after modifying the file")
+
+    result = AgentHarness(service, tools=[{}], tool_runner=runner).run(_user_messages())
+    assert len(reads) == 2
+    assert result.tool_runs[-1].output == "version 2"
+
+
+def test_read_errors_are_retried_and_cache_is_reset_for_new_request():
+    read = ToolCall("read", "read_file", {"path": "a.py"})
+    service = ScriptedService([("", [read, read]), ("done", []), ("", [read]), ("done", [])])
+    outputs = iter(["Ошибка MCP CodeLane: temporarily unavailable", "first", "updated"])
+    harness = AgentHarness(service, tools=[{}], tool_runner=lambda *_: next(outputs))
+    first = harness.run(_user_messages())
+    assert not first.tool_runs[0].ok
+    assert first.tool_runs[1].output == "first"
+    second = harness.run(_user_messages())
+    assert second.tool_runs[0].output == "updated"
+
+
+def test_invalid_read_arguments_are_reported_as_tool_errors():
+    from services.agent_tools import LocalToolbox
+
+    service = ScriptedService([("", [ToolCall("bad", "read_file", {
+        "path": __file__, "offset": "bad",
+    })]), ("done", [])])
+    box = LocalToolbox(str(ROOT))
+    result = AgentHarness(service, tools=box.definitions(),
+                          tool_runner=lambda name, args: getattr(box, name)(**args)).run(_user_messages())
+    assert not result.tool_runs[0].ok
+    assert "Ошибка инструмента" in result.tool_runs[0].output
+
+
+def test_long_tool_task_compacts_observations_without_a_request_or_token_limit():
+    from services import ai_budget
+
+    tools = [{"type": "function", "function": {"name": "read_file"}}]
+
+    class Provider(ScriptedService):
+        def _openai_tool_round(self, messages, listed_tools, *_):
+            self.seen.append(messages)
+            assert listed_tools[:1] == tools
+            assert ai_budget.request_size(messages, listed_tools) <= ai_budget.CONTEXT_COMPACTION_BYTES
+            self.last_usage = {"prompt_tokens": 10_000, "completion_tokens": 500}
+            index = len(self.seen)
+            if index >= 23:
+                return "done", []
+            return "", [ToolCall(str(index), "read_file", {"path": f"file{index}.py"})]
+
+    service = Provider([])
+    result = AgentHarness(service, tools=tools, tool_runner=lambda *_: "я" * 40_000).run(_user_messages())
+    assert result.stop_reason == "answer" and result.text == "done"
+    assert result.rounds == 23 and result.usage["prompt_tokens"] == 230_000
+    assert all(request[0] == _user_messages()[0] for request in service.seen)
+    assert len(service.seen[-1][2]["content"]) <= DISCOVERY_PREVIEW_CHARS + 1_000
+
+
+def test_long_explicit_user_prompt_and_provider_default_output_are_preserved(monkeypatch):
+    service = AIService({"ai_provider": "ollama"})
+    prompt = "part " * 25_000
+
+    def stream(path, payload):
+        assert payload["messages"][-1]["content"] == prompt
+        assert "max_tokens" not in payload
+        yield {"choices": [{"delta": {"content": "Done"}, "finish_reason": "stop"}]}
+
+    monkeypatch.setattr(service, "_stream_json_once", stream)
+    assert service.converse(prompt) == "Done"
+
+
+def test_automatic_continuation_uses_the_provider_limits(monkeypatch):
+    service = AIService({"ai_provider": "ollama"})
+    requests = []
+
+    def stream(path, payload):
+        requests.append(payload)
+        reason = "stop" if len(requests) == 4 else "length"
+        yield {"choices": [{"delta": {"content": f"Part {len(requests)}."}, "finish_reason": reason}]}
+
+    monkeypatch.setattr(service, "_stream_json_once", stream)
+    answer = service.converse("question")
+    assert len(requests) == 4 and all(f"Part {part}." in answer for part in range(1, 5))
+    assert service.last_stop_reason == "answer"
+
+
+def test_thinking_mode_reasoning_is_passed_back_with_tool_calls():
+    """Провайдеры thinking-режима требуют reasoning_content в ответе с tool_calls."""
+
+    class ThinkingService(ScriptedService):
+        last_reasoning = ""
+
+        def _openai_tool_round(self, messages, tools, on_text, on_reasoning=None):
+            text, calls = super()._openai_tool_round(messages, tools, on_text, on_reasoning)
+            self.last_reasoning = "сначала прочитаю файл"
+            return text, calls
+
+    service = ThinkingService([
+        ("", [ToolCall("call_1", "read_file", {"path": "a.py"})]),
+        ("готово", []),
+    ])
+
+    result = AgentHarness(service, tools=[{"type": "function"}],
+                          tool_runner=lambda *args: "print(1)").run(_user_messages())
+
+    assert result.text == "готово"
+    assistant_turns = [m for m in service.seen[1] if m.get("role") == "assistant"]
+    assert len(assistant_turns) == 1
+    assert assistant_turns[0]["tool_calls"][0]["id"] == "call_1"
+    assert assistant_turns[0]["reasoning_content"] == "сначала прочитаю файл"
+
+
+def test_reasoning_content_is_not_sent_without_thinking_mode():
+    service = ScriptedService([
+        ("", [ToolCall("call_1", "read_file", {"path": "a.py"})]),
+        ("готово", []),
+    ])
+
+    AgentHarness(service, tools=[{"type": "function"}],
+                 tool_runner=lambda *args: "print(1)").run(_user_messages())
+
+    assistant_turns = [m for m in service.seen[1] if m.get("role") == "assistant"]
+    assert assistant_turns and "reasoning_content" not in assistant_turns[0]
+
+
+def test_thinking_by_default_provider_gets_an_empty_reasoning_field():
+    """DeepSeek thinks by default and rejects a tool turn without the field.
+
+    Even when the round produced no visible reasoning, the key must be there
+    (as an empty string) or the API answers 400 "The reasoning_content in the
+    thinking mode must be passed back to the API".
+    """
+
+    class ThinkingByDefault(ScriptedService):
+        reasoning_required = True
+        last_reasoning = ""
+
+    service = ThinkingByDefault([
+        ("", [ToolCall("call_1", "read_file", {"path": "a.py"})]),
+        ("готово", []),
+    ])
+
+    AgentHarness(service, tools=[{"type": "function"}],
+                 tool_runner=lambda *args: "print(1)").run(_user_messages())
+
+    assistant_turns = [m for m in service.seen[1] if m.get("role") == "assistant"]
+    assert assistant_turns and assistant_turns[0]["reasoning_content"] == ""
+
+
+def _read_file_tool():
+    return {"type": "function", "function": {
+        "name": "read_file", "description": "Read a file",
+        "parameters": {"type": "object",
+                       "properties": {"path": {"type": "string"}},
+                       "required": ["path"]}}}
+
+
+def test_anthropic_tool_round_keeps_thinking_blocks_in_order():
+    """Claude requires its signed thinking blocks back with the tool call."""
+    service = AIService({"ai_provider": "anthropic", "ai_model": "claude-opus-5.5",
+                         "ai_api_key": "sk-ant-test",
+                         "ai_base_url": "https://api.anthropic.com/v1"})
+
+    def stream(_path, _payload):
+        yield {"type": "message_start", "message": {"usage": {"input_tokens": 3}}}
+        yield {"type": "content_block_start", "index": 0,
+               "content_block": {"type": "thinking", "thinking": ""}}
+        yield {"type": "content_block_delta", "index": 0,
+               "delta": {"type": "thinking_delta", "thinking": "сначала прочитаю"}}
+        yield {"type": "content_block_delta", "index": 0,
+               "delta": {"type": "signature_delta", "signature": "sig-abc"}}
+        yield {"type": "content_block_stop", "index": 0}
+        yield {"type": "content_block_start", "index": 1,
+               "content_block": {"type": "text", "text": ""}}
+        yield {"type": "content_block_delta", "index": 1,
+               "delta": {"type": "text_delta", "text": "Читаю файл."}}
+        yield {"type": "content_block_stop", "index": 1}
+        yield {"type": "content_block_start", "index": 2,
+               "content_block": {"type": "tool_use", "id": "toolu_1",
+                                 "name": "read_file", "input": {}}}
+        yield {"type": "content_block_delta", "index": 2,
+               "delta": {"type": "input_json_delta",
+                         "partial_json": '{"path": "a.py"}'}}
+        yield {"type": "content_block_stop", "index": 2}
+
+    service._stream_json = stream
+    seen = []
+    blocks, calls = service._anthropic_tool_round(
+        [{"role": "user", "content": "прочитай"}], [_read_file_tool()],
+        seen.append, None)
+
+    assert [block["type"] for block in blocks] == ["thinking", "text", "tool_use"]
+    assert blocks[0]["thinking"] == "сначала прочитаю"
+    assert blocks[0]["signature"] == "sig-abc"
+    assert blocks[1]["text"] == "Читаю файл."
+    assert calls and calls[0].name == "read_file" and calls[0].arguments == {"path": "a.py"}
+    assert "".join(seen) == "Читаю файл."
+
+
+def test_anthropic_tool_round_drops_unsigned_thinking_blocks():
+    service = AIService({"ai_provider": "anthropic", "ai_model": "claude-opus-5.5",
+                         "ai_api_key": "sk-ant-test",
+                         "ai_base_url": "https://api.anthropic.com/v1"})
+
+    def stream(_path, _payload):
+        yield {"type": "content_block_start", "index": 0,
+               "content_block": {"type": "thinking", "thinking": ""}}
+        yield {"type": "content_block_delta", "index": 0,
+               "delta": {"type": "thinking_delta", "thinking": "мысли без подписи"}}
+        yield {"type": "content_block_stop", "index": 0}
+        yield {"type": "content_block_start", "index": 1,
+               "content_block": {"type": "tool_use", "id": "toolu_1",
+                                 "name": "read_file", "input": {"path": "a.py"}}}
+        yield {"type": "content_block_stop", "index": 1}
+
+    service._stream_json = stream
+    blocks, calls = service._anthropic_tool_round(
+        [{"role": "user", "content": "прочитай"}], [_read_file_tool()], None, None)
+
+    assert [block["type"] for block in blocks] == ["tool_use"]
+    assert calls[0].arguments == {"path": "a.py"}

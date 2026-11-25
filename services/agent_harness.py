@@ -16,6 +16,7 @@ and receives a plain :class:`AgentResult`, which keeps it testable.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -23,7 +24,13 @@ from http.client import IncompleteRead
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional
 
+from core.logging_config import get_logger
+from services.ai_budget import CONTEXT_COMPACTION_BYTES, input_tokens, request_size, total_tokens
 from services.ai_service import AIError, AIService, ToolCall
+from services.local_evidence import MAX_EVIDENCE_PAGE, LocalEvidence
+from services.agent_context import AgentContext, CONTEXT_TOOLS, CONTEXT_TOOL_NAMES
+
+logger = get_logger("ai_agent")
 
 __all__ = ["AgentHarness", "AgentResult", "AgentUsage", "ToolRun"]
 
@@ -52,20 +59,35 @@ MAX_TOOL_RESULT_CHARS = 2_000_000
 
 # How many identical (tool, arguments) calls are allowed before the harness
 # answers with the cached result and asks the model to continue.
-SAME_CALL_LIMIT = 3
-RECENT_DISCOVERY_CHARS = 12_000
-MAX_DISCOVERY_RESULT_CHARS = 24_000
-RECENT_DISCOVERY_ROUNDS = 1
-DISCOVERY_PREVIEW_CHARS = 400
-DISCOVERY_TOOLS = frozenset({"read_file", "list_directory", "search_in_project",
-                            "editor_state", "workspace_state", "analysis_details",
-                            "dependency_graph", "git_read", "browser_read", "browser_search",
-                            "assign_team"})
-TEXT_OBSERVATIONS = DISCOVERY_TOOLS | {"run_project_tests", "test_results", "terminal_output",
-                                       "run_terminal_command", "read_previous_result", "read_local_evidence"}
+SAME_CALL_LIMIT = 8
+STALLED_ROUND_LIMIT = 20
+STALLED_NOTICE = "Работа остановлена. Несколько раундов подряд не дали новых результатов или изменений."
+RECENT_TOOL_CHARS = 60_000
+DISCOVERY_PREVIEW_CHARS = 800
+STATE_CHANGING_TOOLS = frozenset({
+    "apply_patch", "exec_command", "write_stdin",
+    "edit_file", "write_file", "editor_save", "explorer_edit", "todo_edit", "project_config_edit",
+    "run_terminal_command", "terminal_execute", "terminal_control", "git_change",
+    "python", "git", "pytest", "pip",
+    "assign_team", "delegate_task", "browser_control", "browser_navigate",
+})
+FILE_READ_TOOLS = frozenset({"read_file", "read_document"})
+# These actions may modify files even when they fail or return no output.
+FILE_READ_INVALIDATORS = STATE_CHANGING_TOOLS | frozenset({
+    "run_project_tests", "run_executable", "open_application", "run_admin_command",
+    "accept_proposal", "reconcile_edit", "finish_stage", "ask_user", "apply_patch",
+    "exec_command", "write_stdin",
+})
 LOOKUP_TOOL = {"type": "function", "function": {
-    "name": "lookup_tools", "description": "Схемы инструментов IDE и MCP по имени или описанию. Пустой запрос — список имён.",
+    "name": "lookup_tools", "description": "Схемы дополнительных инструментов по имени или описанию. Для вызова используй call_tool.",
     "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}}
+CALL_TOOL = {"type": "function", "function": {
+    "name": "call_tool", "description": "Вызвать дополнительный инструмент по схеме из lookup_tools.",
+    "parameters": {"type": "object", "properties": {
+        "name": {"type": "string"}, "arguments": {"type": "object", "additionalProperties": True}},
+        "required": ["name", "arguments"]}}}
+
+
 
 RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 RETRY_ATTEMPTS = 4
@@ -89,6 +111,9 @@ class AgentUsage:
     def add(self, usage: Optional[Dict[str, Any]]) -> None:
         if not isinstance(usage, dict):
             return
+        incoming = input_tokens(usage)
+        if incoming is not None:
+            self.values["measured_input_tokens"] = self.values.get("measured_input_tokens", 0) + incoming
         for key in USAGE_KEYS:
             value = usage.get(key)
             if isinstance(value, (int, float)):
@@ -155,7 +180,7 @@ class AgentResult:
     usage: Dict[str, int]
     rounds: int
     tool_runs: List[ToolRun] = field(default_factory=list)
-    stop_reason: str = "answer"  # answer | stopped | empty
+    stop_reason: str = "answer"  # answer | stopped | stalled | empty
     truncated: bool = False
 
 
@@ -178,32 +203,41 @@ class AgentHarness:
         tool_result_limit: int = MAX_TOOL_RESULT_CHARS,
         unlimited_rounds: bool = False,
         round_budget: Optional[RoundBudget] = None,
+        on_request: Optional[Callable[[], None]] = None,
+        read_version: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
     ):
         self.service = service
         self.tools = list(tools or [])
         self._deferred = {}
         names = {t.get("function", {}).get("name") for t in self.tools}
-        if len(names) > 18 and names.isdisjoint({"discover_tools", "lookup_tools"}):
-            common = {"read_file", "search_in_project", "list_directory", "edit_file", "write_file",
-                      "run_terminal_command", "run_project_tests", "assign_team", "ask_user",
-                      "delegate_task", "accept_proposal", "optimize_team", "read_local_evidence"}
+        if len(names) > 18 and names.isdisjoint({"lookup_tools", "call_tool"}):
+            common = {"read_file", "read_document", "search_in_project", "list_directory", "edit_file", "write_file",
+                      "find_files", "apply_patch", "exec_command", "write_stdin", "view_image",
+                      "run_terminal_command", "terminal_execute", "terminal_output", "terminal_control", "run_project_tests",
+                      "assign_team", "ask_user",
+                      "delegate_task", "accept_proposal", "optimize_team", "read_local_evidence",
+                      "finish_stage", "discover_tools", "read_previous_result"}
             self._deferred = {t["function"]["name"]: t for t in self.tools
                               if t.get("function", {}).get("name") and t["function"]["name"] not in common}
             self.tools = [t for t in self.tools if t.get("function", {}).get("name") not in self._deferred]
-            self.tools.append(LOOKUP_TOOL)
-        from services.local_evidence import LocalEvidence
+            self.tools.extend((LOOKUP_TOOL, CALL_TOOL))
         self.evidence = getattr(service, "_team_evidence", None) or LocalEvidence()
         if self.tools:
             self.enable_evidence_tool()
+            self.tools.extend(tool for tool in CONTEXT_TOOLS if tool["function"]["name"] not in names)
         self.tool_runner = tool_runner
         self.on_text = on_text
         self.on_reasoning = on_reasoning
         self.on_usage = on_usage
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
+        self.on_request = on_request
         self.should_stop = should_stop or (lambda: False)
         self.tool_result_limit = int(tool_result_limit)
         self._observations = {}
+        self._file_reads = {}
+        self.context = AgentContext()
+        self.read_version = read_version
 
     def enable_evidence_tool(self) -> None:
         from services.local_evidence import READ_EVIDENCE_TOOL
@@ -215,10 +249,16 @@ class AgentHarness:
     def run(self, messages: List[Dict[str, Any]]) -> AgentResult:
         messages = list(messages)
         self._observations.clear()
-        usage = AgentUsage()
+        self._file_reads.clear()
+        self.context = AgentContext()
+        usage = self.usage = AgentUsage()
         runs: List[ToolRun] = []
         seen_calls: Dict[str, int] = {}
-        discovery_results: list[tuple[int, int]] = []
+        observations = set()
+        stalled_rounds = 0
+        tool_results: list[tuple[int, int]] = []
+        previews = {}
+        turn_starts = []
         rounds = 0
         stop_reason = "answer"
         # Text said *before* a tool call is narration ("читаю файл, проверяю…"),
@@ -231,23 +271,25 @@ class AgentHarness:
             if self.should_stop():
                 stop_reason = "stopped"
                 break
-            rounds += 1
-
-            request = self._request_messages(messages, discovery_results, rounds, self.evidence)
+            request = self._request_messages(
+                messages, tool_results, rounds + 1, self.evidence, turn_starts, self.tools, previews,
+                context=self.context,
+            )
+            self.context.request_bytes = request_size(request, self.tools)
             text, calls = self._one_round(request, usage)
+            rounds += 1
             if self.should_stop():
                 narration = text or narration
                 stop_reason = "stopped"
                 break
 
-            if getattr(self.service, "_team_role", None) and self.service.truncated and calls:
-                raise AIError("Ответ этапа достиг лимита токенов. Неполные команды пропущены.")
+            if self.service.truncated and calls:
+                raise AIError("Ответ достиг лимита токенов. Неполные команды пропущены.")
 
             if not calls:
                 answer = text
                 if self.service.truncated:
-                    answer = self._join(answer,
-                                        self._extend_truncated(request, answer, usage))
+                    answer = self._join(answer, self._extend_truncated(request, answer, usage))
                 if self.should_stop():
                     narration = answer or narration
                     stop_reason = "stopped"
@@ -258,26 +300,60 @@ class AgentHarness:
 
             if text.strip():
                 narration = text
+            turn_starts.append(len(messages))
             messages = self._append_assistant_turn(messages, text, calls)
+            images = []
+            progressed = False
             for call in calls:
                 if self.should_stop():
                     break
-                self._handle_call(messages, call, runs, seen_calls)
-                if call.name not in DISCOVERY_TOOLS and call.name != "read_local_evidence":
-                    # An edit/command can change files. Allow a fresh read even
-                    # if the same range was already requested several times.
-                    seen_calls.clear()
-                if call.name in TEXT_OBSERVATIONS and runs[-1].ok:
-                    discovery_results.append((len(messages) - 1, rounds))
+                resolved = self._resolve_call(call)
+                result_index = len(messages)
+                signature, run = self._handle_call(messages, resolved, runs, seen_calls)
+                if len(messages) > result_index + 1:
+                    images.append(messages.pop())
+                tool_results.append((result_index, rounds))
+                if resolved.name in {"exec_command", "write_stdin"} and run.ok:
+                    try:
+                        if json.loads(run.output).get("completed") is False:
+                            progressed = True  # A bounded command is still making progress in the OS.
+                    except (ValueError, AttributeError):
+                        pass
+                if run.ok and not run.repeated and run.output and not run.output.startswith((
+                    "Результат не изменился", "Файл уже содержит запрошенный текст",
+                )):
+                    digest = hashlib.sha256(run.output.encode("utf-8", errors="replace")).digest()
+                    observation = (resolved.name, signature, digest)
+                    if observation in observations:
+                        continue
+                    progressed = True
+                    observations.add(observation)
+                    if resolved.name in STATE_CHANGING_TOOLS:
+                        seen_calls.clear()
+                        observations = {item for item in observations if item[0] in STATE_CHANGING_TOOLS}
+            messages.extend(images)
+            stalled_rounds = 0 if progressed else stalled_rounds + 1
+            if stalled_rounds >= STALLED_ROUND_LIMIT and not self.should_stop():
+                stop_reason = "stalled"
+                answer = STALLED_NOTICE
+                logger.info("AI tool loop stalled: rounds=%d recent_tools=%s",
+                            rounds, ",".join(run.name for run in runs[-8:]))
+                break
 
         if stop_reason == "stopped":
             answer = answer or narration
+        measured = usage.as_dict()
+        incoming = input_tokens(measured)
+        cached = measured.get("cache_read_input_tokens")
+        logger.info("AI task: rounds=%d input_tokens=%s cached_tokens=%s cache_hit_rate=%s total_tokens=%s stop=%s",
+                    rounds, incoming, cached, f"{cached / incoming:.1%}" if incoming and cached is not None else None,
+                    total_tokens(measured), stop_reason)
         if not answer.strip() and stop_reason == "answer":
             stop_reason = "empty"
         return AgentResult(
             text=answer,
             messages=messages,
-            usage=usage.as_dict(),
+            usage=measured,
             rounds=rounds,
             tool_runs=runs,
             stop_reason=stop_reason,
@@ -285,81 +361,106 @@ class AgentHarness:
         )
 
     @staticmethod
-    def _request_messages(messages: List[Dict[str, Any]],
-                          discovery_results: list[tuple[int, int]],
-                          round_number: int, evidence=None) -> List[Dict[str, Any]]:
+    def _request_messages(messages, tool_results, round_number, evidence=None, turn_starts=(), tools=(),
+                          previews=None, context=None):
         request = list(messages)
-        # Keep file contents available across rounds while the request fits.
-        # Age alone must not force another network round trip to reread a file.
-        from services.ai_context import PROJECT_CONTEXT_BYTES
-        if evidence is None and len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) <= PROJECT_CONTEXT_BYTES:
-            return request
-        remaining = RECENT_DISCOVERY_CHARS
-        names = {c.get('id'):c.get('function', {}).get('name')
-                 for m in messages for c in m.get('tool_calls', [])}
-        for message in messages:
-            if isinstance(message.get('content'), list):
-                for item in message['content']:
-                    if isinstance(item, dict) and item.get('type') == 'tool_use':
-                        names[item.get('id')] = item.get('name')
-        source_remaining = 24_000
-        for index, result_round in reversed(discovery_results):
+        evidence = evidence if evidence is not None else LocalEvidence()
+        previews = previews if previews is not None else {}
+        context = context if context is not None else AgentContext()
+        force = context.force_compaction
+        # Keep the first observation and reference it in later identical results.
+        # File reads are reused within a run until an action invalidates them.
+        first_observation = {}
+        for index, _ in tool_results:
+            message = messages[index]
+            preceding = messages[index - 1] if index else {}
+            calls = preceding.get("tool_calls", [])
+            if not any(call.get("id") == message.get("tool_call_id") and
+                       call.get("function", {}).get("name") in
+                       {"read_file", "read_document", "search_in_project", "list_directory"}
+                       for call in calls):
+                continue
+            content = message["content"]
+            block = content[0] if isinstance(content, list) else None
+            output = block["content"] if block is not None else content
+            if not isinstance(output, str):
+                continue
+            first = first_observation.setdefault(output, message.get("tool_call_id", str(index)))
+            if first != message.get("tool_call_id", str(index)):
+                evidence_id = evidence.put(output)
+                reference = (f"Same result as tool call {first}; "
+                             f"full result: read_local_evidence(id='{evidence_id}').")
+                request[index] = {**message, "content": [{**block, "content": reference}] if block else reference}
+        remaining = RECENT_TOOL_CHARS
+        for index, result_round in reversed(tool_results):
+            if request[index] is not messages[index]:
+                continue
             message = messages[index]
             content = message["content"]
             block = content[0] if isinstance(content, list) else None
             output = block["content"] if block is not None else content
-            size = len(output)
-            call_id = block.get('tool_use_id') if block is not None else message.get('tool_call_id')
-            if names.get(call_id) == 'read_file' and round_number - result_round <= 2 and size <= source_remaining:
-                source_remaining -= size
+            if not isinstance(output, str):
                 continue
-            if result_round == round_number - 1 and names.get(call_id) == "read_local_evidence":
-                continue  # Deliver the exact range the model just requested.
-            if result_round == round_number - 1:
-                limit = MAX_DISCOVERY_RESULT_CHARS
-            elif round_number - result_round <= RECENT_DISCOVERY_ROUNDS and size <= remaining:
-                limit = remaining
-            else:
-                limit = DISCOVERY_PREVIEW_CHARS
-            if size <= limit:
-                remaining -= size
-                continue
-            half = limit // 2
-            remaining -= limit
-            preview = (
-                output[:half] + f"\n… [Сокращён результат: пропущено {size - 2 * half} символов. "
-                "При необходимости запроси только нужный фрагмент.]\n" + output[-half:]
-            )
-            if evidence is not None:
-                preview = evidence.preview(output, limit)
-            if block is not None:
-                preview = [{**block, "content": preview}]
-            request[index] = {**message, "content": preview}
-        return AgentHarness._archive_completed_edits(request, evidence)
+            recent = result_round == round_number - 1
+            limit = max(DISCOVERY_PREVIEW_CHARS, min(MAX_EVIDENCE_PAGE + 160, remaining)) if recent else DISCOVERY_PREVIEW_CHARS
+            preview = output
+            if len(output) > limit:
+                key = (index, limit)
+                if key not in previews:
+                    previews[key] = evidence.preview(output, limit)
+                preview = previews[key]
+            if recent:
+                remaining -= len(preview)
+            if preview != output:
+                request[index] = {**message, "content": [{**block, "content": preview}] if block else preview}
+
+        if not force and request_size(request, tools) <= CONTEXT_COMPACTION_BYTES:
+            return request
+        compact = AgentHarness._archive_completed_edits(request, evidence)
+        if not force and request_size(compact, tools) <= CONTEXT_COMPACTION_BYTES:
+            return compact
+        if turn_starts:
+            # Drop whole exchanges to preserve the provider's tool call/result
+            # pairing. The original task and any attached data stay in place.
+            prefix = request[:turn_starts[0]]
+            starts = turn_starts[-1:] if force else turn_starts[1:]
+            for start in starts:
+                archived = messages[turn_starts[0]:start]
+                note = {"role": "assistant", "content": context.checkpoint(archived, evidence, commit=False)}
+                candidate = prefix + [note] + request[start:]
+                if start == turn_starts[-1] or request_size(candidate, tools) <= CONTEXT_COMPACTION_BYTES:
+                    note["content"] = context.checkpoint(archived, evidence)
+                    return candidate
+        return compact
 
     @staticmethod
     def _archive_completed_edits(messages, evidence):
-        """Keep exact patches locally once acknowledged; preserve tool-call groups."""
-        if evidence is None:
-            return messages
-        results = {m.get('tool_call_id'): m for m in messages if m.get('role') == 'tool'}
-        turns = [i for i, m in enumerate(messages) if m.get('tool_calls')]
-        eligible = set(turns[:-2])
+        """Keep exact patches locally once acknowledged and preserve tool-call groups."""
+        turns = [i for i, message in enumerate(messages) if message.get("tool_calls")]
         replacements, removed = {}, set()
-        for index in eligible:
-            calls = messages[index]['tool_calls']
-            if any(c.get('function', {}).get('name') not in {'edit_file', 'write_file'} for c in calls):
+        for index, end in zip(turns[:-2], turns[1:-1]):
+            calls = messages[index]["tool_calls"]
+            if any(call["function"]["name"] not in {"edit_file", "write_file"} for call in calls):
                 continue
-            outputs = [results.get(c.get('id')) for c in calls]
-            if any(not m or not isinstance(m.get('content'), str) or not m['content'].startswith(('Изменён файл', 'Обновлён файл', 'Создан файл')) for m in outputs):
+            responses = [(i, messages[i]) for i in range(index + 1, end) if messages[i].get("role") == "tool"]
+            if len(responses) != len(calls) or {message["tool_call_id"] for _, message in responses} != {
+                call["id"] for call in calls
+            }:
                 continue
-            payload = json.dumps({'tool_calls': calls, 'results': outputs}, ensure_ascii=False)
+            outputs = [message for _, message in responses]
+            if any(not output["content"].startswith(("Изменён файл", "Обновлён файл", "Создан файл"))
+                   for output in outputs):
+                continue
+            payload = json.dumps({"tool_calls": calls, "results": outputs}, ensure_ascii=False)
             if len(payload) < 1200:
                 continue
             key = evidence.put(payload)
-            replacements[index] = {'role': 'assistant', 'content': 'Подтверждённые правки: ' + '; '.join(m['content'] for m in outputs) + f' Полные исторические аргументы: read_local_evidence(id={key!r}). Для текущего состояния читай файл.'}
-            removed.update(c['id'] for c in calls)
-        return [replacements.get(i, m) for i, m in enumerate(messages) if not (m.get('role') == 'tool' and m.get('tool_call_id') in removed)]
+            summary = "\n".join(output["content"] for output in outputs)
+            replacements[index] = {"role": "assistant", "content": (
+                f"Подтверждённые правки.\n{summary}\nАргументы доступны через read_local_evidence(id={key!r})."
+            )}
+            removed.update(i for i, _ in responses)
+        return [replacements.get(i, message) for i, message in enumerate(messages) if i not in removed]
 
     @staticmethod
     def _join(first: str, second: str) -> str:
@@ -377,44 +478,51 @@ class AgentHarness:
     # ------------------------------------------------------------------
     def _one_round(self, messages: List[Dict[str, Any]],
                    usage: AgentUsage) -> tuple[str, List[ToolCall]]:
-        for definition in getattr(self.service, '_discovered_tools', ()):
-            name = definition.get('function', {}).get('name')
-            if name and not any(d.get('function', {}).get('name') == name for d in self.tools):
-                self.tools.append(definition)
-        last_error: Optional[Exception] = None
         for attempt in range(RETRY_ATTEMPTS):
             if self.should_stop():
                 return "", []
+            self.service.last_usage = {}
+            text = ""
+            started = time.monotonic()
+            if self.on_request:
+                self.on_request()
             try:
                 if self.service.is_anthropic:
                     blocks, calls = self.service._anthropic_tool_round(
                         messages, self.tools, self._text_callback, self._reasoning_callback)
-                    usage.add(self.service.last_usage)
-                    if self.on_usage:
-                        self.on_usage(dict(self.service.last_usage))
                     text = "".join(
                         str(block.get("text") or "")
                         for block in blocks
                         if isinstance(block, dict) and block.get("type") == "text")
                     if calls:
-                        # Keep the assistant turn (text + tool_use) for the next round.
                         self._pending_blocks = blocks
-                    return text, calls
-                text, calls = self.service._openai_tool_round(
-                    messages, self.tools, self._text_callback, self._reasoning_callback)
-                usage.add(self.service.last_usage)
-                if self.on_usage:
-                    self.on_usage(dict(self.service.last_usage))
+                else:
+                    text, calls = self.service._openai_tool_round(
+                        messages, self.tools, self._text_callback, self._reasoning_callback)
                 return text, calls
             except (AIError, ConnectionError, IncompleteRead, TimeoutError) as exc:
-                last_error = exc if isinstance(exc, AIError) else AIError(
+                error = exc if isinstance(exc, AIError) else AIError(
                     f"Соединение с API прервано: {exc}", retryable=True)
-                if not self._is_retryable(last_error) or attempt >= RETRY_ATTEMPTS - 1:
-                    if last_error is exc:
+                logger.warning("AI request failed: attempt=%d error=%s", attempt + 1, error)
+                if not self._is_retryable(error) or attempt >= RETRY_ATTEMPTS - 1:
+                    if error is exc:
                         raise
-                    raise last_error from exc
-                self._sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
-        raise last_error or AIError("Не удалось выполнить запрос к модели.")
+                    raise error from exc
+            finally:
+                value = self.service.last_usage
+                usage.add(value)
+                logger.info("AI request: attempt=%d seconds=%.2f input_tokens=%s",
+                            attempt + 1, time.monotonic() - started, input_tokens(value))
+                if self.on_usage and value:
+                    self.on_usage(dict(value))
+            self._sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
+
+    def _resolve_call(self, call):
+        if call.name == "call_tool" and isinstance(call.arguments, dict):
+            name, args = call.arguments.get("name"), call.arguments.get("arguments")
+            if isinstance(name, str) and name in self._deferred and isinstance(args, dict):
+                return ToolCall(call.id, name, args)
+        return call
 
     def _text_callback(self, piece: str) -> None:
         if self.on_text and not self.should_stop():
@@ -461,7 +569,7 @@ class AgentHarness:
                                    "name": call.name, "input": call.arguments})
             messages.append({"role": "assistant", "content": blocks})
         else:
-            messages.append({
+            assistant_turn: Dict[str, Any] = {
                 "role": "assistant",
                 "content": text or "",
                 "tool_calls": [
@@ -469,21 +577,62 @@ class AgentHarness:
                      "function": {"name": call.name,
                                   "arguments": json.dumps(call.arguments, ensure_ascii=False)}}
                     for call in calls],
-            })
+            }
+            # Thinking-mode providers must receive the reasoning of the turn
+            # back together with its tool calls, otherwise they answer 400.
+            # DeepSeek thinks by default and wants the field even when the
+            # round produced no visible reasoning at all (empty string).
+            reasoning = (getattr(self.service, "last_reasoning", "") or "").strip()
+            if reasoning or getattr(self.service, "reasoning_required", False):
+                assistant_turn["reasoning_content"] = reasoning
+            messages.append(assistant_turn)
         return messages
 
     def _handle_call(self, messages: List[Dict[str, Any]], call: ToolCall,
-                     runs: List[ToolRun], seen_calls: Dict[str, int]) -> None:
-        signature = call.name + "|" + json.dumps(call.arguments or {},
-                                                 sort_keys=True, ensure_ascii=False)
+                     runs: List[ToolRun], seen_calls: Dict[str, int]) -> tuple[str, ToolRun]:
+        args = dict(call.arguments or {})
+        if call.name in FILE_READ_TOOLS:
+            # Explicit defaults must not bypass the duplicate-read guard.
+            try:
+                if call.name == "read_file":
+                    args["offset"] = max(1, int(args.get("offset") or 1))
+                    args["limit"] = 200 if args.get("limit") is None else max(0, int(args["limit"]))
+                    args["column"] = max(0, int(args.get("column", 0)))
+                else:
+                    args.setdefault("offset", 1)
+                    args.setdefault("limit", 5)
+            except (TypeError, ValueError, OverflowError):
+                # Let the tool report invalid arguments through its usual error path.
+                args = dict(call.arguments or {})
+        cacheable = True
+        signature_args = args
+        if call.name in FILE_READ_TOOLS and self.read_version is not None:
+            try:
+                signature_args = {"arguments": args, "version": self.read_version(call.name, args)}
+            except Exception:
+                # Missing files, closing UI or changed permissions must reach the real tool.
+                cacheable = False
+        arguments = json.dumps(signature_args, sort_keys=True, ensure_ascii=False)
+        signature = hashlib.sha256(f"{call.name}|{arguments}".encode("utf-8", errors="replace")).hexdigest()
+        previous_read = self._file_reads.get(signature) if cacheable else None
+        if previous_read is not None:
+            first_call, evidence_id = previous_read
+            output = (f"Этот фрагмент уже прочитан в вызове {first_call}. Повторное чтение не выполнено. "
+                      "Используй полученные данные и продолжай работу. "
+                      f"Сохранённый результат: read_local_evidence(id={evidence_id!r}).")
+            self._append_tool_result(messages, call, output)
+            run = ToolRun(call.name, call.arguments, output, repeated=True)
+            self._record_tool_run(runs, run)
+            return signature, run
         seen_calls[signature] = seen_calls.get(signature, 0) + 1
-        repeated = call.name != "read_local_evidence" and seen_calls[signature] > SAME_CALL_LIMIT
+        repeated = call.name != "write_stdin" and seen_calls[signature] > SAME_CALL_LIMIT
 
         if repeated:
             output = self._repeat_notice(call)
             self._append_tool_result(messages, call, output)
-            runs.append(ToolRun(call.name, call.arguments, output, ok=False, repeated=True))
-            return
+            run = ToolRun(call.name, call.arguments, output, ok=False, repeated=True)
+            self._record_tool_run(runs, run)
+            return signature, run
 
         if self.on_tool_start:
             try:
@@ -492,21 +641,31 @@ class AgentHarness:
                 pass
 
         started = time.perf_counter()
+        if call.name in FILE_READ_INVALIDATORS:
+            self._file_reads.clear()
         ok = True
-        if call.name == "lookup_tools" and self._deferred:
+        if call.name in CONTEXT_TOOL_NAMES:
+            try:
+                output = self.context.call(call.name, call.arguments, self.evidence)
+            except (TypeError, ValueError) as exc:
+                output, ok = f"Ошибка контекста: {exc}", False
+        elif call.name == "lookup_tools" and self._deferred:
             query = str(call.arguments.get("query", "")).strip().casefold()
             matches = [name for name, tool in self._deferred.items()
                        if query in name.casefold() or query in tool["function"].get("description", "").casefold()]
             if query in self._deferred:
                 matches = [query]
-            if query and len(matches) <= 5:
-                self.tools.extend(self._deferred[name] for name in matches if self._deferred[name] not in self.tools)
-            output = json.dumps(matches, ensure_ascii=False)
-            if query and len(matches) > 5:
+            output = json.dumps([self._deferred[name]["function"] for name in matches]
+                                if query and len(matches) <= 5 else matches, ensure_ascii=False)
+            if not query or len(matches) > 5:
                 output += " Уточни имя для получения схемы."
+            ok = bool(matches)
+        elif call.name == "call_tool":
+            output, ok = "Ошибка: укажи имя доступного инструмента и аргументы из его схемы.", False
         elif call.name == "read_local_evidence":
             try:
-                output = self.evidence.read(**call.arguments)
+                output = self.evidence.read(**call.arguments, page_limit=MAX_EVIDENCE_PAGE,
+                                            should_stop=self.should_stop)
             except (KeyError, TypeError, ValueError) as exc:
                 output, ok = f"Ошибка чтения локального результата: {exc}", False
         elif self.tool_runner is None:
@@ -521,11 +680,20 @@ class AgentHarness:
         duration_ms = int((time.perf_counter() - started) * 1000)
 
         image_data = output if isinstance(output, dict) and "__image__" in output else None
-        text = ("Снимок экрана передан модели." if image_data else
+        text = (image_data.get("description", "Снимок экрана передан модели.") if image_data else
                 "" if output is None else str(output))
+        if text.startswith(("Ошибка MCP CodeLane:", "Ошибка:", "Ошибка правки:", "Неизвестный инструмент.")):
+            ok = False
+        if call.name == "apply_patch" and ok:
+            try:
+                ok = json.loads(text).get("ok", False)
+            except (ValueError, AttributeError):
+                ok = False
+        if ok and cacheable and call.name in FILE_READ_TOOLS and not image_data:
+            self._file_reads[signature] = (call.id, self.evidence.put(text))
         if call.name != "read_local_evidence" and len(text) > self.tool_result_limit:
             text = self.evidence.preview(text, self.tool_result_limit)
-        if ok and call.name in {"read_file", "search_in_project"} and len(text) > 1200:
+        if ok and call.name == "search_in_project" and len(text) > 1200:
             previous = self._observations.get(signature)
             if previous and previous[0] == text:
                 # Still execute the tool to check freshness, but send the same
@@ -547,10 +715,14 @@ class AgentHarness:
                 ]
             else:
                 messages.append({"role": "user", "content": [
-                    {"type": "text", "text": "Снимок экрана после вызова capture_screen."},
+                    {"type": "text", "text": text},
                     {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}},
                 ]})
         run = ToolRun(call.name, call.arguments, text, ok=ok, duration_ms=duration_ms)
+        self._record_tool_run(runs, run)
+        return signature, run
+
+    def _record_tool_run(self, runs, run):
         runs.append(run)
         if self.on_tool_end:
             try:
@@ -581,11 +753,11 @@ class AgentHarness:
         """Continue a text answer that hit the provider's output ceiling."""
         def record_usage(value):
             usage.add(value)
-            if self.on_usage:
+            if self.on_usage and value:
                 self.on_usage(dict(value))
 
         working = list(messages) + [
-            {"role": "assistant", "content": partial},
+            {"role": "assistant", "content": partial[-12_000:]},
             {"role": "user", "content": self.service._continue_prompt()},
         ]
         return self.service._stream_until_complete(

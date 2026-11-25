@@ -20,6 +20,8 @@ jedi>=0.19
 # иногда урезано, и проверка сертификата api.deepseek.com падает с
 # CERTIFICATE_VERIFY_FAILED. См. utils/tls.py.
 certifi>=2024.2.2
+# Project agent searches cancel expensive regular-expression matches.
+regex>=2026.11.23
 
 # Database workspace
 SQLAlchemy>=2.0,<3

@@ -10,7 +10,7 @@ from PyQt6.QtGui import QColor, QFont, QIcon, QPalette
 from PyQt6.QtWidgets import QApplication
 
 from core.logging_config import get_logger
-from design.themes import THEMES
+from design.themes import THEMES, terminal_colors
 from utils.settings_manager import get_settings_manager
 
 logger = get_logger("styling")
@@ -176,6 +176,7 @@ def _load_design_qss(base_path: Path) -> str:
             "@agent_panel@": "#f1f2f7" if light else "#202127",
             "@agent_card@": "#ffffff" if light else "#292b33",
             "@agent_edge@": "#d9dbe5" if light else "#393b46",
+            "@agent_composer_edge@": "#9a9daa" if light else "#777a88",
             "@agent_accent@": "#67569d" if light else "#b8a9eb",
             "@agent_tint@": "#eae6f5" if light else "#322e40",
             "@glass_surface@": tint(0.035),
@@ -196,6 +197,8 @@ def _load_design_qss(base_path: Path) -> str:
         }
         for token, value in glass_tokens.items():
             qss = qss.replace(token, value)
+        for role, value in terminal_colors(theme).items():
+            qss = qss.replace(f"@terminal_{role}@", value)
         # Typography tokens: the family is resolved once and substituted here so
         # every rule uses the same interface font.
         qss = qss.replace("@ui_font@", resolve_ui_font())
@@ -234,12 +237,13 @@ QToolButton#aiAccessMode, QToolButton#aiScopeButton, QToolButton#aiModelButton {
     font-size: {chip_px}px;
 }}
 QLabel#aiStatsLine {{ font-size: {max(13, chip_px)}px; }}
-QPlainTextEdit, QTextEdit#codeEditor, QTextEdit#terminalScreen {{
+QPlainTextEdit, QTextEdit#codeEditor {{
     background: {editor_background};
     color: {text_primary};
     font-family: '{editor_font}';
     font-size: {editor_font_size}pt;
 }}
+QTextEdit#terminalScreen {{ font-family: '{editor_font}'; font-size: {editor_font_size}pt; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: {input_background}; color: {text_primary}; }}
 QTabWidget#editorGroupPrimary QTabBar::tab, QTabWidget#editorGroupSecondary QTabBar::tab {{
     min-height: {tab_height}px;

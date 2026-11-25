@@ -302,10 +302,10 @@ def test_bad_arguments_are_reported():
 
 def test_access_modes_enforced_at_dispatch():
     expected = {
-        "read_only": {"read_file", "open_file", "list_directory", "search_in_project"},
-        "write_only": {"write_file", "edit_file"},
+        "read_only": {"read_file", "read_document", "open_file", "list_directory", "search_in_project", "process_monitor"},
+        "write_only": {"write_file", "edit_file", "apply_patch", "process_monitor"},
         "full": {d["function"]["name"] for d in TOOL_DEFINITIONS} - WORKBENCH_TOOLS.keys() - {"capture_screen"},
-        "invalid": {"read_file", "open_file", "list_directory", "search_in_project"},
+        "invalid": {"read_file", "read_document", "open_file", "list_directory", "search_in_project", "process_monitor"},
     }
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -314,7 +314,7 @@ def test_access_modes_enforced_at_dispatch():
         for mode, allowed in expected.items():
             box, approvals = _toolbox(root, access_mode=mode)
             if mode in ("read_only", "invalid"):
-                allowed = allowed | {"editor_state", "editor_cursor", "workspace_state"}
+                allowed = allowed | {"editor_state", "editor_cursor", "workspace_state", "find_files", "view_image"}
             assert {d["function"]["name"] for d in box.definitions()} == allowed
             for definition in TOOL_DEFINITIONS:
                 name = definition["function"]["name"]
@@ -360,6 +360,65 @@ def test_project_test_tool_uses_local_runner(tmp_path):
     box.run_terminal_command = lambda command, timeout_sec=30: commands.append(command) or "Код возврата: 0"
     assert box.run("run_project_tests", "{}") == "Код возврата: 0"
     assert "pytest" in commands[0] and " -q" in commands[0]
+
+
+def test_python_pytest_and_pip_tools_build_project_commands(tmp_path):
+    box, approvals = _toolbox(tmp_path, access_mode="full")
+    commands = []
+    box.run_terminal_command = lambda command, timeout_sec=30: commands.append(command) or "Код возврата: 0"
+
+    assert box.run("python", json.dumps({"code": "print(40 + 2)"})) == "Код возврата: 0"
+    assert "-c \"print(40 + 2)\"" in commands[-1] or "-c" in commands[-1]
+    (tmp_path / "tool.py").write_text("print('hi')\n", encoding="utf-8")
+    box.run("python", json.dumps({"path": "tool.py", "args": "--fast"}))
+    assert commands[-1].endswith("tool.py --fast")
+
+    box.run("pytest", "{}")
+    assert "-m pytest -q" in commands[-1]
+    box.run("pytest", json.dumps({"target": "tests", "args": "-k agent"}))
+    assert "-m pytest" in commands[-1] and "tests -k agent" in commands[-1]
+
+    box.run("pip", json.dumps({"action": "install", "packages": "pytest requests"}))
+    assert "-m pip install pytest requests" in commands[-1]
+    box.run("pip", json.dumps({"action": "list"}))
+    assert "-m pip list" in commands[-1]
+    assert approvals == []
+
+
+def test_python_and_pip_tools_validate_arguments(tmp_path):
+    import pytest
+
+    box, _ = _toolbox(tmp_path, access_mode="full")
+    box.run_terminal_command = lambda command, timeout_sec=30: "Код возврата: 0"
+    with pytest.raises(ToolError, match="либо code"):
+        box.run("python", "{}")
+    with pytest.raises(ToolError, match="packages"):
+        box.run("pip", json.dumps({"action": "install"}))
+    with pytest.raises(ToolError, match="Действие pip"):
+        box.run("pip", json.dumps({"action": "publish"}))
+    with pytest.raises(ToolError, match="timeout_sec"):
+        box.run("pytest", json.dumps({"timeout_sec": "10"}))
+
+
+def test_git_tool_runs_allowed_subcommand_only(tmp_path, monkeypatch):
+    import pytest
+
+    box, _ = _toolbox(tmp_path, access_mode="full")
+    commands = []
+    box.run_terminal_command = lambda command, timeout_sec=30: commands.append(command) or "Код возврата: 0"
+    monkeypatch.setattr(box, "_git_executable", lambda: "git")
+    assert box.run("git", json.dumps({"args": "status --short"})) == "Код возврата: 0"
+    assert commands[-1].endswith("git status --short")
+    with pytest.raises(ToolError, match="не поддерживается"):
+        box.run("git", json.dumps({"args": "filter-branch --all"}))
+    with pytest.raises(ToolError, match="аргументы git"):
+        box.run("git", "{}")
+
+
+def test_toolchain_tools_require_full_access(tmp_path):
+    box, _ = _toolbox(tmp_path, access_mode="read_only")
+    names = {item["function"]["name"] for item in box.definitions()}
+    assert {"python", "git", "pytest", "pip"}.isdisjoint(names)
 
 
 def test_screen_capture_full_access_skips_app_confirmation(tmp_path):
@@ -438,7 +497,8 @@ def test_git_agent_handles_repository_before_first_commit(tmp_path):
 
     def run(args, *, root):
         completed = subprocess.run(
-            [git, *args], cwd=root, capture_output=True, text=True, encoding="utf-8", check=False,
+            [git, *args], cwd=root, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False,
         )
         return completed.returncode == 0, (completed.stdout or completed.stderr).strip()
 
@@ -544,3 +604,134 @@ def test_default_read_is_bounded_and_can_continue(tmp_path):
     assert 'line 201\n' in second and 'line 400' in second
     whole = box.read_file('large.py', limit=0)
     assert 'line 500' in whole and 'Достигнут предел' not in whole
+
+
+def test_mcp_reads_pdf_in_pages_even_when_the_model_calls_read_file(tmp_path):
+    import pymupdf
+
+    from services.ide_mcp import IDEMCP
+
+    path = tmp_path / "notes.pdf"
+    with pymupdf.open() as pdf:
+        for index in range(7):
+            pdf.new_page().insert_text((24, 24), f"Page {index + 1}")
+        pdf.save(path)
+
+    local = IDEMCP(LocalToolbox(str(tmp_path), access_mode="read_only"))
+    names = {tool["name"] for tool in local.list_tools()}
+    assert "read_document" in names
+    first = json.loads(local.call("read_file", {"path": path.name, "limit": 200}))
+    assert first["unit"] == "page"
+    assert [page["page"] for page in first["items"]] == [1, 2, 3, 4, 5]
+    assert first["next_offset"] == 6
+    later = json.loads(local.call("read_document", {"path": path.name, "offset": 6}))
+    assert "Page 6" in later["items"][0]["text"] and later["next_offset"] is None
+
+    restricted = IDEMCP(LocalToolbox(str(tmp_path), access_mode="write_only"))
+    assert "Ошибка MCP CodeLane" in restricted.call("read_document", {"path": path.name})
+
+
+def test_spreadsheet_read_yields_a_range_and_next_offset(tmp_path):
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    path = tmp_path / "rows.xlsx"
+    for i in range(1, 11):
+        workbook.active.append([f"value-{i}"])
+    workbook.save(path)
+    workbook.close()
+
+    box = LocalToolbox(str(tmp_path))
+    page = json.loads(box.read_document(path.name, offset=2, limit=2))
+    assert page["text"] == "1\tvalue-1\n2\tvalue-2"
+    assert page["next_offset"] == 4
+
+
+def test_read_document_accepts_markdown_and_reports_missing_path(tmp_path):
+    import pytest
+
+    (tmp_path / "README.md").write_text("# Report\nSecond line\n", encoding="utf-8")
+    box = LocalToolbox(str(tmp_path))
+    assert box.read_document("README.md", offset=2, limit=1).endswith("Second line")
+    with pytest.raises(ToolError, match="Файл не найден"):
+        box.read_document("missing.docx")
+
+
+def test_background_terminal_execute_routes_to_the_visible_terminal(tmp_path, monkeypatch):
+    import pytest
+
+    calls = []
+    box = LocalToolbox(str(tmp_path), ui_action=lambda name, args: calls.append((name, args)) or "ui started")
+    box.background = True
+    monkeypatch.setattr(box, "run_terminal_command",
+                        lambda *_: pytest.fail("terminal_execute was redirected to a hidden process"))
+    assert box.run("terminal_execute", '{"command":"echo ready","wait_seconds":0}') == "ui started"
+    assert calls == [("terminal_execute", {
+        "command": "echo ready", "wait_seconds": 0, "_project_root": str(tmp_path),
+    })]
+
+
+def test_windows_command_output_uses_the_oem_code_page(monkeypatch):
+    import ctypes
+    import os
+    from types import SimpleNamespace
+
+    import pytest
+
+    from core.subprocess_utils import decode_console_output
+
+    if os.name != "nt":
+        pytest.skip("Windows console encoding")
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(kernel32=SimpleNamespace(GetOEMCP=lambda: 866)))
+    message = "Команда не найдена."
+    assert decode_console_output(message.encode("cp866")) == message
+    assert decode_console_output(message.encode("utf-8")) == message
+
+
+def test_scratch_files_of_the_request_are_removed_on_close(tmp_path):
+    (tmp_path / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    (tmp_path / "tmp_keep.py").write_text("# файл пользователя\n", encoding="utf-8")
+    box = LocalToolbox(str(tmp_path))
+    box.write_file("tmp_script.py", "print('scratch')")
+    box.write_file("report.md", "# отчёт")
+    assert (tmp_path / "tmp_script.py").exists()
+
+    box.close()
+
+    assert not (tmp_path / "tmp_script.py").exists()
+    assert box.removed_temp_files == ["tmp_script.py"]
+    assert (tmp_path / "report.md").read_text(encoding="utf-8") == "# отчёт"
+    # Существовавший до запроса черновик пользователя остаётся.
+    assert (tmp_path / "tmp_keep.py").exists()
+    assert (tmp_path / "app.py").exists()
+
+
+def test_cleanup_covers_scratch_files_from_commands_in_subdirectories(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    box = LocalToolbox(str(tmp_path))
+    box.write_file("tmp_probe.py", "x")
+    # Так могла бы оставить файл запущенная агент командой.
+    (tmp_path / "pkg" / "tmp_deep.ps1").write_text("x", encoding="utf-8")
+
+    box.close()
+
+    assert set(box.removed_temp_files) == {"tmp_probe.py", "pkg/tmp_deep.ps1"}
+    assert not (tmp_path / "pkg" / "tmp_deep.ps1").exists()
+    assert (tmp_path / "pkg").is_dir()
+
+
+def test_cleanup_can_be_switched_off(tmp_path):
+    box = LocalToolbox(str(tmp_path), clean_temp_files=False)
+    box.write_file("tmp_script.py", "x")
+    box.close()
+    assert (tmp_path / "tmp_script.py").exists()
+    assert box.removed_temp_files == []
+
+
+def test_temporary_name_matches_drafts_only():
+    from services.temp_files import is_temporary_name
+
+    for name in ("tmp_ai.py", "tmp.py", "temp_scan.ps1", "scratch.txt", "_tmp.csv", "data.tmp", "~$report.docx"):
+        assert is_temporary_name(name), name
+    for name in ("template.py", "temperature.py", "attempt.py", "app.py", "tmp"):
+        assert not is_temporary_name(name), name

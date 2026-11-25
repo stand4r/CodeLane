@@ -896,14 +896,12 @@ class SettingsWidget(QtWidgets.QWidget):
         form.addRow('Температура', temp)
 
         tokens = QtWidgets.QSpinBox()
-        # 0 = no local budget: the provider's own maximum applies. A hard cap
-        # here is what used to cut answers off mid-sentence.
-        tokens.setRange(0, 200000)
+        tokens.setRange(0, 200_000)
         tokens.setSingleStep(1024)
         tokens.setSuffix(' токенов')
-        tokens.setSpecialValueText('без ограничения')
-        tokens.setToolTip('Необязательный лимит на один ответ. 0 — без ограничения, '
-                          'модель отвечает столько, сколько нужно.')
+        tokens.setSpecialValueText('по умолчанию')
+        tokens.setToolTip('По умолчанию применяется лимит провайдера. '
+                          'Значение выше 8192 задаёт пользовательский предел вывода.')
         stored_tokens = int(self._value('ai_max_tokens') or 0)
         # Values at or below the old 8192 default were a limit, not a user choice.
         tokens.setValue(0 if stored_tokens <= 8192 else stored_tokens)

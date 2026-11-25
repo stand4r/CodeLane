@@ -3,10 +3,12 @@
 from copy import copy
 import json
 from services.agent_harness import AgentUsage
+from services.ai_budget import clip_utf8
 from services.agent_team import TeamResult
 from services.local_evidence import LocalEvidence
 
 READ = {
+    "find_files", "view_image",
     "read_file",
     "search_in_project",
     "list_directory",
@@ -17,6 +19,7 @@ READ = {
     "git_read",
 }
 WRITE = READ | {
+    "apply_patch", "exec_command", "write_stdin",
     "edit_file",
     "write_file",
     "run_project_tests",
@@ -71,6 +74,7 @@ def run_three_stage(
     previous_result="",
     attachment_paths=(),
     relationship=None,
+    initial_context="",
     **unused,
 ):
     from services.ide_mcp import IDEMCP
@@ -117,18 +121,12 @@ def run_three_stage(
                         "run_terminal_command",
                         "terminal_execute",
                         "terminal_output",
+                        "exec_command", "write_stdin",
                     }
                 )
             }
         )
-        names = (READ if role == "specialist" else WRITE) & permitted.keys()
-        # Stable compact schemas; discover_tools expands only requested operations.
-        core = {"read_file", "search_in_project", "list_directory"}
-        if role != "specialist":
-            core |= {"run_project_tests", "test_results", "run_terminal_command"}
-        if role == "implementer":
-            core |= {"edit_file", "write_file"}
-        tools = [permitted[k] for k in sorted(core & names)] + [FINISH, DISCOVER]
+        tools = [permitted[name] for name in sorted(permitted)] + [FINISH, DISCOVER]
         from services.agent_team import TOOLS
 
         tools.append(TOOLS[1])
@@ -143,7 +141,6 @@ def run_three_stage(
                     },
                 }
             )
-        available = {d["function"]["name"] for d in tools}
 
         def route(name, args):
             nonlocal question
@@ -201,13 +198,8 @@ def run_three_stage(
                         or query in d["function"].get("description", "").casefold()
                     )
                 ]
-                # Tool definitions are also registered by the harness hook below.
-                for d in found:
-                    if d["function"]["name"] not in available:
-                        tools.append(d)
-                        available.add(d["function"]["name"])
                 return json.dumps([d["function"]["name"] for d in found], ensure_ascii=False)
-            if name not in permitted or name not in available:
+            if name not in permitted:
                 return "Инструмент недоступен этой роли."
             value = ide.call(name, args)
             calls.append({"name": name, "args": args, "result": str(value)})
@@ -215,9 +207,15 @@ def run_three_stage(
                 "Ошибка"
             ):
                 changed.add(str(args.get("path", "")))
+            if name == "apply_patch":
+                try:
+                    changed.update(item["path"] for item in json.loads(value).get("changes", []))
+                except (ValueError, TypeError):
+                    pass
             if trace:
                 trace(
-                    number, name + "\n" + json.dumps(args, ensure_ascii=False) + "\n" + str(value)
+                    number, name + "\n" + clip_utf8(json.dumps(args, ensure_ascii=False), 2000)
+                    + "\n" + clip_utf8(str(value), 6000)
                 )
             if (name in READ | {"run_project_tests", "test_results", "run_terminal_command",
                                 "terminal_output"} and isinstance(value, str) and len(value) > 4000):
@@ -228,7 +226,6 @@ def run_three_stage(
         child._team_role = role
         child._team_evidence = evidence
         child.last_usage = {}
-        child._discovered_tools = tools
         rules = {
             "specialist": "Найди критерии, пути и риски. Передай план со статусом ready.",
             "implementer": "Выполни план. Группируй независимые действия. Заверши ready.",
@@ -272,6 +269,7 @@ def run_three_stage(
                 on_reasoning=(lambda piece: reasoning(number, piece)) if reasoning else None,
                 on_usage=record_usage,
                 attachment_paths=attachment_paths if index == 0 else (),
+                **({"context": initial_context} if index == 0 and initial_context else {}),
             )
         except Exception as exc:
             finished = {"status": "blocked", "summary": str(exc), "paths": [], "checks": []}

@@ -168,7 +168,8 @@ def _matches_patterns(relative_posix: str, patterns: Sequence[str]) -> bool:
 def walk_files(root: Path, *, extensions: Optional[Iterable[str]] = None,
                max_files: Optional[int] = MAX_FILES_DEFAULT,
                max_bytes: Optional[int] = MAX_SOURCE_BYTES,
-               use_ignore_files: bool = True, cancelled=None) -> ScanResult:
+               use_ignore_files: bool = True, cancelled=None,
+               max_entries: Optional[int] = None) -> ScanResult:
     """Walk *root*, pruning ignored directories **during** traversal.
 
     ``Path.rglob`` cannot do this: it descends into ``node_modules`` and then the
@@ -187,64 +188,67 @@ def walk_files(root: Path, *, extensions: Optional[Iterable[str]] = None,
     root_str = str(root)
 
     stack: List[Tuple[str, str]] = [(root_str, "")]
+    visited = 0
     while stack:
         if cancelled is not None and cancelled():
             break
         dir_path, rel_prefix = stack.pop()
-        try:
-            with os.scandir(dir_path) as iterator:
-                entries = list(iterator)
-        except OSError:
-            # Permission denied on a subdirectory must not abort the scan.
-            continue
-
         subdirs: List[Tuple[str, str]] = []
-        for entry in entries:
-            if cancelled is not None and cancelled():
-                return result
-            try:
-                is_junction = getattr(entry, "is_junction", None)
-                if is_junction is not None and is_junction():
-                    result.skipped_dirs += 1
-                    result._note_dir(entry.name)
-                    continue
-                is_dir = entry.is_dir(follow_symlinks=False)
-            except OSError:
-                continue
-            relative = f"{rel_prefix}/{entry.name}" if rel_prefix else entry.name
-            if is_dir:
-                if should_skip_dir(entry.name):
-                    result.skipped_dirs += 1
-                    result._note_dir(entry.name)
-                    continue
-                if patterns and _matches_patterns(relative, patterns):
-                    result.skipped_dirs += 1
-                    result._note_dir(entry.name)
-                    continue
-                subdirs.append((entry.path, relative))
-                continue
+        try:
+            with os.scandir(dir_path) as entries:
+                for entry in entries:
+                    if cancelled is not None and cancelled():
+                        return result
+                    visited += 1
+                    if max_entries is not None and visited > max_entries:
+                        result.truncated = True
+                        return result
+                    try:
+                        is_junction = getattr(entry, "is_junction", None)
+                        if is_junction is not None and is_junction():
+                            result.skipped_dirs += 1
+                            result._note_dir(entry.name)
+                            continue
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    relative = f"{rel_prefix}/{entry.name}" if rel_prefix else entry.name
+                    if is_dir:
+                        if should_skip_dir(entry.name):
+                            result.skipped_dirs += 1
+                            result._note_dir(entry.name)
+                            continue
+                        if patterns and _matches_patterns(relative, patterns):
+                            result.skipped_dirs += 1
+                            result._note_dir(entry.name)
+                            continue
+                        subdirs.append((entry.path, relative))
+                        continue
 
-            path = Path(entry.path)
-            if should_skip_file(path):
-                result.skipped_files += 1
-                continue
-            if allowed is not None and path.suffix.lower() not in allowed:
-                continue
-            if patterns and _matches_patterns(relative, patterns):
-                result.skipped_files += 1
-                continue
-            if max_bytes:
-                try:
-                    if entry.stat().st_size > max_bytes:
+                    path = Path(entry.path)
+                    if should_skip_file(path):
                         result.skipped_files += 1
                         continue
-                except OSError:
-                    result.skipped_files += 1
-                    continue
-            result.files.append(path)
-            if max_files and len(result.files) >= max_files:
-                result.truncated = True
-                return result
+                    if allowed is not None and path.suffix.lower() not in allowed:
+                        continue
+                    if patterns and _matches_patterns(relative, patterns):
+                        result.skipped_files += 1
+                        continue
+                    if max_bytes:
+                        try:
+                            if entry.stat().st_size > max_bytes:
+                                result.skipped_files += 1
+                                continue
+                        except OSError:
+                            result.skipped_files += 1
+                            continue
+                    result.files.append(path)
+                    if max_files and len(result.files) >= max_files:
+                        result.truncated = True
+                        return result
+        except OSError:
+            # Permission denied on a subdirectory must not abort the scan.
+            pass
 
         # Depth-first with a stable alphabetical order.
         stack.extend(reversed(sorted(subdirs, key=lambda item: item[1].lower())))

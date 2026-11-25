@@ -15,6 +15,12 @@ All core subsystems are modularized under the `app` package:
 from __future__ import annotations
 
 import sys
+
+if __name__ == "__main__":
+    from multiprocessing import freeze_support
+
+    freeze_support()
+
 from app.application import ApplicationManager, main
 from app.code_runner import CodeRunner
 from app.controller import WorkbenchController
@@ -51,4 +57,3 @@ __all__ = [
 
 if __name__ == "__main__":
     main()
-	

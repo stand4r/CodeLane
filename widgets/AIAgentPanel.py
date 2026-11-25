@@ -28,6 +28,7 @@ from widgets.AgentMark import AgentMark
 
 from core.logging_config import get_logger
 from design.icons import codicon_icon, line_icon
+from services.ai_budget import input_tokens
 from services.ai_commands import COMMANDS, find_command, parse_input
 from services.ai_providers import PROVIDERS, get_provider, models_for
 from services.ai_service import AIMessage, AIService, AIError, extract_code_blocks
@@ -130,6 +131,7 @@ class AIWorker(QtCore.QThread):
     tool_finished = QtCore.pyqtSignal(object)
     finished_ok = QtCore.pyqtSignal(str)
     failed = QtCore.pyqtSignal(str)
+    temp_files_removed = QtCore.pyqtSignal(list)
 
     def __init__(self, service: AIService, prompt: str,
                  history: Optional[List[AIMessage]] = None,
@@ -300,7 +302,7 @@ class AIWorker(QtCore.QThread):
                             return "Ошибка: лимит подзадач на запрос исчерпан."
                         remaining_delegations -= 1
                         return delegate(self.service, self.local_tools, local_defs, args or {},
-                                        lambda: self._stop, on_usage=usage.add)
+                                        lambda: self._stop, on_usage=usage.add, read_only=True)
                     if name in resource_names:
                         return run_resource_tool(self.mcp_clients, name, args or {})
                     if not restricted and name not in local_names and fallback is not None and not self.mcp_clients:
@@ -336,6 +338,8 @@ class AIWorker(QtCore.QThread):
                 on_tool_end=lambda run: self.tool_finished.emit(run),
                 on_reasoning=emit_reasoning,
                 should_stop=lambda: self._stop,
+                **({"read_version": self.local_tools.read_version}
+                   if isinstance(self.service, AIService) and self.local_tools is not None else {}),
                 **({"attachment_paths": self.attachment_paths} if self.attachment_paths else {}),
             )
             if self.service.is_teaching and not self._stop:
@@ -354,6 +358,13 @@ class AIWorker(QtCore.QThread):
         except Exception as exc:  # noqa: BLE001 - never crash the UI thread
             logger.exception("AI request failed")
             self.failed.emit(f"Ошибка ИИ-запроса: {exc}")
+        finally:
+            close = getattr(self.local_tools, "close", None)
+            if close:
+                close()
+            removed = list(getattr(self.local_tools, "removed_temp_files", None) or [])
+            if removed:
+                self.temp_files_removed.emit(removed)
 
 
 class _QuickAIResult(QtWidgets.QDialog):
@@ -786,6 +797,10 @@ class AIAgentPanel(QtWidgets.QWidget):
     @staticmethod
     def _tool_line(name: str, args) -> str:
         """``read_file · lib/parser.py`` — the target, never the whole JSON."""
+        if name == "update_plan":
+            return "Обновляет план задачи"
+        if name == "compact_context":
+            return "Сохраняет решения и сжимает контекст"
         if name == "delegate_task" and isinstance(args, dict):
             from services.agent_delegation import ROLES
 
@@ -794,7 +809,8 @@ class AIAgentPanel(QtWidgets.QWidget):
             return f"Субагент: {label}" + (f" · {task}" if task else "")
         target = ""
         if isinstance(args, dict):
-            for key in ("path", "file", "query", "command", "program"):
+            for key in ("command", "cmd", "path", "file", "query", "pattern", "program",
+                        "args", "packages", "session_id"):
                 value = args.get(key)
                 if value:
                     target = str(value)
@@ -825,10 +841,22 @@ class AIAgentPanel(QtWidgets.QWidget):
                                 + f": {first}", "✗")
             self._append_step(f"Сбой инструмента · {name} · {target or first}", "✗")
             return
-        if name == "write_file":
+        if name in {"exec_command", "write_stdin"}:
+            try:
+                state = json.loads(output)
+            except ValueError:
+                state = {}
+            complete = state.get("completed")
+            self._show_activity(f"Код возврата: {state.get('exit_code')}" if complete else "Команда выполняется…",
+                                "✓" if complete and state.get("exit_code") == 0 else "›")
+        elif name == "update_plan":
+            plan = arguments.get("plan", [])
+            done = sum(item.get("status") == "completed" for item in plan)
+            self._show_activity(f"План: выполнено {done} из {len(plan)} шагов", "✓")
+        elif name == "write_file":
             verb = "создан" if "Создан" in output else "изменён"
             self._show_activity(f"{verb} · {target or 'файл'}", "✓")
-        elif name == "run_terminal_command":
+        elif name in ("run_terminal_command", "python", "pytest", "pip", "git"):
             first = output.strip().splitlines()[0][:80] if output.strip() else "готово"
             self._show_activity(first, "✓")
         elif name == "delegate_task":
@@ -1134,6 +1162,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         outer_layout.setSpacing(4)
 
         card_row = QtWidgets.QWidget()
+        card_row.setObjectName("aiComposerRow")
         wrap_layout = QtWidgets.QHBoxLayout(card_row)
         wrap_layout.setContentsMargins(0, 0, 0, 0)
         wrap_layout.setSpacing(0)
@@ -1276,8 +1305,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         window = self.main_window
         if window is None:
             return
-        editor = window.get_current_editor()
-        if getattr(editor, "file_path", None):
+        editor = self._editor_for_chat()
+        if getattr(editor, "file_path", None) or getattr(editor, "current_file_path", None):
             self._workspace_source_editor = editor
         existing = window._find_special_tab("agentTeam")
         if existing is not None:
@@ -1416,6 +1445,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                 kind, {**payload, **({"_background": True} if (full_access or background) and kind.startswith("browser_") else {})},
                 should_stop),
             should_stop=should_stop,
+            clean_temp_files=bool(sm.get_setting("ai_cleanup_temp_files", True)),
         )
         toolbox.background = full_access or background
         return toolbox
@@ -1441,7 +1471,56 @@ class AIAgentPanel(QtWidgets.QWidget):
                 raise RuntimeError("Редактор не ответил на запрос агента вовремя.")
         if result.get("error"):
             raise RuntimeError(result["error"])
-        return str(result.get("value") or "Готово.")
+        value = result.get("value")
+        if kind in {"read_buffer", "buffer_revision"} and isinstance(value, dict):
+            return value
+        return str(value or "Готово.")
+
+    @staticmethod
+    def _editor_page(document, first, count, column, characters):
+        block = document.findBlockByNumber(first - 1)
+        if not block.isValid() or column >= block.length():
+            return {"page": "", "more": False}
+        start = block.position() + column
+        if "\udc00" <= document.characterAt(start) <= "\udfff":
+            return {"page": "", "more": False}
+        following = document.findBlockByNumber(first - 1 + count) if count else None
+        end = document.characterCount() - 1
+        if following is not None and following.isValid():
+            end = following.position()
+        end = min(end, start + characters)
+        if "\udc00" <= document.characterAt(end) <= "\udfff":
+            end -= 1
+        cursor = QtGui.QTextCursor(block)
+        cursor.setPosition(start)
+        cursor.setPosition(end, QtGui.QTextCursor.MoveMode.KeepAnchor)
+        return {"page": cursor.selectedText().replace("\u2029", "\n"),
+                "more": cursor.position() < document.characterCount() - 1}
+
+    @staticmethod
+    def _editor_context(editor, characters=12_000):
+        text_editor = getattr(editor, "editor", None)
+        if text_editor is not None and hasattr(text_editor, "document"):
+            page = AIAgentPanel._editor_page(text_editor.document(), 1, 0, 0, characters)
+            return page["page"] + ("\n… [Остальные строки доступны через read_file.]"
+                                   if page["more"] else "")
+        return str(editor.get_code() or "")[:characters] if hasattr(editor, "get_code") else None
+
+    @staticmethod
+    def _selection_context(cursor):
+        if not cursor.hasSelection():
+            return None
+        start = cursor.selectionStart()
+        end = min(cursor.selectionEnd(), start + 12_000)
+        if "\udc00" <= cursor.document().characterAt(end) <= "\udfff":
+            end -= 1
+        preview = QtGui.QTextCursor(cursor)
+        preview.setPosition(start)
+        preview.setPosition(end, QtGui.QTextCursor.MoveMode.KeepAnchor)
+        text = preview.selectedText().replace("\u2029", "\n")
+        if end < cursor.selectionEnd():
+            text += "\n… [Выделение сокращено.]"
+        return text
 
     def _on_ui_tool_requested(self, kind, payload, event, result):
         """Open project files or apply an exact edit on the UI thread."""
@@ -1568,7 +1647,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                 text_editor.setTextCursor(cursor)
                 text_editor.ensureCursorVisible()
                 result["value"] = f"Курсор установлен в строку {cursor.blockNumber() + 1}, столбец {cursor.positionInBlock() + 1}."
-            elif kind == "read_buffer":
+            elif kind in {"read_buffer", "buffer_revision"}:
                 editor = None
                 for group in window.editor_groups():
                     for index in range(group.count()):
@@ -1578,8 +1657,18 @@ class AIAgentPanel(QtWidgets.QWidget):
                             break
                     if editor is not None:
                         break
-                result["value"] = (editor.get_code() if editor is not None
-                                   else "__NO_OPEN_EDITOR_BUFFER__")
+                if editor is None:
+                    result["value"] = "__NO_OPEN_EDITOR_BUFFER__"
+                elif kind == "buffer_revision":
+                    document = editor.editor.document()
+                    result["value"] = {"document": id(document), "revision": document.revision()}
+                elif "first" in payload and hasattr(editor, "editor"):
+                    result["value"] = self._editor_page(
+                        editor.editor.document(), payload["first"], payload["count"],
+                        payload["column"], payload["characters"],
+                    )
+                else:
+                    result["value"] = editor.get_code()
             elif kind == "replace_buffer":
                 editor = None
                 for group in window.editor_groups():
@@ -2944,13 +3033,13 @@ class AIAgentPanel(QtWidgets.QWidget):
             text_editor = getattr(editor, "editor", None)
             if self.include_selection.isChecked() and text_editor is not None:
                 cursor = text_editor.textCursor()
-                if cursor.hasSelection():
-                    selection = cursor.selectedText().replace("\u2029", "\n")
+                selection = self._selection_context(cursor)
             if self.include_file.isChecked() and not exclude_file:
-                code = editor.get_code() if hasattr(editor, "get_code") else None
+                code = self._editor_context(editor)
             if not selection and self.include_selection.isChecked() and text_editor is not None:
-                block = text_editor.textCursor().block().text()
-                selection = block or None
+                block = text_editor.textCursor().block()
+                preview = self._editor_page(text_editor.document(), block.blockNumber() + 1, 1, 0, 12_000)
+                selection = preview["page"].rstrip("\n") or None
         problems = None
         if self.include_problems.isChecked():
             try:
@@ -2973,6 +3062,10 @@ class AIAgentPanel(QtWidgets.QWidget):
         if window is None:
             return None
         editor = window.get_current_editor() if hasattr(window, "get_current_editor") else None
+        group = getattr(window, "active_tab_widget", None)
+        current = group.currentWidget() if hasattr(group, "currentWidget") else None
+        if getattr(current, "file_path", None) or getattr(current, "current_file_path", None):
+            return current
         if not getattr(editor, "file_path", None):
             previous = getattr(self, "_workspace_source_editor", None)
             find = getattr(window, "find_tab_for_widget", None)
@@ -2980,7 +3073,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                 editor = previous
         return editor
 
-    def _collect_file_context(self) -> str:
+    def _collect_file_context(self, characters=12_000) -> str:
         """Context for the ``file`` scope: the editor contents (+ selection)."""
         window = self.main_window
         editor = self._editor_for_chat()
@@ -2988,13 +3081,12 @@ class AIAgentPanel(QtWidgets.QWidget):
             return ""
         file_path = getattr(editor, "file_path", None)
         language = getattr(editor, "language", "")
-        code = editor.get_code() if hasattr(editor, "get_code") else None
+        code = self._editor_context(editor, characters)
         selection = None
         text_editor = getattr(editor, "editor", None)
         if self.include_selection.isChecked() and text_editor is not None:
             cursor = text_editor.textCursor()
-            if cursor.hasSelection():
-                selection = cursor.selectedText().replace("\u2029", "\n")
+            selection = self._selection_context(cursor)
         problems = None
         try:
             console = getattr(window, "console_widget", None)
@@ -3010,6 +3102,18 @@ class AIAgentPanel(QtWidgets.QWidget):
             selection=selection,
             problems=problems,
         )
+
+    def _team_file_context(self):
+        if self._scope() != "file":
+            return {}
+        from services.workbench_documents import DOCUMENT_SUFFIXES
+
+        editor = self._editor_for_chat()
+        path = getattr(editor, "file_path", None) or getattr(editor, "current_file_path", None)
+        if path and Path(path).suffix.lower() in DOCUMENT_SUFFIXES:
+            return {"context_document": str(path)}
+        context = self._collect_file_context(4000)
+        return {"initial_context": context} if context else {}
 
     def _context_summary(self) -> str:
         parts = []
@@ -3057,13 +3161,13 @@ class AIAgentPanel(QtWidgets.QWidget):
             return False
         text_editor = getattr(editor, "editor", None)
         cursor = text_editor.textCursor() if text_editor is not None else None
-        selection = cursor.selectedText().replace("\u2029", "\n") if cursor and cursor.hasSelection() else None
+        selection = self._selection_context(cursor) if cursor is not None else None
         file_path = getattr(editor, "file_path", None)
         context = AIService.build_context_block(
             file_path=str(file_path) if file_path else None,
             language=getattr(editor, "language", ""),
             selection=selection,
-            code=None if selection else get_code(),
+            code=None if selection else self._editor_context(editor),
         )
         return self.send_quick_action(prompt, context=context)
 
@@ -3107,6 +3211,10 @@ class AIAgentPanel(QtWidgets.QWidget):
         current = self._scope()
         # The "@" completion list belongs to the previous workspace otherwise.
         self._entries_cache = None
+        job = getattr(self, "_entries_job", None)
+        if job is not None:
+            job[1].set()
+            self._entries_job = None
         # Restore the saved conversation once per project.
         if root and str(root) != getattr(self, "_session_root", None):
             self._close_quick_result()
@@ -3339,9 +3447,7 @@ class AIAgentPanel(QtWidgets.QWidget):
                 if identity in seen:
                     continue
                 seen.add(identity)
-                text = str(editor.get_code() or "")
-                if len(text) > 60_000:
-                    text = text[:60_000] + "\n… (контекст ограничен 60 000 символами)"
+                text = self._editor_context(editor, 3500)
                 parts.append(f"Открытый файл {path}:\n```\n{text}\n```")
                 if len(parts) >= 12:
                     parts.append("… (показаны первые 12 текстовых файлов)")
@@ -3609,6 +3715,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         worker.tool_finished.connect(self._on_tool_finished)
         worker.finished_ok.connect(lambda answer: self._on_finished(prompt, answer))
         worker.failed.connect(self._on_failed)
+        worker.temp_files_removed.connect(self._on_temp_files_removed)
         worker.finished.connect(self._cleanup_worker)
         saved_context = (context, project_context) if project_context is not None else context
         self._last_request = (prompt, saved_context, mentions, attachment_paths)
@@ -3796,11 +3903,7 @@ class AIAgentPanel(QtWidgets.QWidget):
             value = usage.get(key)
             return value if type(value) is int and value >= 0 else None
 
-        prompt = tokens("prompt_tokens")
-        if prompt is None:
-            prompt = tokens("input_tokens")
-            if prompt is not None:
-                prompt += (tokens("cache_creation_input_tokens") or 0) + (tokens("cache_read_input_tokens") or 0)
+        prompt = input_tokens(usage)
         output = tokens("completion_tokens")
         if output is None:
             output = tokens("output_tokens")
@@ -3842,6 +3945,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         detail = f"Последний запрос · вход {number(last['input'])} · выход {number(last['output'])}"
         if last.get("cached") is not None:
             detail += f" · из кэша {number(last['cached'])}"
+            if last.get("input"):
+                detail += f" ({last['cached'] / last['input']:.1%})"
         if last.get("uncached") is not None:
             detail += f" · без кэша {number(last['uncached'])}"
         if stats["unreported"]:
@@ -3888,6 +3993,16 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._drop_thinking()
         self._append_notice("⚠ " + message, "warn")
 
+    def _on_temp_files_removed(self, removed):
+        """Report temporary files the agent created and the toolbox deleted."""
+        names = [str(name) for name in (removed or []) if str(name).strip()]
+        if not names:
+            return
+        listed = ", ".join(sorted(names)[:8])
+        if len(names) > 8:
+            listed += f" и ещё {len(names) - 8}"
+        self._append_notice(f"🧹 Удалены временные файлы агента: {listed}")
+
     def _cleanup_worker(self):
         worker = self._worker
         if worker is not None:
@@ -3928,32 +4043,47 @@ class AIAgentPanel(QtWidgets.QWidget):
     # Inline completion for "/" commands and "@" mentions
     # ------------------------------------------------------------------
     def _project_entries(self):
-        """(relative path, kind) pairs of the open project (cached)."""
-        if getattr(self, "_entries_cache", None) is not None:
-            return self._entries_cache
-        entries = []
+        """Refresh @-completion in the background and discard stale scans."""
+        from threading import Event
+
         window = self.main_window
-        try:
-            project = getattr(window, "current_project", None) if window else None
-            root = Path(getattr(project, "root_path", "")) if project else None
-            if root is None or not root.is_dir():
-                editor = window.get_current_editor() if window else None
-                fp = getattr(editor, "file_path", None) if editor else None
-                root = Path(str(fp)).parent if fp else None
-            if root and root.is_dir():
-                from core.ignore_rules import walk_files
-                scan = walk_files(root, extensions=None, max_files=1200,
-                                  max_bytes=4 * 1024 * 1024)
-                for path in scan.files:
-                    try:
-                        rel = path.relative_to(root)
-                    except ValueError:
-                        continue
-                    entries.append((rel.as_posix(), "file"))
-        except Exception:
-            entries = []
-        self._entries_cache = entries
-        return entries
+        project = getattr(window, "current_project", None)
+        root = str(project.root_path) if getattr(project, "root_path", None) else None
+        if not root:
+            editor = window.get_current_editor() if window else None
+            path = getattr(editor, "file_path", None)
+            root = str(Path(path).parent) if path else None
+        if not root:
+            return ()
+        cache = getattr(self, "_entries_cache", None)
+        if cache is not None and cache[0] == root:
+            return cache[1]
+        job = getattr(self, "_entries_job", None)
+        if job is not None:
+            if job[0] == root:
+                return ()
+            job[1].set()
+
+        cancelled = Event()
+        self._entries_job = (root, cancelled)
+        directory = Path(root)
+
+        def scan():
+            from core.ignore_rules import walk_files
+
+            files = walk_files(directory, max_files=1200, max_entries=20_000,
+                               max_bytes=4 * 1024 * 1024, cancelled=cancelled.is_set).files
+            return [(path.relative_to(directory).as_posix(), "file") for path in files]
+
+        def ready(entries):
+            if getattr(self, "_entries_job", None) == (root, cancelled):
+                self._entries_job = None
+                self._entries_cache = (root, entries)
+                self._update_completion()
+
+        from services.background import run_async
+        run_async(scan, on_done=ready, on_error=lambda _: ready(()))
+        return ()
 
     def _current_token(self) -> Optional[str]:
         text = self.input.toPlainText()

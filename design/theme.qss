@@ -1871,26 +1871,12 @@ QPlainTextEdit#chatCodeView {
     border-bottom-left-radius: 9px;
     border-bottom-right-radius: 9px;
 }
-QLabel#agentWorkspaceActivity {
-    background: @glass_hover@;
-    color: @glass_text@;
-    border: 1px solid @glass_border@;
-    border-radius: 7px;
-    padding: 6px 9px;
-}
-
 QGraphicsView#agentGraph {
     background: @glass_menu@;
     border: 1px solid @soft_border@;
     border-radius: 8px;
 }
 QLabel#agentGraphEmpty, QLabel#agentWorkspaceStats { color: @muted_text@; }
-QLabel#agentTeamReasoning {
-    color: @muted_text@;
-    background: transparent;
-    border: none;
-    font-size: 11px;
-}
 QLabel#sideTitle, QLabel#explorerSectionTitle {
     letter-spacing: 0px;
     font-size: 12px;
@@ -1947,9 +1933,9 @@ QToolTip {
 }
 
 /* Agent workspace: a quiet canvas, one floating composer and a separate activity rail. */
-QWidget#agentWorkspace, QWidget#aiAgentPanel, QWidget#aiTranscript,
+QWidget#agentWorkspace, QWidget#agentWorkspaceSidebar, QWidget#aiAgentPanel, QWidget#aiTranscript,
 QWidget#aiColumnHost, QWidget#aiChatColumn, QWidget#aiComposerWrap,
-QWidget#aiComposerWrap QWidget {
+QWidget#aiComposerRow {
     background: @agent_canvas@; border: none;
 }
 QFrame#aiHeader { background: @agent_canvas@; border: none; }
@@ -1962,8 +1948,8 @@ QPushButton#agentWelcomeAction {
 QPushButton#agentWelcomeAction:hover, QPushButton#agentWelcomeAction:focus {
     background: @agent_tint@; border-color: @agent_accent@;
 }
-QFrame#aiComposer { background: @agent_card@; border: 1px solid @agent_edge@; border-radius: 21px; }
-QPlainTextEdit#aiComposerInput { background: transparent; border: none; color: @glass_text@; }
+QFrame#aiComposer { background: @agent_card@; border: 1px solid @agent_composer_edge@; border-radius: 21px; }
+QPlainTextEdit#aiComposerInput { background: transparent; border: none; color: @glass_text@; font-size: 12px; }
 QFrame#aiComposer:hover { border-color: @muted_text@; }
 QFrame#aiComposer[inputFocused="true"] { border-color: @agent_accent@; }
 QToolButton#aiAccessMode, QToolButton#aiScopeButton, QToolButton#aiModelButton,
@@ -1979,11 +1965,17 @@ QSplitter#agentWorkspaceSplit::handle { background: @agent_canvas@; }
 QSplitter#agentWorkspaceSplit::handle:hover { background: @agent_edge@; }
 QFrame#agentWorkspacePanel { background: @agent_panel@; border: 1px solid @agent_edge@; border-radius: 19px; }
 QLabel#agentWorkspaceTitle { background: transparent; color: @glass_text@; font-size: 17px; font-weight: 600; }
-QLabel#agentWorkspaceActivity { background: @agent_tint@; color: @glass_text@; border: none; border-radius: 12px; padding: 7px 12px; }
+QLabel#agentWorkspaceActivity { background: transparent; color: @muted_text@; border: none; }
+QFrame#agentProgressDot { background: @agent_accent@; border: none; border-radius: 3px; }
 QGraphicsView#agentGraph, QWidget#agentStageGuide { background: transparent; border: none; }
 QLabel#agentStageHeading { background: transparent; color: @glass_text@; font-weight: 600; }
 QLabel#agentStageHint, QLabel#agentWorkspaceStats { background: transparent; color: @muted_text@; }
 QFrame#agentStageDot { background: @agent_accent@; border: none; border-radius: 4px; }
 QWidget#agentPlanner { border-top: 1px solid @agent_edge@; }
-QPushButton#agentStopButton, QPushButton#agentChangesButton { background: @agent_card@; border: 1px solid @agent_edge@; border-radius: 13px; padding: 4px 11px; }
-QPushButton#agentStopButton:disabled { background: transparent; color: @muted_text@; border-color: @agent_edge@; }
+QPushButton#agentStopButton, QPushButton#agentChangesButton, QPushButton#agentJournalButton {
+    background: @agent_card@; border: 1px solid @agent_edge@; border-radius: 13px; padding: 4px 11px;
+}
+QPushButton#agentJournalButton:hover { background: @agent_tint@; }
+QPushButton#agentStopButton:disabled, QPushButton#agentJournalButton:disabled {
+    background: transparent; color: @muted_text@; border-color: @agent_edge@;
+}

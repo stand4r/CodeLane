@@ -157,4 +157,4 @@ class ProjectTaskManager(QtWidgets.QWidget):
         self.tree.setUpdatesEnabled(True)
         memory = sum(row["memory"] for row in rows) / 1048576
         self.summary.setText(f"{len(rows)} процессов · {sum(len(r['threads']) for r in rows)} потоков · "
-                             f"RAM {memory:.1f} МБ · {session}")
+                             f"RAM {memory:.1f} МБ" + (f" · {self.session}" if self.session else ""))

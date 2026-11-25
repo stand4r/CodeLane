@@ -1,5 +1,6 @@
 """Extract readable text from document formats supported by the workbench."""
 
+from contextlib import closing
 from html.parser import HTMLParser
 
 
@@ -71,7 +72,8 @@ def document_text(path, *, limit=None):
     return text if limit is None else text[:max(0, int(limit))]
 
 
-def read_document(path, *, offset=1, limit=5):
+def read_document(path, *, offset=1, limit=5, check_cancelled=None):
+    check_cancelled = check_cancelled or (lambda: None)
     if path.suffix.lower() == ".pdf":
         import pymupdf
 
@@ -82,15 +84,35 @@ def read_document(path, *, offset=1, limit=5):
             remaining = TEXT_LIMIT
             pages = []
             for index in range(offset - 1, stop):
+                check_cancelled()
                 text = pdf[index].get_text()
+                if pages and len(text) > remaining:
+                    break
                 pages.append({"page": index + 1, "text": text[:remaining],
                               "truncated": len(text) > remaining})
                 remaining -= len(text)
                 if remaining <= 0:
                     break
-            return {"unit": "page", "total": pdf.page_count, "items": pages}
+            next_offset = offset + len(pages)
+            return {"unit": "page", "total": pdf.page_count, "items": pages,
+                    "next_offset": next_offset if next_offset <= pdf.page_count else None}
 
-    lines = list(_document_lines(path))
-    page = "\n".join(lines[offset - 1:offset - 1 + min(limit, 200)])
-    return {"unit": "line", "total": len(lines), "offset": offset,
-            "text": page[:TEXT_LIMIT], "truncated": len(page) > TEXT_LIMIT}
+    page = []
+    total = 0
+    remaining = TEXT_LIMIT
+    next_offset = None
+    truncated = False
+    with closing(_document_lines(path)) as lines:
+        for number, line in enumerate(lines, 1):
+            check_cancelled()
+            total = number
+            if number < offset:
+                continue
+            if len(page) >= min(limit, 200) or (page and len(line) >= remaining):
+                next_offset = number
+                break
+            page.append(line[:remaining])
+            truncated |= len(line) > remaining
+            remaining -= len(page[-1]) + 1
+    return {"unit": "line", "total": total if next_offset is None else None, "offset": offset,
+            "text": "\n".join(page), "truncated": truncated, "next_offset": next_offset}

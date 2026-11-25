@@ -59,6 +59,7 @@ def test_team_records_nested_structure_and_supervisor_assessment(monkeypatch, tm
     class Service:
         last_usage = {"total_tokens": 123}
         model = "test"
+        config = {"ai_team_optimizer": True}
         def converse(self, prompt, *, tool_runner, **kwargs):
             tool_runner("optimize_team", {"work_units": 2, "parallel_fraction": 0.5, "risk": 0.2})
             tool_runner("assign_team", {"tasks": [{"role": "requirements", "task": "Criteria"}]})
@@ -75,3 +76,30 @@ def test_team_records_nested_structure_and_supervisor_assessment(monkeypatch, tm
     assert history[0]["tokens"] == 123
     assert not history[0]["assessment_missing"]
     assert result.optimization["outcome"] == "complete"
+
+
+def test_optimizer_is_off_unless_enabled(tmp_path):
+    from services import agent_team
+    from services.agent_tools import LocalToolbox
+
+    class Service:
+        last_usage = {}
+        def converse(self, prompt, *, tools, tool_runner, **kwargs):
+            names = {tool["function"]["name"] for tool in tools}
+            assert "optimize_team" not in names and "assess_team" not in names
+            assert tool_runner("optimize_team", {"work_units": 2}) == \
+                "Оптимизация команды отключена (ai_team_optimizer)."
+            assert tool_runner("assess_team", dict(
+                description="d", evidence="e", inefficiencies="i", next_structure="n")) == \
+                "Оптимизация команды отключена (ai_team_optimizer)."
+            return "Готово"
+
+    toolbox = LocalToolbox(str(tmp_path))
+    toolbox.team_cache = TeamCache(tmp_path / "cache")
+    traces = []
+    result = agent_team.run_team(Service(), toolbox, "Inspect", lambda *a: None, lambda: False,
+                                 trace=lambda number, text: traces.append(text))
+    assert result.complete
+    assert result.optimization == {}
+    assert not any(text.startswith("Оптимизация команды:\n") for text in traces)
+    assert TeamOptimizer(toolbox.team_cache, str(toolbox.root), "|").history() == []

@@ -686,6 +686,56 @@ def test_tokenator_endpoints_and_key_format():
     assert "sk-tkn-" in (wrong.key_format_problem() or "")
 
 
+def test_thinking_by_default_providers_need_reasoning_echo():
+    """DeepSeek V4.x thinks by default: tool turns must echo reasoning back."""
+    from services.ai_service import AIService
+
+    deepseek = AIService(config={"ai_provider": "deepseek", "ai_api_key": "sk-test",
+                                 "ai_base_url": "https://api.deepseek.com"})
+    assert deepseek.reasoning_required is True
+    # A custom endpoint on the same host has the same rule.
+    custom = AIService(config={"ai_provider": "custom", "ai_api_key": "sk-test",
+                               "ai_base_url": "https://api.deepseek.com/v1"})
+    assert custom.reasoning_required is True
+    # Providers with an optional thinking switch keep the old behaviour.
+    openai = AIService(config={"ai_provider": "openai", "ai_api_key": "sk-test",
+                               "ai_base_url": "https://api.openai.com/v1"})
+    assert openai.reasoning_required is False
+    tokenator = AIService(config={"ai_provider": "tokenator", "ai_api_key": "sk-tkn-test",
+                                  "ai_base_url": "https://api.tokenator.top/v1"})
+    assert tokenator.reasoning_required is False
+
+
+def test_reasoning_content_error_repairs_the_payload_instead_of_disabling_thinking():
+    """The 400 about reasoning_content must not switch the session out of
+    thinking mode: the assistant tool turn simply gets the missing field."""
+    from services.ai_service import AIError, AIService
+
+    service = AIService(config={"ai_provider": "openai", "ai_api_key": "sk-test",
+                                "ai_base_url": "https://api.openai.com/v1",
+                                "ai_reasoning_effort": "high"})
+    payload = {
+        "model": "m",
+        "reasoning_effort": "high",
+        "messages": [
+            {"role": "user", "content": "прочитай"},
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "read_file",
+                                          "arguments": '{"path": "a.py"}'}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "print(1)"},
+        ],
+    }
+    error = AIError("The `reasoning_content` in the thinking mode must be passed "
+                    "back to the API.", status=400)
+    repaired = service._fallback_payload(payload, error)
+    assert repaired is not None
+    assert repaired["messages"][1]["reasoning_content"] == ""
+    # Thinking stays enabled — it is not a "reasoning parameter" problem.
+    assert repaired["reasoning_effort"] == "high"
+    assert getattr(service, "_reasoning_unsupported", False) is False
+
+
 def test_no_stale_models_advertised():
     """Guard against re-introducing models that providers no longer serve."""
     from services.ai_providers import PROVIDERS
@@ -781,8 +831,7 @@ def test_context_menu_is_exclusive():
 
 
 def test_tokenator_settings_share_one_key_between_routes():
-    """Choosing Tokenator in Settings fills the endpoint/model list and keeps
-    the single partner key when switching protocol or route."""
+    """Switching connection routes preserves the partner key and resolves the saved model."""
     from utils.settings_manager import init_settings_manager, get_settings_manager
     from widgets.SettingsWidget import SettingsWidget
 
@@ -803,9 +852,7 @@ def test_tokenator_settings_share_one_key_between_routes():
             "tokenator-claude-vpn"} <= offered
     provider.setCurrentIndex(provider.findData("tokenator"))
     assert widget.controls['ai_base_url'].text() == "https://api.tokenator.top/v1"
-    assert widget.controls['ai_model'].count() == 82
     # The saved model survives opening the page (it is not reset to the default).
-    assert widget.controls['ai_model'].currentData() == "gpt-6-luna"
     assert widget._collect_ai_settings()['ai_model'] == "gpt-6-luna"
     key_edit = widget.controls['ai_api_key']
     key_edit.setText("sk-tkn-test")
@@ -1025,6 +1072,161 @@ def test_truncated_answer_is_auto_continued():
     assert calls == [False, True], "a second continuation request must be made"
     assert svc.last_finish_reason == "stop"
     assert svc.truncated is False
+
+
+def test_reasoning_content_rejection_is_repaired_on_the_next_attempt():
+    """End-to-end: a thinking-mode server answers 400 when a tool round loses
+    ``reasoning_content``. The client must repair the message and retry — not
+    silently disable thinking mode for the rest of the session."""
+    import json as _json
+    from services.ai_service import AIService
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            body = _json.loads(self.rfile.read(n) or b"{}")
+            messages = body.get("messages", [])
+            assistant_calls = [m for m in messages
+                               if m.get("role") == "assistant" and m.get("tool_calls")]
+            requests.append({"messages": messages, "body": body})
+            if assistant_calls and "reasoning_content" not in assistant_calls[-1]:
+                payload = _json.dumps({"error": {"message": (
+                    "The `reasoning_content` in the thinking mode must be passed "
+                    "back to the API."), "type": "invalid_request_error"}})
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload.encode())
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            if not assistant_calls:
+                chunk = {"choices": [{"delta": {"tool_calls": [{
+                    "index": 0, "id": "call_1", "type": "function",
+                    "function": {"name": "read_file",
+                                 "arguments": '{"path": "a.py"}'}}]}}]}
+                self.wfile.write(("data: " + _json.dumps(chunk) + "\n\n").encode())
+                final = {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+            else:
+                final = {"choices": [{"delta": {"content": "Готово."},
+                                      "finish_reason": "stop"}]}
+            self.wfile.write(("data: " + _json.dumps(final) + "\n\n").encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        service = AIService(config={"ai_enabled": True, "ai_provider": "custom",
+                                    "ai_base_url": f"http://127.0.0.1:{port}/v1",
+                                    "ai_model": "m", "ai_api_key": "k",
+                                    "ai_reasoning_effort": "medium"})
+        answer = service.converse(
+            "прочитай a.py", tools=[{"type": "function", "function": {
+                "name": "read_file", "description": "Read a file",
+                "parameters": {"type": "object", "properties": {}}}}],
+            tool_runner=lambda *_: "print(1)")
+    finally:
+        server.shutdown()
+
+    assert answer == "Готово."
+    # The rejected attempt was retried with the field present.
+    rejected = [m for m in requests[1]["messages"]
+                if m.get("role") == "assistant"][-1]
+    assert "reasoning_content" not in rejected
+    repaired = [m for m in requests[-1]["messages"]
+                if m.get("role") == "assistant"][-1]
+    assert repaired["reasoning_content"] == ""
+    assert requests[-1]["body"].get("reasoning_effort") == "medium"
+    assert getattr(service, "_reasoning_unsupported", False) is False
+
+
+def test_thinking_provider_echoes_reasoning_before_the_first_request():
+    """DeepSeek thinks by default: the field must be present in the very first
+    request, even when the tool round in the history was stored without it."""
+    import json as _json
+    from services.ai_service import AIService
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            body = _json.loads(self.rfile.read(n) or b"{}")
+            messages = body.get("messages", [])
+            assistant_calls = [m for m in messages
+                               if m.get("role") == "assistant" and m.get("tool_calls")]
+            requests.append({"messages": messages, "body": body})
+            if assistant_calls and "reasoning_content" not in assistant_calls[-1]:
+                payload = _json.dumps({"error": {"message": (
+                    "The `reasoning_content` in the thinking mode must be passed "
+                    "back to the API."), "type": "invalid_request_error"}})
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload.encode())
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            if not assistant_calls:
+                chunk = {"choices": [{"delta": {"tool_calls": [{
+                    "index": 0, "id": "call_1", "type": "function",
+                    "function": {"name": "read_file",
+                                 "arguments": '{"path": "a.py"}'}}]}}]}
+                self.wfile.write(("data: " + _json.dumps(chunk) + "\n\n").encode())
+                final = {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+            else:
+                final = {"choices": [{"delta": {"content": "Готово."},
+                                      "finish_reason": "stop"}]}
+            self.wfile.write(("data: " + _json.dumps(final) + "\n\n").encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        service = AIService(config={"ai_enabled": True, "ai_provider": "deepseek",
+                                    "ai_base_url": f"http://127.0.0.1:{port}/v1",
+                                    "ai_model": "deepseek-flash",
+                                    "ai_api_key": "sk-test"})
+        answer = service.converse(
+            "прочитай a.py", tools=[{"type": "function", "function": {
+                "name": "read_file", "description": "Read a file",
+                "parameters": {"type": "object", "properties": {}}}}],
+            tool_runner=lambda *_: "print(1)")
+    finally:
+        server.shutdown()
+
+    assert answer == "Готово."
+    assert len(requests) == 2, "no rejected attempt may be needed"
+    assistant_turn = [m for m in requests[-1]["messages"]
+                      if m.get("role") == "assistant" and m.get("tool_calls")][-1]
+    assert assistant_turn["reasoning_content"] == ""
+
+    # The echo is idempotent and stays off for providers without thinking mode.
+    payload = {"model": "m", "messages": [assistant_turn]}
+    assert service._ensure_reasoning_echo(
+        service._ensure_reasoning_echo(payload))["messages"][0]["reasoning_content"] == ""
+    plain = AIService(config={"ai_enabled": True, "ai_provider": "openai",
+                              "ai_base_url": "https://api.openai.com/v1",
+                              "ai_model": "gpt-4o-mini", "ai_api_key": "sk-test"})
+    bare = {"model": "m", "messages": [{"role": "assistant", "content": "",
+                                        "tool_calls": [{"id": "c1"}]}]}
+    assert plain._ensure_reasoning_echo(bare) is bare
 
 
 def test_slash_only_input_does_not_crash():

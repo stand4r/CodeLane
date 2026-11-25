@@ -30,6 +30,42 @@ __all__ = ["CREATE_NO_WINDOW", "hidden_process_kwargs", "run_hidden",
 CREATE_NO_WINDOW = 0x08000000
 
 
+def refreshed_user_path(current: str) -> str:
+    """Include the user PATH added since the Windows application was started."""
+    if os.name != "nt":
+        return current
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            user_path, _ = winreg.QueryValueEx(key, "Path")
+    except OSError:
+        return current
+    items = current.split(os.pathsep) if current else []
+    existing = {os.path.normcase(os.path.normpath(item.strip('"'))) for item in items if item}
+    for item in winreg.ExpandEnvironmentStrings(str(user_path)).split(os.pathsep):
+        normalized = os.path.normcase(os.path.normpath(item.strip('"')))
+        if item and normalized not in existing:
+            items.append(item)
+            existing.add(normalized)
+    return os.pathsep.join(items)
+
+
+def decode_console_output(data: bytes) -> str:
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        if exc.reason == "unexpected end of data":
+            return data[:exc.start].decode("utf-8-sig") + "\ufffd"
+    if os.name == "nt":
+        import ctypes
+
+        return data.decode(f"cp{ctypes.windll.kernel32.GetOEMCP()}", errors="replace")
+    return data.decode("utf-8", errors="replace")
+
+
 def hidden_process_kwargs() -> Dict[str, Any]:
     """Return the ``subprocess`` keyword arguments that hide the child window."""
     if os.name != "nt":

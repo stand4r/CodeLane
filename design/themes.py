@@ -33,3 +33,22 @@ THEMES = {
     },
 }
 THEME_NAMES = {"dark": "Dark", "midnight": "Midnight", "graphite": "Graphite", "nord": "Nord", "light": "Light"}
+
+TERMINAL_COLORS = {
+    "dark": {
+        "surface": "#121917", "toolbar": "#1A2521", "border": "#35473F",
+        "hover": "#293A33", "selection": "#315348", "selected_text": "#EFFBF5",
+        "output": "#DBE7E1", "muted": "#9CADA5", "accent": "#8CDEAD", "path": "#99CFE6",
+        "error": "#FF918A", "warning": "#E8C084",
+    },
+    "light": {
+        "surface": "#F7FAF8", "toolbar": "#E8F0EB", "border": "#BFCFC5",
+        "hover": "#DCE8E0", "selection": "#C5E0D0", "selected_text": "#153A27",
+        "output": "#25362F", "muted": "#52685D", "accent": "#16643A", "path": "#235F81",
+        "error": "#A02A31", "warning": "#79510D",
+    },
+}
+
+
+def terminal_colors(theme):
+    return TERMINAL_COLORS["light" if theme == "light" else "dark"]

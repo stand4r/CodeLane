@@ -1,49 +1,67 @@
-"""Control panel for a single project-scoped agent team run."""
+"""Project agent workspace and live progress."""
 
 from functools import partial
-from threading import Event
+import json
+import re
+from threading import Event, Lock
 from uuid import uuid4
 
 from PyQt6 import QtCore, QtWidgets
 
+from services.ai_budget import clip_utf8, input_tokens, total_tokens
 from services.agent_team import run_team
 from services.background import run_async
-from widgets.AgentGraph import AgentGraph
 from widgets.AgentPlanner import AgentPlanner
 
-ROLE_DETAILS = {
-    "Руководитель": "Распределяет задачи и проверяет общий результат.",
-    "Постановка задачи": "Формулирует критерии, поручения и вопросы.",
-    "Дизайнер": "Проверяет поведение и оформление интерфейса.",
-    "Тестировщик": "Ищет сценарии для проверки изменений.",
-    "Код": "Изучает реализацию и зависимости.",
-    "Ревью": "Проверяет выводы и ищет проблемы.",
-    "Документация": "Изучает документацию проекта.",
+REASONING_BREAK = re.compile(r"(?<=[.!?。！？])\s+|[\r\n]+")
+TOOL_PROGRESS = {
+    "read_file": "Читаю файл",
+    "read_document": "Читаю документ",
+    "search_in_project": "Ищу по проекту",
+    "list_directory": "Смотрю содержимое папки",
+    "edit_file": "Вношу правку",
+    "write_file": "Записываю файл",
+    "run_project_tests": "Запускаю тесты",
+    "pytest": "Запускаю pytest",
+    "python": "Запускаю Python",
+    "pip": "Работаю с pip",
+    "git": "Выполняю git",
+    "run_terminal_command": "Выполняю команду",
+    "terminal_execute": "Запускаю команду в терминале",
 }
 
 
-class _AlwaysTeamMode:
-    """Stand-in for the removed mode toggle button.
+class _ProgressLine(QtWidgets.QLabel):
+    def __init__(self):
+        super().__init__()
+        self._line = ""
+        self._elide = QtCore.Qt.TextElideMode.ElideRight
+        self.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setWordWrap(False)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
 
-    Team mode cannot be switched off any more, so ``isChecked()`` is always
-    ``True``. The attribute is kept because callers and tests read it.
-    """
+    def set_progress(self, text, *, latest=False):
+        self._line = " ".join(text.split())
+        self._elide = (QtCore.Qt.TextElideMode.ElideLeft if latest else QtCore.Qt.TextElideMode.ElideRight)
+        self.setAccessibleDescription(self._line)
+        self._refresh()
 
-    def isChecked(self) -> bool:  # noqa: N802 - Qt naming
-        return True
+    def _refresh(self):
+        visible = self.fontMetrics().elidedText(self._line, self._elide, self.contentsRect().width())
+        if visible != self.text():
+            self.setText(visible)
 
-    def setChecked(self, _checked) -> None:  # noqa: N802 - Qt naming
-        return None
-
-    def isVisible(self) -> bool:  # noqa: N802 - Qt naming
-        return False
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh()
 
 
 class AgentTeamTab(QtWidgets.QWidget):
     agent_updated = QtCore.pyqtSignal(int, str, str, str)
     report_updated = QtCore.pyqtSignal(int, str)
     action_logged = QtCore.pyqtSignal(int, str)
-    reasoning_received = QtCore.pyqtSignal(int, str)
+    reasoning_received = QtCore.pyqtSignal(object)
     usage_received = QtCore.pyqtSignal(object)
     relationship_updated = QtCore.pyqtSignal(int, int, object)
 
@@ -56,10 +74,14 @@ class AgentTeamTab(QtWidgets.QWidget):
         self._goal = ""
         self._root = None
         self._question = ""
-        self._cards = {}
-        self._model = ""
+        self._roles = {}
+        self._statuses = {}
         self._logs = {}
-        self._log_views = {}
+        self._journal_lines = []
+        self._journal_view = None
+        self._reasoning_buffer = ""
+        self._reasoning_agent = None
+        self._live_tokens = 0
         self._edits = []
         self._applying = None
         self._pending = []
@@ -75,6 +97,11 @@ class AgentTeamTab(QtWidgets.QWidget):
         split.addWidget(agent_panel)
         agent_panel.show()
         self.idea = agent_panel.input
+        self.idea.setPlaceholderText("Задача для агента")
+        sidebar = QtWidgets.QWidget()
+        sidebar.setObjectName("agentWorkspaceSidebar")
+        sidebar_layout = QtWidgets.QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
         details = QtWidgets.QFrame()
         details.setObjectName("agentWorkspacePanel")
         right = QtWidgets.QVBoxLayout(details)
@@ -86,33 +113,39 @@ class AgentTeamTab(QtWidgets.QWidget):
         title.setObjectName("agentWorkspaceTitle")
         controls.addWidget(title)
         controls.addStretch()
-        # Team mode is always on: the mode toggle button was removed, so the
-        # composer always sends the project task to the whole team.
-        self.team_mode = _AlwaysTeamMode()
+        self.journal_button = QtWidgets.QPushButton("Журнал")
+        self.journal_button.setObjectName("agentJournalButton")
+        self.journal_button.setEnabled(False)
+        self.journal_button.clicked.connect(self._show_current_journal)
+        controls.addWidget(self.journal_button)
         self.stop_button = QtWidgets.QPushButton("Стоп")
         self.stop_button.setObjectName("agentStopButton")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop)
         controls.addWidget(self.stop_button)
         right.addLayout(controls)
-        self.activity = QtWidgets.QLabel("Готов к задаче")
+        progress = QtWidgets.QHBoxLayout()
+        progress.setContentsMargins(3, 4, 3, 4)
+        progress.setSpacing(8)
+        dot = QtWidgets.QFrame()
+        dot.setObjectName("agentProgressDot")
+        dot.setFixedSize(6, 6)
+        progress.addWidget(dot)
+        self.activity = _ProgressLine()
         self.activity.setObjectName("agentWorkspaceActivity")
-        self.activity.setWordWrap(True)
-        right.addWidget(self.activity)
-        self.reasoning_view = QtWidgets.QLabel()
-        self.reasoning_view.setObjectName("agentTeamReasoning")
-        self.reasoning_view.setFixedHeight(18)
-        self.reasoning_view.setWordWrap(False)
-        self.reasoning_view.installEventFilter(self)
-        self.reasoning_view.hide()
+        self.activity.set_progress("Готов к задаче")
+        progress.addWidget(self.activity, 1)
+        right.addLayout(progress)
+        self._reasoning_timer = QtCore.QTimer(self)
+        self._reasoning_timer.setSingleShot(True)
+        self._reasoning_timer.setInterval(80)
+        self._reasoning_timer.timeout.connect(self._refresh_reasoning)
         self.pending_list = QtWidgets.QListWidget()
         self.pending_list.setObjectName("agentTaskQueue")
         self.pending_list.setMaximumHeight(90)
         self.pending_list.setToolTip("Двойной клик удаляет задачу из очереди")
         self.pending_list.itemDoubleClicked.connect(self._remove_pending)
         self.pending_list.hide()
-        self.graph = AgentGraph()
-        right.addWidget(self.graph, 1)
         self.stats = QtWidgets.QLabel()
         self.stats.setObjectName("agentWorkspaceStats")
         self.stats.setWordWrap(True)
@@ -127,20 +160,20 @@ class AgentTeamTab(QtWidgets.QWidget):
         self.applied_button.clicked.connect(self.show_snapshots)
         self.applied_button.hide()
         right.addWidget(self.applied_button)
-        right.addWidget(self.reasoning_view)
         right.addWidget(self.pending_list)
         self.planner = AgentPlanner(self)
         right.addWidget(self.planner)
-        split.addWidget(details)
+        sidebar_layout.addWidget(details)
+        sidebar_layout.addStretch()
+        split.addWidget(sidebar)
         split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
-        split.setSizes([660, 380])
+        split.setStretchFactor(1, 1)
+        split.setSizes([730, 310])
         layout.addWidget(split)
-        self._update_mode()
-        self.agent_updated.connect(self._update_card, QtCore.Qt.ConnectionType.QueuedConnection)
+        self.agent_updated.connect(self._update_agent, QtCore.Qt.ConnectionType.QueuedConnection)
         self.report_updated.connect(self._update_report, QtCore.Qt.ConnectionType.QueuedConnection)
         self.action_logged.connect(self._log, QtCore.Qt.ConnectionType.QueuedConnection)
-        self.reasoning_received.connect(self._append_reasoning, QtCore.Qt.ConnectionType.QueuedConnection)
+        self.reasoning_received.connect(self._receive_reasoning, QtCore.Qt.ConnectionType.QueuedConnection)
         self.usage_received.connect(self._update_live_usage, QtCore.Qt.ConnectionType.QueuedConnection)
         self.relationship_updated.connect(self._relationship, QtCore.Qt.ConnectionType.QueuedConnection)
 
@@ -151,47 +184,44 @@ class AgentTeamTab(QtWidgets.QWidget):
                          else QtCore.Qt.Orientation.Horizontal)
             if self.split.orientation() != direction:
                 self.split.setOrientation(direction)
-                self.split.setSizes([650, 310])
+                sizes = [730, 310] if direction == QtCore.Qt.Orientation.Horizontal else [500, 180]
+                self.split.setSizes(sizes)
 
     @QtCore.pyqtSlot(int, int, object)
     def _relationship(self, number, parent, dependencies):
-        self.graph.set_relationship(number, parent, dependencies)
         self._log(number, f"Родитель: {parent}. Зависимости: {dependencies}")
-
-    def _update_mode(self, team: bool = True):
-        """Team mode is fixed; only the composer hint has to be kept in sync."""
-        self.idea.setPlaceholderText("Задача для команды")
 
     @property
     def busy(self):
         return self._cancel is not None or self._applying is not None
 
     @QtCore.pyqtSlot(int, str, str, str)
-    def _update_card(self, number, role, goal, status):
-        if number not in self._cards:
-            title = role if number == 0 else f"{role} · {number}"
-            self._cards[number] = self.graph.add_agent(number, title, self._show_report)
-        item = self._cards[number]
-        if item.status != status:
-            self._log(number, f"{role} · {status}\n{goal}")
-        item.status = status
-        item.update()
-        tooltip = f"{ROLE_DETAILS.get(role, role)}\n\n{status}\n{goal}"
-        if self._model:
-            tooltip += f"\n\nМодель: {self._model}"
-        item.setToolTip(tooltip)
-        active = sum(node.status in {"Работает", "Координирует", "Запуск"} for node in self._cards.values())
-        waiting = sum(node.status.startswith("Ждёт") for node in self._cards.values())
-        errors = sum(node.status in {"Ошибка", "Заблокирован"} for node in self._cards.values())
-        self.activity.setText(f"{status}\nРаботают {active} · ожидают {waiting} · ошибки {errors}")
-        self.activity.setToolTip(f"{role}\n{goal}")
+    def _update_agent(self, number, role, goal, status):
+        self._roles[number] = role
+        if self._statuses.get(number) == status:
+            return
+        self._statuses[number] = status
+        self._log(number, f"{role} · {status}\n{goal}")
+        if number == 0 and self._cancel is not None and not self._cancel.is_set():
+            phase = {"Запуск": "Запускаю задачу…", "Координирует": "Готовлю запрос…"}
+            self._set_phase(phase.get(status, status))
+
+    def _set_phase(self, text):
+        self._reasoning_timer.stop()
+        self._reasoning_buffer = ""
+        self._reasoning_agent = None
+        self.activity.set_progress(text)
 
     def enqueue(self, text, *, attachment_paths=()):
         root = self._agent_panel._project_root()
         if root != self._root or not root:
             self._agent_panel._append_notice("Проект сменился. Дождитесь завершения текущего запуска.", "warn")
             return False
-        self._pending.append((root, text, attachment_paths))
+        options = {"attachment_paths": attachment_paths} if attachment_paths else {}
+        file_context = getattr(self._agent_panel, "_team_file_context", None)
+        if not attachment_paths and callable(file_context):
+            options["file_context"] = file_context()
+        self._pending.append((root, text, options))
         item = QtWidgets.QListWidgetItem(text.splitlines()[0])
         item.setToolTip(text)
         self.pending_list.addItem(item)
@@ -207,13 +237,12 @@ class AgentTeamTab(QtWidgets.QWidget):
     def _next_pending(self):
         if self.busy or self._question or self._edits or not self._pending:
             return
-        root, text, paths = self._pending[0]
+        root, text, options = self._pending[0]
         if self._agent_panel._project_root() != root:
             self._pending.clear()
             self.pending_list.clear()
             self.pending_list.hide()
             return
-        options = {"attachment_paths": paths} if paths else {}
         if self.submit(text, **options):
             self._pending.pop(0)
             self.pending_list.takeItem(0)
@@ -221,86 +250,78 @@ class AgentTeamTab(QtWidgets.QWidget):
 
     @QtCore.pyqtSlot(int, str)
     def _update_report(self, number, text):
-        item = self._cards.get(number)
-        if item is not None:
-            item.report = text
-            self._log(number, text)
-            if item.status == "Ошибка":
-                item.setToolTip(item.toolTip() + "\n\nОшибка: " + text)
+        self._log(number, text)
 
     @QtCore.pyqtSlot(int, str)
     def _log(self, number, text):
-        entry = QtCore.QTime.currentTime().toString("HH:mm:ss") + "  " + str(text)
+        excerpt = clip_utf8(str(text), 8000)
+        if excerpt != text:
+            excerpt += "\n… [Запись журнала сокращена.]"
+        entry = QtCore.QTime.currentTime().toString("HH:mm:ss") + "  " + excerpt
         self._logs.setdefault(number, []).append(entry)
-        if self._cancel is not None and not getattr(self, "_received_reasoning", False):
-            title = self._cards[number].title if number in self._cards else "Агент"
-            self._set_reasoning_line(f"{title}: {str(text).splitlines()[0]}")
-        view = self._log_views.get(number)
-        if view is not None:
+        self._journal_lines.append(entry)
+        self.journal_button.setEnabled(True)
+        if self._journal_view is not None:
             try:
-                view.appendPlainText(entry)
+                self._journal_view.appendPlainText(entry)
             except RuntimeError:
-                self._log_views.pop(number, None)
+                self._journal_view = None
 
-    @QtCore.pyqtSlot(int, str)
+        name, _, arguments = excerpt.partition("\n")
+        label = TOOL_PROGRESS.get(name)
+        if label and self._cancel is not None and not self._cancel.is_set():
+            try:
+                args = json.loads(arguments)
+            except ValueError:
+                args = {}
+            target = ""
+            if isinstance(args, dict):
+                target = args.get("path") or args.get("query") or args.get("target") or ""
+            self._set_phase(f"{label} · {clip_utf8(str(target), 240)}" if target else label)
+
+    @QtCore.pyqtSlot(object)
+    def _receive_reasoning(self, flush):
+        flush()
+
     def _append_reasoning(self, number, piece):
-        if self._cancel is None or not piece:
+        if self._cancel is None or self._cancel.is_set() or not piece:
             return
-        if not getattr(self, "_received_reasoning", False):
-            self._reasoning_text = ""
-            self._received_reasoning = True
         if number != self._reasoning_agent:
-            self._reasoning_text = f"{self._cards[number].title if number in self._cards else 'Агент'}: "
+            self._reasoning_buffer = ""
             self._reasoning_agent = number
-        self._reasoning_text += piece.replace("\n", " ")
-        self._set_reasoning_line(self._reasoning_text)
+        self._reasoning_buffer = (self._reasoning_buffer + piece)[-1200:]
+        if not self._reasoning_timer.isActive():
+            self._reasoning_timer.start()
 
-    def _set_reasoning_line(self, text):
-        self._reasoning_text = str(text)
-        metrics = self.reasoning_view.fontMetrics()
-        width = max(0, self.reasoning_view.width() - 4)
-        if metrics.horizontalAdvance(text) > width:
-            low, high = 0, len(text)
-            while low < high:
-                middle = (low + high + 1) // 2
-                if metrics.horizontalAdvance(text[:middle] + "...") <= width:
-                    low = middle
-                else:
-                    high = middle - 1
-            text = text[:low].rstrip() + "..."
-        self.reasoning_view.setText(text)
-        self.reasoning_view.setToolTip(self._reasoning_text)
-        self.reasoning_view.show()
-
-    def eventFilter(self, watched, event):
-        if watched is self.reasoning_view and event.type() == QtCore.QEvent.Type.Resize:
-            if self.reasoning_view.isVisible() and hasattr(self, "_reasoning_text"):
-                self._set_reasoning_line(self._reasoning_text)
-        return super().eventFilter(watched, event)
+    def _refresh_reasoning(self):
+        if self._cancel is None or self._cancel.is_set():
+            return
+        parts = [part.strip() for part in REASONING_BREAK.split(self._reasoning_buffer) if part.strip()]
+        if parts:
+            current = parts[-1]
+            if len(parts) > 1 and len(current) < 12 and current[-1] not in ".!?。！？":
+                current = parts[-2]
+            self.activity.set_progress(current, latest=True)
 
     @QtCore.pyqtSlot(object)
     def _update_live_usage(self, usage):
         if self._cancel is None or not isinstance(usage, dict):
             return
-        total = usage.get("total_tokens")
-        if not isinstance(total, (int, float)):
-            total = (usage.get("prompt_tokens") or usage.get("input_tokens") or 0) + (
-                usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-        self._live_tokens += int(total)
-        self.stats.setText(f"Токены: {self._live_tokens:,} · запрос выполняется".replace(",", " "))
+        self._live_tokens += int(total_tokens(usage) or 0)
+        self.stats.setText(f"Токены: {self._live_tokens:,}".replace(",", " "))
 
-    def _show_report(self, item):
+    def _show_current_journal(self):
         from PyQt6 import sip
-        number = next(n for n, node in self._cards.items() if node is item)
+
         window = self._agent_panel.main_window
-        view = self._log_views.get(number)
+        view = self._journal_view
         if view is not None and not sip.isdeleted(view):
             group, index = window.find_tab_for_widget(view)
             if group is not None:
                 window._set_active_group(group)
                 group.setCurrentIndex(index)
                 return
-        self._log_views[number] = self._journal_tab(item.title, "\n\n".join(self._logs.get(number, [])))
+        self._journal_view = self._journal_tab("ИИ-агент", "\n\n".join(self._journal_lines))
 
     def _journal_tab(self, title, text):
         window = self._agent_panel.main_window
@@ -315,8 +336,8 @@ class AgentTeamTab(QtWidgets.QWidget):
     def _archive(self):
         if self._logs and self._root:
             self.planner.cache.archive(self._root, self._run_id, [
-                (n, self._cards[n].title, "\n\n".join(entries))
-                for n, entries in self._logs.items() if n in self._cards])
+                (n, self._roles.get(n, "ИИ-агент"), "\n\n".join(entries))
+                for n, entries in self._logs.items()])
 
     def show_journals(self):
         project = self._agent_panel._project_root()
@@ -331,7 +352,7 @@ class AgentTeamTab(QtWidgets.QWidget):
             row = rows[labels.index(choice)]
             self._journal_tab(row["title"], self.planner.cache.journal(project, row["run"], row["agent"]))
 
-    def submit(self, text, *, scheduled_role=None, attachment_paths=()):
+    def submit(self, text, *, scheduled_role=None, attachment_paths=(), file_context=None):
         if self.busy:
             return False
         if not text:
@@ -361,28 +382,28 @@ class AgentTeamTab(QtWidgets.QWidget):
         self._run_id = uuid4().hex
         toolbox.team_cache = self.planner.cache
         toolbox.team_run_id = self._run_id
-        self._model = getattr(service, "model", "")
         self._goal = (self._goal + "\n\nУточнение: " + self._question + "\nОтвет: " + text
                       if self._question else text)
         self._question = ""
         self._cancel = cancel
         self.stop_button.setEnabled(True)
         self.stats.clear()
-        self.reasoning_view.clear()
-        self.reasoning_view.hide()
-        self._reasoning_text = ""
-        self._received_reasoning = False
-        self._reasoning_agent = None
         self._live_tokens = 0
         self.applied_button.hide()
         self._set_edits([])
-        self.graph.clear()
-        self._cards.clear()
+        self._roles.clear()
+        self._statuses.clear()
         self._logs.clear()
-        self._log_views.clear()
-        self._update_card(0, "Руководитель", self._goal, "Запуск")
+        self._journal_lines.clear()
+        self._journal_view = None
+        self._update_agent(0, "Руководитель", self._goal, "Запуск")
         self._agent_panel._record_team_message("user", text)
         options = {"attachment_paths": attachment_paths} if attachment_paths else {}
+        if not attachment_paths:
+            collect_file_context = getattr(self._agent_panel, "_team_file_context", None)
+            if file_context is None and callable(collect_file_context):
+                file_context = collect_file_context()
+            options.update(file_context or {})
         from services.ai_service import AIService
         if isinstance(service, AIService):
             service.config["ai_team_strategy"] = "single"  # three-stage team is paused
@@ -393,9 +414,36 @@ class AgentTeamTab(QtWidgets.QWidget):
             configs = server_configs()
             if configs:
                 options["mcp_servers"] = configs
-        run_async(partial(run_team, service, toolbox, self._goal, self.agent_updated.emit, cancel.is_set,
+        preview_lock = Lock()
+        previews = {}
+
+        def show_phase(number, role, goal, status):
+            with preview_lock:
+                previews.pop(number, None)
+            self.agent_updated.emit(number, role, goal, status)
+
+        def show_reasoning(number, piece):
+            with preview_lock:
+                batch = previews.get(number)
+                if batch is not None:
+                    batch[0] = (batch[0] + piece[-1200:])[-1200:]
+                    return
+                batch = previews[number] = [piece[-1200:]]
+
+            def flush():
+                with preview_lock:
+                    if previews.get(number) is batch:
+                        del previews[number]
+                if self._cancel is cancel:
+                    self._append_reasoning(number, batch[0])
+
+            self.reasoning_received.emit(flush)
+
+        show_reasoning_enabled = getattr(self._agent_panel, "_show_reasoning", lambda: True)()
+        run_async(partial(run_team, service, toolbox, self._goal, show_phase, cancel.is_set,
                           report=self.report_updated.emit, trace=self.action_logged.emit,
-                          reasoning=self.reasoning_received.emit, usage_progress=self.usage_received.emit,
+                          reasoning=show_reasoning if show_reasoning_enabled else None,
+                          usage_progress=self.usage_received.emit,
                           scheduled_role=scheduled_role, relationship=self.relationship_updated.emit, **options),
                   on_done=self._finish, on_error=self._finish)
         return True
@@ -405,10 +453,12 @@ class AgentTeamTab(QtWidgets.QWidget):
         self.pending_list.clear()
         self.pending_list.hide()
         self.planner.finished(False)
-        self._archive()
         if self._cancel is not None:
             self._cancel.set()
             self.stop_button.setEnabled(False)
+            self._set_phase("Останавливаю задачу…")
+            self._log(0, "Остановка запрошена пользователем.")
+            self._archive()
         if self._applying is not None:
             self._applying.set()
 
@@ -489,7 +539,7 @@ class AgentTeamTab(QtWidgets.QWidget):
             self._set_edits([])
             return
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Изменения команды")
+        dialog.setWindowTitle("Предложенные правки")
         dialog.resize(800, 510)
         layout = QtWidgets.QVBoxLayout(dialog)
         files = QtWidgets.QComboBox()
@@ -581,17 +631,18 @@ class AgentTeamTab(QtWidgets.QWidget):
             self.planner.finished(not cancelled and not isinstance(result, str) and not result.failed_agents
                                   and result.complete)
         if cancelled:
-            self.activity.setText("Остановлено")
+            self._set_phase("Остановлено")
+            self._archive()
             if usage_recorded:
                 self._persist_chat_session()
             return
         if isinstance(result, str):
-            if 0 in self._cards:
-                self._update_card(0, "Руководитель", self._goal, "Ошибка")
+            if 0 in self._roles:
+                self._update_agent(0, self._roles[0], self._goal, "Ошибка")
                 self._update_report(0, result)
                 self._archive()
             self._agent_panel._append_notice(result, "warn")
-            self.activity.setText("Ошибка · очередь ожидает решения")
+            self._set_phase("Ошибка · очередь ожидает решения")
             if usage_recorded:
                 self._persist_chat_session()
             return
@@ -609,22 +660,20 @@ class AgentTeamTab(QtWidgets.QWidget):
             answer += f"\n\nЗаданий завершилось с ошибкой: {result.failed_agents}."
         self._agent_panel._record_team_message("assistant", answer)
         self._last_result = self._goal + "\n" + answer
-        self.activity.setText("Нужен ваш ответ" if result.question else
-                              "Есть незавершённая работа" if not result.complete else
-                              "Изменения готовы к просмотру" if result.edits else "Задача завершена")
+        self._set_phase("Нужен ваш ответ" if result.question else
+                        "Есть незавершённая работа" if not result.complete else
+                        "Изменения готовы к просмотру" if result.edits else "Задача завершена")
         if result.question:
             self.idea.setFocus()
-        total = result.usage.get("total_tokens")
         usage = result.usage
-        incoming = usage.get("prompt_tokens")
-        if incoming is None and "input_tokens" in usage:
-            incoming = (usage["input_tokens"] + usage.get("cache_read_input_tokens", 0)
-                        + usage.get("cache_creation_input_tokens", 0))
+        total = total_tokens(usage)
+        incoming = input_tokens(usage)
         outgoing = usage.get("completion_tokens", usage.get("output_tokens"))
         if incoming is not None:
             parts = [f"Вход {incoming:,}"]
             if "cache_read_input_tokens" in usage:
-                parts.append(f"из кэша {usage['cache_read_input_tokens']:,}")
+                cached = usage["cache_read_input_tokens"]
+                parts.append(f"из кэша {cached:,}" + (f" ({cached / incoming:.1%})" if incoming else ""))
             if outgoing is not None:
                 parts.append(f"выход {outgoing:,}")
             self.stats.setText(" · ".join(parts).replace(",", " "))

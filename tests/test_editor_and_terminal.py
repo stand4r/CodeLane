@@ -35,6 +35,41 @@ _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 _KEEP_ALIVE = []
 
 
+def test_agent_launches_in_the_visible_terminal_and_respects_the_tab_number(tmp_path, monkeypatch, qtbot):
+    from types import SimpleNamespace
+
+    from app.agent_workbench import PENDING, run_workbench
+    from widgets.TerminalWidget import TerminalWidget
+
+    monkeypatch.setattr(TerminalWidget, "restore_session", lambda self: None)
+    monkeypatch.setattr(TerminalWidget, "save_session", lambda self: None)
+    terminal = TerminalWidget()
+    qtbot.addWidget(terminal)
+    terminal.create_new_tab(tmp_path)
+    window = SimpleNamespace(
+        current_project=SimpleNamespace(root_path=str(tmp_path)),
+        console_widget=SimpleNamespace(get_terminal=lambda: terminal, set_current_tab=lambda _: None),
+        terminal_visible=True,
+    )
+    results = []
+    try:
+        assert run_workbench(window, "terminal_execute", {
+            "_project_root": str(tmp_path), "command": "echo codelane-terminal-ready", "wait_seconds": 3,
+        }, results.append) is PENDING
+        qtbot.waitUntil(lambda: bool(results), timeout=5000)
+        result = results[0]
+        assert result["started"] and result["completed"] and result["exit_code"] == 0
+        assert "codelane-terminal-ready" in result["output"]
+        terminal.create_new_tab(tmp_path)
+        assert terminal.tab_widget.currentIndex() != result["tab"] - 1
+        interrupted = []
+        monkeypatch.setattr(terminal, "interrupt_current", lambda: interrupted.append(terminal._current()))
+        run_workbench(window, "terminal_control", {"action": "interrupt", "tab": result["tab"]}, results.append)
+        assert interrupted == [terminal.tab_widget.widget(result["tab"] - 1)]
+    finally:
+        terminal.shutdown()
+
+
 def test_terminal_shortcuts_take_precedence_and_filter_control_characters():
     from PyQt6.QtTest import QTest
     from widgets.TerminalWidget import InteractiveTerminalEdit

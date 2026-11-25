@@ -42,3 +42,31 @@ def test_search_cancels_and_reports_invalid_patterns(tmp_path):
 def test_exact_path_cannot_leave_project(tmp_path):
     with pytest.raises(ToolError, match="ограничен"):
         LocalToolbox(str(tmp_path)).search_in_project("anything", glob="../outside.py")
+
+
+def test_regex_search_passes_a_timeout_and_reports_expensive_matches(tmp_path, monkeypatch):
+    import regex
+
+    (tmp_path / "source.py").write_text("value = 42\n")
+    toolbox = LocalToolbox(str(tmp_path))
+    assert "value = 42" in toolbox.search_in_project(r"value\s*=\s*\d+", regex=True)
+
+    class SlowMatcher:
+        def search(self, line, *, timeout, concurrent):
+            assert timeout > 0 and concurrent
+            raise TimeoutError
+
+    monkeypatch.setattr(regex, "compile", lambda *_: SlowMatcher())
+    with pytest.raises(ToolError, match="слишком долго"):
+        toolbox.search_in_project("value", regex=True)
+
+
+def test_regex_search_works_when_the_optional_engine_is_missing(tmp_path, monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "regex", None)
+    (tmp_path / "source.py").write_text("value = 42\n")
+    toolbox = LocalToolbox(str(tmp_path))
+    assert "source.py:1: value = 42" in toolbox.search_in_project(
+        r"value\s*=\s*\d+", regex=True, glob="source.py",
+    )

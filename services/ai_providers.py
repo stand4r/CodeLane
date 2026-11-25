@@ -65,6 +65,10 @@ class ProviderSpec:
     credential_group: str = ""
     # Preferred model when the stored setting has none; defaults to models[0].
     default_model_id: str = ""
+    # The models think by default (DeepSeek V4.x). Their API then demands the
+    # round's ``reasoning_content`` back with tool calls — even an empty one —
+    # and answers 400 otherwise. See ``AIService.reasoning_required``.
+    thinking_by_default: bool = False
 
     @property
     def default_model(self) -> str:
@@ -251,6 +255,9 @@ PROVIDERS: Dict[str, ProviderSpec] = {
             _m("deepseek-v4-pro", "DeepSeek V4 Pro", note="Максимальное качество",
                version="DeepSeek-V4-Pro-0813"),
         ],
+        # Both current models think by default: tool rounds must echo
+        # ``reasoning_content`` back, empty or not.
+        thinking_by_default=True,
         hint="Ключ начинается с «sk-». Актуальные модели: deepseek-flash (V4.1-Flash-1017) "
              "и deepseek-v4-pro. Старое имя deepseek-chat тоже принимается, но это тот же Flash.",
     ),

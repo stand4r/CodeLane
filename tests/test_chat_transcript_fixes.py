@@ -102,8 +102,7 @@ def test_restored_session_opens_at_last_message(tmp_path):
     panel.close()
 
 
-def test_team_mode_toggle_removed_and_always_on():
-    """The mode button is gone and the panel always routes to the team."""
+def test_agent_workspace_uses_a_single_progress_line():
     from widgets.AgentTeamTab import AgentTeamTab
     from widgets.AIAgentPanel import AIAgentPanel
 
@@ -114,11 +113,12 @@ def test_team_mode_toggle_removed_and_always_on():
     group.resize(1000, 600)
     group.show()
     _pump(120)
-    assert tab.team_mode.isChecked()
     assert not group.findChildren(QtWidgets.QPushButton, "agentModeButton")
     labels = [button.text() for button in group.findChildren(QtWidgets.QPushButton)]
     assert "Режим: команда" not in labels and "Режим: чат" not in labels
-    assert panel.input.placeholderText() == "Задача для команды"
+    assert panel.input.placeholderText() == "Задача для агента"
+    assert tab.activity.text() == "Готов к задаче"
+    assert not tab.activity.wordWrap()
     group.close()
     assert AIAgentPanel is not None
 

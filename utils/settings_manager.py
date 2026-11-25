@@ -66,6 +66,8 @@ DEFAULT_SETTINGS = {
     "ai_allow_file_edits": True,
     "ai_access_mode": "full",
     "ai_allow_commands": True,
+    # Delete scratch files the agent created during a request when it finishes.
+    "ai_cleanup_temp_files": True,
     # Agent behaviour: solve (full answers) | teach (Socratic tutor).
     "ai_mode": "solve",
     # Tutor strictness: soft | normal | strict.

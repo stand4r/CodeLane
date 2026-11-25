@@ -18,3 +18,4 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+qt_api = "pyqt6"

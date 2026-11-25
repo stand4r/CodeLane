@@ -17,7 +17,10 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Dict, Iterable, List, Optional, Tuple
+
+from services.ai_budget import clip_utf8
 
 __all__ = [
     "ContextCache",
@@ -28,15 +31,14 @@ __all__ = [
 
 TREE_TTL_SEC = 20.0
 TREE_LIMIT = 400
-# UTF-8 bytes are a conservative upper bound for byte-based tokenizers.
-# Reserve space in a 1M-token window for history, tools and the answer.
-PROJECT_CONTEXT_BYTES = 850_000
+PROJECT_CONTEXT_BYTES = 48_000
 # Explicit @-mentions are useful context, but must not let a single generated or
 # accidentally selected file consume the entire request window.
-MENTION_FILE_BYTES = 64_000
+MENTION_FILE_BYTES = 12_000
 # Bound all attached mentions together, not just each individual file. The
 # surrounding labels/context header are small; reserve a little room for them.
-MENTIONS_TOTAL_BYTES = 256_000
+MENTIONS_TOTAL_BYTES = 32_000
+MENTION_TRUNCATED = "\n… [файл усечён для экономии контекста; остальные строки доступны через read_file] …\n"
 
 
 @dataclass
@@ -47,9 +49,10 @@ class ContextCache:
     trees: Dict[str, Tuple[float, List[str]]] = field(default_factory=dict)
     hits: int = 0
     misses: int = 0
+    _lock: Lock = field(default_factory=Lock, repr=False, compare=False)
 
     def read(self, path: Path) -> str:
-        """Return the file text, reusing the cached copy while it is unchanged."""
+        """Return a preview, reusing the cached copy while the file is unchanged."""
         key = str(path)
         try:
             stat = path.stat()
@@ -60,10 +63,22 @@ class ContextCache:
             self.hits += 1
             return cached[2]
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            with path.open("rb") as source:
+                raw = source.read(MENTION_FILE_BYTES + 1)
+                if len(raw) > MENTION_FILE_BYTES:
+                    half = (MENTION_FILE_BYTES - len(MENTION_TRUNCATED.encode("utf-8"))) // 2
+                    source.seek(-half, 2)
+                    text = (raw[:half].decode("utf-8", errors="replace") + MENTION_TRUNCATED
+                            + source.read(half).decode("utf-8", errors="replace"))
+                else:
+                    text = raw.decode("utf-8", errors="replace")
+            text = text.replace("\r\n", "\n").replace("\r", "\n")
         except OSError:
             return ""
-        self.files[key] = (stat.st_mtime_ns, stat.st_size, text)
+        with self._lock:
+            if key not in self.files and len(self.files) >= 128:
+                self.files.pop(next(iter(self.files)))
+            self.files[key] = (stat.st_mtime_ns, stat.st_size, text)
         self.misses += 1
         return text
 
@@ -77,7 +92,7 @@ class ContextCache:
             return list(cached[1])
         from core.ignore_rules import walk_files
         try:
-            scan = walk_files(root, extensions=None, max_files=TREE_LIMIT,
+            scan = walk_files(root, extensions=None, max_files=TREE_LIMIT, max_entries=20_000,
                               max_bytes=4 * 1024 * 1024, cancelled=should_stop)
         except Exception:  # noqa: BLE001 - an unreadable tree must not break chat
             return []
@@ -93,11 +108,12 @@ class ContextCache:
         return list(names)
 
     def invalidate(self, path: Optional[Path] = None) -> None:
-        if path is None:
-            self.files.clear()
-            self.trees.clear()
-        else:
-            self.files.pop(str(path), None)
+        with self._lock:
+            if path is None:
+                self.files.clear()
+                self.trees.clear()
+            else:
+                self.files.pop(str(path), None)
 
     def stats(self) -> Dict[str, int]:
         return {"hits": self.hits, "misses": self.misses,
@@ -139,13 +155,14 @@ def _tree_summary(names: Iterable[str]) -> str:
 def render_project_context(root: Optional[Path], mentions: Optional[List[str]] = None,
                            cache: Optional[ContextCache] = None, should_stop=None) -> str:
     """Build the project part of the context block (cached where possible)."""
-    if root is None:
+    if root is None or (should_stop and should_stop()):
         return ""
     cache = cache or _CACHE
     parts: List[str] = []
     if mentions:
         mention_bytes = 0
-        for rel in mentions:
+        root = root.resolve()
+        for rel in dict.fromkeys(mentions):
             if should_stop and should_stop():
                 break
             if mention_bytes >= MENTIONS_TOTAL_BYTES:
@@ -153,7 +170,7 @@ def render_project_context(root: Optional[Path], mentions: Optional[List[str]] =
                 break
             candidate = (root / rel).resolve()
             try:
-                candidate.relative_to(root.resolve())
+                candidate.relative_to(root)
             except ValueError:
                 continue
             if not candidate.is_file():
@@ -165,39 +182,31 @@ def render_project_context(root: Optional[Path], mentions: Optional[List[str]] =
                 if available <= 0:
                     parts.append("Упоминания файлов ограничены общим бюджетом; остальные файлы не приложены.")
                     break
-                # Reserve framing bytes, and shrink the per-file cap when prior
-                # mentions have consumed most of the total allowance.
-                file_budget = min(MENTION_FILE_BYTES, max(1, available - len(f"Файл проекта {rel}:\n```\n\n```".encode("utf-8"))))
+                prefix = f"Файл проекта {rel}:\n```\n"
+                suffix = "\n```"
+                file_budget = min(MENTION_FILE_BYTES, available - len((prefix + suffix).encode("utf-8")) - 2)
+                marker_bytes = len(MENTION_TRUNCATED.encode("utf-8"))
+                if file_budget <= marker_bytes:
+                    parts.append("Упоминания файлов ограничены общим бюджетом; остальные файлы не приложены.")
+                    break
                 if len(encoded) > file_budget:
-                    # Keep both ends: declarations/imports and trailing context can
-                    # matter, while a clear marker tells the model content is absent.
-                    marker = "\n… [файл усечён для экономии контекста; полный текст доступен через read_file] …\n"
-                    budget = max(0, file_budget - len(marker.encode("utf-8")))
+                    budget = file_budget - marker_bytes
                     head_size = budget // 2
                     tail_size = budget - head_size
                     head = encoded[:head_size].decode("utf-8", errors="ignore")
                     tail = encoded[-tail_size:].decode("utf-8", errors="ignore")
-                    text = head + marker + tail
-                block = f"Файл проекта {rel}:\n```\n{text}\n```"
-                block_bytes = len(block.encode("utf-8"))
-                if block_bytes > available:
-                    # A UTF-8 boundary-safe slice keeps the total hard-bounded.
-                    raw = block.encode("utf-8")[:available]
-                    block = raw.decode("utf-8", errors="ignore")
-                    block_bytes = len(block.encode("utf-8"))
+                    text = head + MENTION_TRUNCATED + tail
+                block = prefix + text + suffix
                 parts.append(block)
-                mention_bytes += block_bytes
+                mention_bytes += len(block.encode("utf-8")) + 2
         if not parts:
-            parts.append(_tree_summary(cache.tree(root)))
+            parts.append(clip_utf8(_tree_summary(cache.tree(root, should_stop)), 3600))
     else:
         names = cache.tree(root, should_stop)
         parts.append("Карта проекта (содержимое файлов не приложено):\n"
-                     + ("\n".join(names) if len(names) <= 32 else _tree_summary(names))[:2400])
-        parts.append("Неизвестные пути и символы найди через search_in_project; "
-                     "для нескольких символов используй queries и соседние строки context_lines. "
-                     "Если путь и диапазон известны, сразу читай read_file(offset, limit). "
-                     "Не обходи весь проект и не перечитывай уже полученный текст. "
-                     "Независимые чтения и поиски запрашивай вместе в одном ответе.")
+                     + clip_utf8("\n".join(names) if len(names) <= 32 else _tree_summary(names), 3600))
+        parts.append("Для поиска фрагментов используй search_in_project(regex=true, glob, queries, context_lines). "
+                     "Для точной правки дочитай только недостающие строки через read_file(offset, limit).")
         if len(names) >= TREE_LIMIT:
             parts.append("Карта ограничена; остальные пути доступны через list_directory и поиск.")
     if not parts:

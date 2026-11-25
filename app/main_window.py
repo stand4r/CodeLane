@@ -942,8 +942,10 @@ class ModernMainWindow(QMainWindow):
             self.search_panel.protect_open_files()
         if group is self.active_tab_widget:
             editor = self.get_current_editor()
-            if getattr(editor, "file_path", None) and getattr(self, "ai_panel", None) is not None:
-                self.ai_panel._workspace_source_editor = editor
+            source = editor or group.currentWidget()
+            path = getattr(source, "file_path", None) or getattr(source, "current_file_path", None)
+            if path and getattr(self, "ai_panel", None) is not None:
+                self.ai_panel._workspace_source_editor = source
             self.update_analysis_panels()
             self._sync_special_activity()
 
@@ -1781,17 +1783,78 @@ class ModernMainWindow(QMainWindow):
                 target.cut()
 
     def action_copy(self):
-        """Выполняет операцию action copy.
+        """Копирует выделенный текст из сфокусированного виджета.
+
+        Текстовые поля обрабатывают Ctrl+C сами, а вот QLabel с выделяемым
+        текстом (сообщения ИИ-агента, подсказки, панели) своей копии не имеют,
+        поэтому копирование выполняется здесь.
         """
         focused = QtWidgets.QApplication.focusWidget()
-        if focused is not None and callable(getattr(focused, "copy", None)):
-            focused.copy()
+        if self._copy_selection_from_widget(focused):
             return
+        hovered = QtWidgets.QApplication.widgetAt(QtGui.QCursor.pos())
+        if hovered is not None and hovered is not focused:
+            if self._copy_selection_from_widget(hovered):
+                return
         current_editor = self.get_current_editor()
         if current_editor:
             target = getattr(current_editor, 'editor', current_editor)
             if hasattr(target, 'copy'):
                 target.copy()
+
+    @staticmethod
+    def _selected_text_of(widget):
+        """Возвращает выделенный текст виджета или пустую строку."""
+        if widget is None:
+            return ""
+        getter = getattr(widget, "selectedText", None)
+        if callable(getter):
+            try:
+                text = getter()
+            except Exception:
+                text = ""
+            if isinstance(text, str) and text:
+                return text
+        cursor_getter = getattr(widget, "textCursor", None)
+        if callable(cursor_getter):
+            try:
+                cursor = cursor_getter()
+                text = cursor.selectedText() if cursor is not None else ""
+            except Exception:
+                text = ""
+            if isinstance(text, str) and text:
+                return text
+        return ""
+
+    def _copy_selection_from_widget(self, widget):
+        """Копирует выделение виджета или его родителей; True, если скопировано."""
+        chain = []
+        current = widget
+        while current is not None:
+            chain.append(current)
+            current = current.parentWidget()
+        for candidate in chain:
+            if hasattr(candidate, "triggerPageAction") and hasattr(candidate, "page"):
+                try:
+                    from PyQt6.QtWebEngineCore import QWebEnginePage
+
+                    candidate.page().triggerAction(QWebEnginePage.WebAction.Copy)
+                    return True
+                except Exception:
+                    pass
+            text = self._selected_text_of(candidate)
+            if not text:
+                continue
+            copy = getattr(candidate, "copy", None)
+            if callable(copy):
+                try:
+                    copy()
+                    return True
+                except Exception:
+                    pass
+            QtWidgets.QApplication.clipboard().setText(text)
+            return True
+        return False
 
     def action_paste(self):
         """Выполняет операцию action paste.
@@ -2324,7 +2387,7 @@ class ModernMainWindow(QMainWindow):
             return
         root = Path(self.current_project.root_path)
         if (root / 'pytest.ini').exists() or (root / 'pyproject.toml').exists() or (root / 'tests').exists():
-            from utils.toolchain_detector import python_interpreter
+            from utils.toolchain_detector import python_interpreter, resolve_toolchain
             from widgets.TestResultsPanel import TestResultsPanel
 
             tools = get_settings_manager().get_setting("toolchains", {}) or {}

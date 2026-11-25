@@ -319,24 +319,10 @@ def run_workbench(window, name, payload, complete):
         items = [{**row, "detail": row["detail"][-1000:]} for row in _page(rows, payload)]
         return {"ready": True, "exit_code": panel.exit_code, "nodeid": panel.nodeid,
                 "total": len(rows), "items": items}
-    if name in ("read_document", "preview_document"):
-        from services.workbench_documents import DOCUMENT_SUFFIXES, read_document
-
+    if name == "preview_document":
         path = Path(payload["path"])
         if not path.is_file():
             raise RuntimeError("Документ не найден.")
-        if name == "read_document":
-            if path.suffix.lower() not in DOCUMENT_SUFFIXES:
-                raise RuntimeError("Для текстовых файлов используй read_file.")
-            def document_ready(value=None, *, error=""):
-                current = getattr(window.current_project, "root_path", None)
-                if not current or Path(current).resolve() != root:
-                    complete(error="Открытый проект изменился.")
-                    return
-                complete(value, error=error)
-
-            return _background(lambda: read_document(path, offset=payload.get("offset", 1),
-                                                     limit=payload.get("limit", 5)), document_ready)
         if path.suffix.lower() not in {".html", ".htm", ".md", ".markdown"}:
             raise RuntimeError("Предпросмотр поддерживает HTML и Markdown.")
         found = _find_editor(window, path)
@@ -502,26 +488,21 @@ def run_workbench(window, name, payload, complete):
             raise RuntimeError("Команда пуста.")
         terminal = window.console_widget.get_terminal()
         tab = terminal._current()
-        if tab is not None and tab._busy:
-            raise RuntimeError("Терминал занят. Открой новую вкладку или дождись завершения.")
         if not window.terminal_visible and not window.console_widget.isVisible():
             window.toggle_terminal()
         window.console_widget.set_current_tab("Terminal")
-        wait = payload.get("wait_seconds", 30)
-        if not wait:
-            terminal.run_file(command, root, shell=True)
-            return {"started": True, "completed": False}
-        if tab is None:
+        if tab is None or tab._busy:
             terminal.create_new_tab(root)
             tab = terminal._current()
-        return _wait_for_terminal(terminal, tab, command, root, wait, complete)
+        return _wait_for_terminal(terminal, tab, command, root, payload.get("wait_seconds", 30), complete)
     if name in ("terminal_output", "terminal_control"):
         terminal = window.console_widget.get_terminal()
         tabs = terminal.tab_widget
         if name == "terminal_output":
-            tab = terminal._current()
-            if tab is None:
-                raise RuntimeError("В терминале нет открытых вкладок.")
+            index = payload.get("tab", tabs.currentIndex() + 1) - 1
+            if not 0 <= index < tabs.count():
+                raise RuntimeError("Вкладка терминала не найдена.")
+            tab = tabs.widget(index)
             cursor = tab.screen.textCursor()
             cursor.setPosition(tab.screen.prompt_pos)
             cursor.movePosition(QtGui.QTextCursor.MoveOperation.PreviousBlock,
@@ -531,24 +512,27 @@ def run_workbench(window, name, payload, complete):
             return {"cwd": str(tab.working_dir), "busy": tab._busy,
                     "output": cursor.selectedText().replace("\u2029", "\n"),
                     "tabs": [tabs.tabText(index) for index in range(tabs.count())],
+                    "tab": index + 1,
                     "active_tab": tabs.currentIndex() + 1}
         action = payload["action"]
         if action in ("show", "new"):
             if not window.terminal_visible:
                 window.toggle_terminal()
             window.console_widget.set_current_tab("Terminal")
-        if action in ("select", "close"):
+        if action in ("select", "close", "clear", "interrupt"):
             index = payload.get("tab", tabs.currentIndex() + 1) - 1
             if not 0 <= index < tabs.count():
                 raise RuntimeError("Вкладка терминала не найдена.")
-            if action == "select":
-                tabs.setCurrentIndex(index)
-            else:
+            if action == "close":
                 terminal.close_tab(index)
-        elif action != "show":
-            handler = {"new": terminal.create_new_tab, "clear": terminal.clear_current,
-                       "interrupt": terminal.interrupt_current}[action]
-            handler()
+            else:
+                tabs.setCurrentIndex(index)
+                if action == "clear":
+                    terminal.clear_current()
+                elif action == "interrupt":
+                    terminal.interrupt_current()
+        elif action == "new":
+            terminal.create_new_tab()
         return {"action": action}
     if name == "read_log":
         base_path = window.app_manager.base_path
@@ -572,6 +556,9 @@ def _wait_for_terminal(terminal, tab, command, root, seconds, complete):
     anchor.setKeepPositionOnInsert(True)
     timer = QtCore.QTimer(terminal)
     timer.setSingleShot(True)
+    process = None
+    started = False
+    reported = False
 
     def cleanup():
         try:
@@ -584,8 +571,17 @@ def _wait_for_terminal(terminal, tab, command, root, seconds, complete):
             tab.destroyed.disconnect(closed)
         except (RuntimeError, TypeError):
             pass
+        if process is not None:
+            try:
+                process.started.disconnect(launched)
+            except (RuntimeError, TypeError):
+                pass
 
     def report(completed, code=None):
+        nonlocal reported
+        if reported:
+            return
+        reported = True
         end = min(tab.screen.prompt_pos, tab.screen.document().characterCount() - 1)
         start = max(0, anchor.position(), end - 24000)
         cursor = QtGui.QTextCursor(tab.screen.document())
@@ -593,22 +589,41 @@ def _wait_for_terminal(terminal, tab, command, root, seconds, complete):
         cursor.setPosition(end, QtGui.QTextCursor.MoveMode.KeepAnchor)
         output = cursor.selectedText().replace("\u2029", "\n")
         cleanup()
-        complete({"started": True, "completed": completed, "exit_code": code,
-                  "output": output, "timed_out": not completed})
+        complete({"tab": terminal.tab_widget.indexOf(tab) + 1,
+                  "started": started or (completed and code == 0), "completed": completed,
+                  "exit_code": code, "output": output, "timed_out": not (completed or started and seconds == 0)})
+
+    def launched():
+        nonlocal started
+        started = True
+        if seconds == 0:
+            report(False)
 
     def finished(code):
         report(True, code)
 
     def closed(*_args):
+        nonlocal reported
+        if reported:
+            return
+        reported = True
         cleanup()
         complete(error="Вкладка терминала закрыта.")
 
     tab.command_finished.connect(finished)
     tab.destroyed.connect(closed)
     timer.timeout.connect(lambda: report(False))
-    timer.start(seconds * 1000)
+    timer.start((seconds or 5) * 1000)
     try:
         terminal.run_file(command, root, shell=True)
+        if not reported:
+            process = tab._run_process
+            if process is None:
+                raise RuntimeError("Не удалось запустить процесс во встроенном терминале.")
+            if process.state() == QtCore.QProcess.ProcessState.Running:
+                launched()
+            else:
+                process.started.connect(launched)
     except Exception:
         cleanup()
         raise

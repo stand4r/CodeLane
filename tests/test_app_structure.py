@@ -77,6 +77,38 @@ def test_ui_font_resolution():
     assert "Bahnschrift" not in UI_FONT_CANDIDATES
 
 
+def test_agent_composer_renders_a_border_in_both_themes(tmp_path, monkeypatch):
+    from app import styling
+    from utils import settings_manager
+    from widgets.AIAgentPanel import AIAgentPanel
+
+    app = QApplication.instance() or QApplication([])
+    original_style = app.styleSheet()
+    settings = settings_manager.SettingsManager(tmp_path / "settings.json")
+    monkeypatch.setattr(settings_manager, "_settings_manager", settings)
+    panel = AIAgentPanel()
+    panel.resize(900, 560)
+    panel.show()
+    try:
+        for theme, unfocused, focused in (
+            ("dark", "#777a88", "#b8a9eb"),
+            ("light", "#9a9daa", "#67569d"),
+        ):
+            settings.settings["theme"] = theme
+            app.setStyleSheet(styling._load_design_qss(ROOT))
+            for input_focused, expected in ((False, unfocused), (True, focused)):
+                frame = panel.composer
+                frame.setProperty("inputFocused", input_focused)
+                frame.style().unpolish(frame)
+                frame.style().polish(frame)
+                app.processEvents()
+                image = frame.grab().toImage()
+                assert image.pixelColor(image.width() // 2, 0).name() == expected
+    finally:
+        panel.close()
+        app.setStyleSheet(original_style)
+
+
 def test_theme_uses_font_tokens():
     """The interface font is set by QApplication, not per-rule in the stylesheet.
 

@@ -43,6 +43,8 @@ hiddenimports = [
     # System and Process inspection
     "psutil",
     "pyte",
+    "regex",
+    "regex._regex",
     # CA bundle for outbound HTTPS (utils/tls.py)
     "certifi",
     # Syntax highlighting & themes

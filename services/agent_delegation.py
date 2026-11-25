@@ -3,12 +3,14 @@
 from copy import copy
 import json
 
+from services.ai_budget import clip_utf8
+
 
 ROLES = {
     "code": ("Код", {"list_directory", "search_in_project", "read_file", "lsp_query",
                     "analysis_details", "dependency_graph"}),
     "review": ("Ревью", {"search_in_project", "read_file", "git_read", "analysis_details", "lsp_query"}),
-    "docs": ("Документация", {"list_directory", "search_in_project", "read_file", "lsp_query"}),
+    "docs": ("Документация", {"list_directory", "search_in_project", "read_file", "read_document", "lsp_query"}),
     "design": ("Дизайнер", {"list_directory", "search_in_project", "read_file"}),
     "test": ("Тестировщик", {"list_directory", "search_in_project", "read_file", "analysis_details", "test_results"}),
     "requirements": ("Постановка задачи", {"list_directory", "search_in_project", "read_file"}),
@@ -17,12 +19,18 @@ ROLES = {
 # Nested delegation does not require every IDE operation on every worker.
 ROLE_ACTIONS = {
     "code": {"open_file", "edit_file", "write_file", "run_terminal_command",
-             "run_project_tests", "test_results", "analysis_refresh"},
+             "run_project_tests", "python", "pytest", "pip", "test_results",
+             "analysis_refresh"},
     "docs": {"open_file", "edit_file", "write_file", "read_document"},
     "design": {"open_file", "edit_file", "write_file", "capture_screen"},
-    "test": {"run_project_tests", "run_terminal_command", "read_log"},
+    "test": {"run_project_tests", "pytest", "run_terminal_command", "read_log"},
 }
 COMPUTER_ACTIONS = {"run_terminal_command", "open_application", "run_executable", "capture_screen"}
+for _role, (_title, _tools) in ROLES.items():
+    _tools.update({"find_files", "view_image"})
+for _role in ("code", "test"):
+    ROLE_ACTIONS[_role].update({"exec_command", "write_stdin"})
+# Delegated edits keep the existing proposal/snapshot path; supervisors apply patches.
 
 DELEGATE_TOOL = {
     "type": "function",
@@ -41,7 +49,8 @@ DELEGATE_TOOL = {
 
 def delegate(service, toolbox, definitions, args, should_stop, on_usage=None, *, collect_edits=False, trace=None,
              on_reasoning=None, on_round_usage=None,
-             assign_children=None, dependency_context="", tool_runner=None, round_budget=None):
+             assign_children=None, dependency_context="", tool_runner=None, round_budget=None,
+             read_only=False):
     from services.agent_edits import EDIT_SCHEMA, validate_fragment
     from services.ide_mcp import IDEMCP
 
@@ -49,7 +58,7 @@ def delegate(service, toolbox, definitions, args, should_stop, on_usage=None, *,
     if role not in ROLES or not isinstance(task, str) or not task.strip():
         raise ValueError("Укажи роль и конкретную подзадачу.")
     title, tool_names = ROLES[role]
-    allowed_names = tool_names | ROLE_ACTIONS.get(role, set()) | COMPUTER_ACTIONS
+    allowed_names = tool_names if read_only else tool_names | ROLE_ACTIONS.get(role, set()) | COMPUTER_ACTIONS
     tools = [item for item in definitions if item["function"]["name"] in allowed_names]
     if collect_edits:
         tools.append(EDIT_SCHEMA)
@@ -85,10 +94,10 @@ def delegate(service, toolbox, definitions, args, should_stop, on_usage=None, *,
 
     def traced_tool(name, payload):
         if trace:
-            trace(name + "\n" + json.dumps(payload, ensure_ascii=False, indent=2))
+            trace(name + "\n" + clip_utf8(json.dumps(payload, ensure_ascii=False, indent=2), 2000))
         value = run_tool(name, payload)
         if trace:
-            trace("Снимок экрана передан модели." if isinstance(value, dict) and "__image__" in value else str(value))
+            trace("Снимок экрана передан модели." if isinstance(value, dict) and "__image__" in value else clip_utf8(str(value), 6000))
         return value
 
     child = copy(service)
@@ -120,8 +129,10 @@ def delegate(service, toolbox, definitions, args, should_stop, on_usage=None, *,
     if should_stop():
         raise RuntimeError("Запрос остановлен.")
     if trace and len(answer) > 6000:
-        trace(answer)
+        trace(clip_utf8(answer, 6000))
     stop_reason = getattr(child, "last_stop_reason", None)
+    if stop_reason == "stalled":
+        return json.dumps({"role": role, "error": answer, "proposed_edits": proposals}, ensure_ascii=False)
     if stop_reason == "empty" or not answer.strip():
         if proposals:
             return json.dumps({"role": role, "error": "Субагент не вернул итоговый ответ.",

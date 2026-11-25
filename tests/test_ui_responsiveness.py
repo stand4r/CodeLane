@@ -30,6 +30,68 @@ def _pump(ms: int):
         time.sleep(0.005)
 
 
+def test_ai_mentions_scan_files_without_blocking_qt(tmp_path, monkeypatch):
+    from threading import Event, current_thread
+
+    import core.ignore_rules
+    from widgets.AIAgentPanel import AIAgentPanel
+
+    ui_thread = current_thread()
+    started, resume = Event(), Event()
+    refreshed = []
+    found = tmp_path / "main.py"
+
+    def walk(root, **kwargs):
+        assert current_thread() is not ui_thread
+        assert root == tmp_path
+        started.set()
+        assert resume.wait(2)
+        return SimpleNamespace(files=[found])
+
+    monkeypatch.setattr(core.ignore_rules, "walk_files", walk)
+    panel = SimpleNamespace(
+        main_window=SimpleNamespace(current_project=SimpleNamespace(root_path=str(tmp_path))),
+        _update_completion=lambda: refreshed.append(True),
+    )
+    try:
+        assert AIAgentPanel._project_entries(panel) == ()
+        assert started.wait(1)
+        QtCore.QTimer.singleShot(0, lambda: refreshed.append("timer"))
+        _pump(25)
+        assert refreshed == ["timer"]
+    finally:
+        resume.set()
+    _pump(80)
+    assert refreshed == ["timer", True]
+    assert AIAgentPanel._project_entries(panel) == [("main.py", "file")]
+
+
+def test_ai_reads_open_editor_in_pages_with_unicode_offsets(tmp_path, monkeypatch):
+    from PyQt6.QtGui import QTextDocument
+
+    from services import agent_tools
+    from widgets.AIAgentPanel import AIAgentPanel
+
+    monkeypatch.setattr(agent_tools, "MAX_READ_CHARS", 20)
+    source = "🙂" * 16 + "tail\nsecond\n"
+    document = QTextDocument(source)
+    path = tmp_path / "sample.py"
+    path.write_text(source, encoding="utf-8")
+
+    def read_editor(kind, args):
+        assert kind == "read_buffer"
+        return AIAgentPanel._editor_page(document, args["first"], args["count"],
+                                       args["column"], args["characters"])
+
+    toolbox = agent_tools.LocalToolbox(str(tmp_path), ui_action=read_editor)
+    page = toolbox.read_file(path.name, limit=0)
+    assert page.splitlines()[1] == "🙂" * 10
+    assert "offset=1, limit=200, column=20" in page
+    assert toolbox.read_file(path.name, offset=1, column=20, limit=1).endswith("🙂" * 6 + "tail")
+    toolbox.ui_action = None
+    assert toolbox.read_file(path.name, offset=1, column=20, limit=1).endswith("🙂" * 6 + "tail")
+
+
 def test_project_replace_runs_in_background_and_stops_between_files(tmp_path, monkeypatch):
     from threading import Event, current_thread
     from widgets.SearchPanel import SearchPanel

@@ -174,7 +174,7 @@ def test_user_stop_does_not_start_any_model_call(tmp_path):
     assert not s.seen
 
 
-def test_dynamic_schemas_reach_the_next_model_request():
+def test_tool_discovery_keeps_the_provider_catalogue_stable():
     from services.agent_harness import AgentHarness
     from services.ai_service import ToolCall
 
@@ -184,31 +184,30 @@ def test_dynamic_schemas_reach_the_next_model_request():
         last_usage = {}
 
         def __init__(self):
-            self._discovered_tools = []
-            self.round = 0
+            self.requests = []
 
-        def _openai_tool_round(self, messages, tools, *args):
-            self.round += 1
-            if self.round == 1:
-                return "", [ToolCall("d", "discover_tools", {"query": "extra"})]
-            assert any(t.get("function", {}).get("name") == "extra" for t in tools)
+        def _openai_tool_round(self, messages, tools, *_):
+            self.requests.append(json.dumps(tools))
+            if len(self.requests) == 1:
+                return "", [ToolCall("d", "lookup_tools", {"query": "extra_4"})]
+            if len(self.requests) == 2:
+                assert json.loads(messages[-1]["content"])[0]["name"] == "extra_4"
+                return "", [ToolCall("c", "call_tool", {"name": "extra_4", "arguments": {"value": 7}})]
+            assert messages[-1]["tool_call_id"] == "c"
+            assert messages[-1]["content"] == "executed"
             return "done", []
 
-    s = Provider()
+    provider = Provider()
+    tools = [{"type": "function", "function": {"name": f"extra_{i}"}} for i in range(20)]
+    executed = []
 
-    def route(*_):
-        s._discovered_tools.append(
-            {
-                "type": "function",
-                "function": {"name": "extra", "parameters": {"type": "object", "properties": {}}},
-            }
-        )
-        return "registered"
+    def route(name, args):
+        executed.append((name, args))
+        return "executed"
 
-    assert (
-        AgentHarness(s, tools=[], tool_runner=route).run([{"role": "user", "content": "task"}]).text
-        == "done"
-    )
+    result = AgentHarness(provider, tools=tools, tool_runner=route).run([{"role": "user", "content": "task"}])
+    assert result.text == "done" and executed == [("extra_4", {"value": 7})]
+    assert len(set(provider.requests)) == 1
 
 
 def test_implementer_pass_is_normalized_without_claiming_final_success(tmp_path):

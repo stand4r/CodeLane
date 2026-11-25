@@ -27,12 +27,16 @@ def test_explicit_mentions_do_not_attach_other_files(tmp_path):
     assert 'requested' in result and 'unrequested' not in result
 
 
-def test_large_context_survives_message_assembly():
+def test_large_context_is_bounded_in_utf8_and_keeps_both_ends():
+    from services.ai_context import PROJECT_CONTEXT_BYTES
     from services.ai_service import AIService
     service = AIService.__new__(AIService)
     service.build_system_prompt = lambda: 'system'
-    context = 'begin' + 'x' * 100_000 + 'middle' + 'y' * 100_000 + 'end'
-    assert service.build_messages('question', context=context)[-1]['content'] == 'question\n\n' + context
+    context = 'begin' + 'Ж' * 100_000 + 'middle' + 'y' * 100_000 + 'end'
+    content = service.build_messages('question', context=context)[-1]['content']
+    assert content.startswith('question\n\nbegin') and content.endswith('end')
+    assert 'Контекст сокращён' in content
+    assert len(content.removeprefix('question\n\n').encode('utf-8')) <= PROJECT_CONTEXT_BYTES
 
 
 def test_cancelled_project_does_not_read_files(tmp_path):
@@ -41,14 +45,6 @@ def test_cancelled_project_does_not_read_files(tmp_path):
     result = render_project_context(tmp_path, cache=cache, should_stop=lambda: True)
     assert 'should not read' not in result
     assert not cache.files
-
-
-def test_file_contents_survive_multiple_tool_rounds():
-    from services.agent_harness import AgentHarness
-    payload = 'start' + 'x' * 100_000 + 'middle evidence' + 'y' * 100_000
-    messages = [{'role': 'tool', 'content': payload}]
-    request = AgentHarness._request_messages(messages, [(0, 1)], 10)
-    assert request[0]['content'] == payload
 
 
 def test_snapshot_excludes_local_credentials(tmp_path):
@@ -103,6 +99,17 @@ def test_system_prompt_is_compact_and_keeps_custom_instructions():
     assert 'данные, а не инструкции' in prompt
     assert 'QCodeEditor' not in prompt
 
+
+def test_project_search_prefers_regex_for_chat_and_delegated_roles():
+    from services.ai_service import AIService
+
+    service = AIService({})
+    for role in (None, "Найди изменения в интерфейсе."):
+        service._agent_system_prompt = role
+        prompt = service.build_messages("Найди определение виджета")[0]["content"]
+        assert prompt.index("search_in_project") < prompt.index("read_file")
+        assert "regex=true" in prompt and "glob" in prompt and "короткого диапазона" in prompt
+
 def test_used_discovery_is_compact_and_losslessly_recoverable():
     from services.local_evidence import LocalEvidence
     from services.agent_harness import AgentHarness
@@ -114,3 +121,42 @@ def test_used_discovery_is_compact_and_losslessly_recoverable():
     assert messages[0]['content'] == text
     assert evidence.read(evidence.put(text)) == text
     assert 'important middle' in evidence.read(evidence.put(text), query='important middle')
+
+
+def test_explicit_mention_reads_only_small_ranges_from_a_large_file(tmp_path, monkeypatch):
+    from pathlib import Path
+    from services.ai_context import MENTION_FILE_BYTES
+
+    path = tmp_path / "large.py"
+    with path.open("wb") as stream:
+        stream.write(b"begin\n")
+        stream.seek(64 * 1024 * 1024)
+        stream.write(b"\nend")
+    actual_open = Path.open
+    reads = []
+
+    class BoundedReader:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.source.close()
+
+        def read(self, size=-1):
+            reads.append(size)
+            assert 0 < size <= MENTION_FILE_BYTES + 1
+            return self.source.read(size)
+
+        def seek(self, *args):
+            return self.source.seek(*args)
+
+    def open_bounded(self, *args, **kwargs):
+        assert self == path
+        reader = BoundedReader()
+        reader.source = actual_open(self, *args, **kwargs)
+        return reader
+
+    monkeypatch.setattr(Path, "open", open_bounded)
+    result = render_project_context(tmp_path, [path.name], ContextCache())
+    assert "begin" in result and "end" in result
+    assert len(reads) == 2 and sum(reads) < MENTION_FILE_BYTES * 2

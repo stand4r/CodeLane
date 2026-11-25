@@ -433,6 +433,7 @@ class CustomIconProvider(QtWidgets.QFileIconProvider):
                     "txt": "text.svg", "log": "text.svg",
                     "c": "c.svg", "h": "c.svg",
                     "cpp": "cpp.svg", "cc": "cpp.svg", "cxx": "cpp.svg", "hpp": "cpp.svg",
+                    "sh": "shell.svg", "bash": "shell.svg", "zsh": "shell.svg", "ps1": "shell.svg",
                 }
                 return QIcon(str(icon_dir / mapping.get(suffix, "file.svg")))
         except Exception:
