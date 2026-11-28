@@ -104,6 +104,14 @@ def apply_ui_scale(app: QtWidgets.QApplication, percent, stylesheet_provider=Non
         _current = scale
         return scale
 
+    try:
+        raw = stylesheet_provider() if stylesheet_provider is not None else None
+    except Exception:
+        raw = ""
+    signature = (scale, raw)
+    if getattr(app, "_codelane_scale_signature", None) == signature:
+        return scale
+    app._codelane_scale_signature = signature
     factor = scale / 100.0
     _current = scale
 
@@ -115,10 +123,6 @@ def apply_ui_scale(app: QtWidgets.QApplication, percent, stylesheet_provider=Non
 
     # 2. Stylesheet metrics (row heights, paddings, icon boxes, borders).
     if stylesheet_provider is not None:
-        try:
-            raw = stylesheet_provider() or ""
-        except Exception:
-            raw = ""
         if raw:
             app.setStyleSheet(scale_stylesheet(raw, scale))
 

@@ -271,6 +271,9 @@ _LINE_PATHS = {
     "eye": "M2.5 10c2-4 5-5.5 7.5-5.5s5.5 1.5 7.5 5.5c-2 4-5 5.5-7.5 5.5S4.5 14 2.5 10z M8 10a2 2 0 1 0 4 0 2 2 0 0 0-4 0",
     "key": "M4 7a3.5 3.5 0 1 0 7 0 3.5 3.5 0 0 0-7 0m6 2.5 6 6m-1.5-1.5 1.5-1.5",
     "send": "M5 10l5-5 5 5 M10 5v11",
+    "microphone": "M10 3.5a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0v-4a2 2 0 0 0-2-2z M5.5 9a4.5 4.5 0 0 0 9 0 M10 13.5v3 M7.5 16.5h5",
+    # Крупный «студийный» микрофон для кнопки голосового ввода в чате ИИ-агента.
+    "microphone-agent": "M7 4a3 3 0 0 1 6 0v7.66a3 3 0 0 1-6 0z M4.9 9.55a5.1 5.1 0 0 0 10.2 0 M10 14.65v3.45 M6.9 18.1h6.2",
     "stop": "M6 6h8v8H6z",
     "play": "M6 4.5v11l9-5.5z",
     "more": "M4.5 10h.1 M10 10h.1 M15.5 10h.1",
@@ -302,6 +305,8 @@ def _line_renderer(name, color):
         else:
             path = _LINE_PATHS.get("info", "M5 5l10 10 M15 5 5 15")
     stroke_width = 1.9 if name in ("split-right", "split-down", "unsplit") else 1.55
+    if name in ("microphone-agent",):
+        stroke_width = 1.3
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">'
         f'<path d="{path}" fill="none" stroke="{color}" stroke-width="{stroke_width}" '

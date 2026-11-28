@@ -156,7 +156,7 @@ def test_planner_waits_for_both_conditions_and_runs_once(tmp_path, monkeypatch):
     team.show_snapshots = team.show_journals = lambda: None
     team.busy, team._question, team._edits = False, "", []
     calls = []
-    team.submit = lambda prompt, scheduled_role: calls.append((prompt, scheduled_role)) or True
+    team.submit_scheduled = lambda prompt: calls.append(prompt) or True
     planner = AgentPlanner(team)
     planner.cache.save_job(project, "Проверить", "test", "Проверить результат", 0, "ready.txt")
     planner.refresh()
@@ -165,7 +165,7 @@ def test_planner_waits_for_both_conditions_and_runs_once(tmp_path, monkeypatch):
     planner.refresh()
     planner.finished(True)
     planner.refresh()
-    assert len(calls) == 1 and calls[0][1] == "test"
+    assert calls == ["Проверить\n\nПроверить результат"]
     assert planner.cache.jobs(project)[0]["state"] == "done"
     team.deleteLater()
     app.processEvents()

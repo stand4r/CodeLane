@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtTextToSpeech import QTextToSpeech
 from widgets.AgentMark import AgentMark
 
 from core.logging_config import get_logger
@@ -33,6 +34,7 @@ from services.ai_commands import COMMANDS, find_command, parse_input
 from services.ai_providers import PROVIDERS, get_provider, models_for
 from services.ai_service import AIMessage, AIService, AIError, extract_code_blocks
 from services.mcp_client import MCPClient, MCPServerConfig, parse_servers, run_tool
+from services.voice_control import command_for, recognize_once
 
 logger = get_logger("ai_agent")
 _detached_workers = set()
@@ -103,6 +105,28 @@ class _ModelsWorker(QtCore.QThread):
             self.loaded.emit(list(self.service.list_models()))
         except Exception as exc:  # noqa: BLE001 - surfacing to the UI is enough
             self.failed.emit(str(exc))
+
+
+class _VoiceWorker(QtCore.QThread):
+    """Keep microphone recognition off the GUI thread."""
+
+    recognized = QtCore.pyqtSignal(str)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def stop(self):
+        self.requestInterruption()
+
+    def run(self):
+        try:
+            result = recognize_once(cancelled=self.isInterruptionRequested)
+            if not self.isInterruptionRequested():
+                self.recognized.emit(result)
+        except Exception as exc:  # noqa: BLE001 - show device errors in the panel
+            if not self.isInterruptionRequested():
+                self.failed.emit(str(exc))
 
 
 class _RequestStopped(Exception):
@@ -762,6 +786,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._worker: Optional[AIWorker] = None
         self._quick_result = None
         self._models_worker: Optional[_ModelsWorker] = None
+        self._voice_worker: Optional[_VoiceWorker] = None
+        self._speech = QTextToSpeech(self)
         self._current_answer: List[str] = []
         self._stream_open = False
         # Queued prompts, connected MCP clients and added bubbles.
@@ -954,6 +980,7 @@ class AIAgentPanel(QtWidgets.QWidget):
         """Actions that used to be buttons, now on right click."""
         menu = QtWidgets.QMenu(self)
         menu.setObjectName("aiContextMenu")
+        menu.setMinimumWidth(300)
 
         quick = menu.addMenu("Быстрые действия")
         quick.setObjectName("aiContextMenu")
@@ -1203,6 +1230,19 @@ class AIAgentPanel(QtWidgets.QWidget):
         attach.setToolTip("Прикрепить фото или документ")
         attach.clicked.connect(self._choose_attachments)
         toolbar.addWidget(attach)
+
+        self.voice_btn = QtWidgets.QToolButton(self.composer)
+        self.voice_btn.setObjectName("aiVoiceButton")
+        # Palette text colour matches the "+" attach glyph next to it, so the
+        # microphone stays white in every theme instead of a dim grey.
+        self.voice_btn.setIcon(line_icon("microphone-agent"))
+        self.voice_btn.setIconSize(QtCore.QSize(16, 16))
+        self.voice_btn.setFixedSize(32, 32)
+        self.voice_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.voice_btn.setAccessibleName("Голосовой ввод")
+        self.voice_btn.setToolTip("Произнести команду или сообщение (до 8 секунд)")
+        self.voice_btn.clicked.connect(self._start_voice_input)
+        toolbar.addWidget(self.voice_btn)
 
         # Context flags stay available to the code, but no longer occupy the
         # composer: they are toggled from the right-click menu.
@@ -1586,10 +1626,22 @@ class AIAgentPanel(QtWidgets.QWidget):
                     analysis_state["issues"] = [asdict(issue) for issue in analysis.issues[:10]]
                     analysis_state["files_count"] = len(analysis.files)
                     analysis_state["issues_count"] = len(analysis.issues)
+                active_group = getattr(window, "active_tab_widget", None)
+                active_tab = active_group.currentWidget() if active_group is not None else None
+                tab_title = active_group.tabText(active_group.currentIndex()) \
+                    if active_group is not None and active_group.currentIndex() >= 0 else ""
                 result["value"] = json.dumps({
                     "project_root": self._project_root(),
                     "explorer": explorer_state, "browser_tabs": browsers,
                     "analysis": analysis_state,
+                    "workbench": {
+                        "sidebar_visible": bool(getattr(window, "sidebar_visible", False)),
+                        "terminal_visible": bool(getattr(window, "terminal_visible", False)),
+                        "active_panel": getattr(getattr(window, "activity_bar", None),
+                                                "active_sidebar_key", None),
+                        "active_tab": tab_title,
+                        "active_file": str(getattr(active_tab, "file_path", "") or ""),
+                    },
                 }, ensure_ascii=False, default=str)
             elif kind == "browser_navigate":
                 url = QtCore.QUrl.fromUserInput(str(payload.get("url") or ""))
@@ -1898,6 +1950,10 @@ class AIAgentPanel(QtWidgets.QWidget):
         buttons = [b for b in buttons if b is not None]
         if composer is None or not buttons:
             return
+        for name in ("voice_btn",):
+            control = getattr(self, name, None)
+            if control is not None:
+                control.setVisible(self.width() >= 250)
         PAD = 18          # 8 px padding left/right + 2 px border from the QSS
         SPACING = 6
         send_width = self.send_btn.width() if hasattr(self, "send_btn") else 28
@@ -2370,7 +2426,12 @@ class AIAgentPanel(QtWidgets.QWidget):
 
     def _add_message_widget(self, widget: QtWidgets.QWidget, stretch: int = 0):
         """Append a widget above the trailing stretch of the messages layout."""
-        self.messages.insertWidget(self.messages.count() - 1, widget, stretch)
+        position = getattr(self, "_history_insert_index", None)
+        if position is None:
+            position = self.messages.count() - 1
+        else:
+            self._history_insert_index += 1
+        self.messages.insertWidget(position, widget, stretch)
 
     def _append_html(self, html_text: str, force_scroll: bool = True):
         """Append a small rich-text line (step chips, notices)."""
@@ -2443,13 +2504,63 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._add_message_widget(bubble)
         self._bubbles = getattr(self, "_bubbles", [])
         self._bubbles.append(bubble)
-        self._relayout_transcript()
-        self._animate_message_in(bubble)
+        if not getattr(self, "_restoring_history", False):
+            self._relayout_transcript()
+            self._animate_message_in(bubble)
         # A new message may only drag the view down when the user is already at
         # the end (or the transcript is still being pinned from a restore).
-        if follow:
+        if follow and not getattr(self, "_restoring_history", False):
             QtCore.QTimer.singleShot(0, self._scroll_to_latest)
         return bubble
+
+    def _render_recent_history(self):
+        """Create widgets for four recent prompts; retain all messages for the model."""
+        self._clear_transcript_widgets()
+        self._rendered_history_start = len(self._history)
+        self._load_older_history()
+        if self._history:
+            self._last_author = self._history[-1].role
+            self._schedule_pin_transcript_end()
+
+    def _load_older_history(self):
+        end = getattr(self, "_rendered_history_start", len(self._history))
+        if end <= 0:
+            return
+        start = end
+        prompts = 0
+        while start > 0:
+            start -= 1
+            if self._history[start].role == "user":
+                prompts += 1
+                if prompts == 4:
+                    break
+        old_bar = getattr(self, "_older_history_button", None)
+        if old_bar is not None:
+            self.messages.removeWidget(old_bar)
+            old_bar.deleteLater()
+            self._older_history_button = None
+        self._history_insert_index = 0
+        self._restoring_history = True
+        previous_author = self._last_author
+        self._last_author = None
+        try:
+            for message in self._history[start:end]:
+                if message.role == "user":
+                    self._append_user(message.content)
+                elif message.role == "assistant":
+                    self._append_assistant(message.content, mark_thinking=False)
+        finally:
+            self._last_author = previous_author if end < len(self._history) else self._last_author
+            self._history_insert_index = None
+            self._restoring_history = False
+        self._rendered_history_start = start
+        if start:
+            button = QtWidgets.QPushButton(f"Показать предыдущие запросы ({sum(m.role == 'user' for m in self._history[:start])})")
+            button.setObjectName("aiLoadHistory")
+            button.clicked.connect(self._load_older_history)
+            self.messages.insertWidget(0, button)
+            self._older_history_button = button
+        self._relayout_transcript()
 
     @staticmethod
     def _animate_message_in(bubble_):
@@ -2656,7 +2767,10 @@ class AIAgentPanel(QtWidgets.QWidget):
             animation.setEndValue(1.0)
             animation.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
             bubble._entrance_animation = animation
-            animation.start()
+            if getattr(self, "_restoring_history", False):
+                effect.setOpacity(1.0)
+            else:
+                animation.start()
         except Exception:
             logger.debug("Не удалось анимировать появление ответа", exc_info=True)
         if mark_thinking:
@@ -2888,18 +3002,14 @@ class AIAgentPanel(QtWidgets.QWidget):
         if not restored:
             return 0
         self._history = restored
-        self._clear_transcript_widgets()
-        for message in restored:
-            if message.role == "user":
-                self._append_user(message.content)
-            elif message.role == "assistant":
-                self._append_assistant(message.content, mark_thinking=False)
-        self._last_author = restored[-1].role
+        self._render_recent_history()
         self._refresh_menus()
         self._schedule_pin_transcript_end()
         return len(restored)
 
     def _clear_transcript_widgets(self):
+        self._older_history_button = None
+        self._rendered_history_start = 0
         self._clear_activity()
         self._bubbles = []
         self._thinking_bubbles = []
@@ -2933,16 +3043,10 @@ class AIAgentPanel(QtWidgets.QWidget):
                                    str(item.get("content") or ""))
                          for item in target.get("messages", [])
                          if isinstance(item, dict) and item.get("content")]
-        self._clear_transcript_widgets()
         if self._history:
-            for message in self._history:
-                if message.role == "user":
-                    self._append_user(message.content)
-                elif message.role == "assistant":
-                    self._append_assistant(message.content, mark_thinking=False)
-            self._last_author = self._history[-1].role
-            self._schedule_pin_transcript_end()
+            self._render_recent_history()
         else:
+            self._clear_transcript_widgets()
             self._append_welcome()
         preferences = target.get("preferences") or {}
         self._apply_session_preferences(preferences)
@@ -2992,6 +3096,11 @@ class AIAgentPanel(QtWidgets.QWidget):
             _detach_worker(worker)
 
     def shutdown(self):
+        voice_worker = self._voice_worker
+        self._voice_worker = None
+        if voice_worker is not None and voice_worker.isRunning():
+            voice_worker.stop()
+            voice_worker.wait(2000)
         self._close_quick_result()
         self._planner_timer.stop()
         self._stop_agent_team()
@@ -3353,6 +3462,44 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._attachments.clear()
         self._render_attachments()
 
+    def _start_voice_input(self):
+        if self._voice_worker is not None and self._voice_worker.isRunning():
+            return
+        worker = _VoiceWorker(self)
+        self._voice_worker = worker
+        self.voice_btn.setEnabled(False)
+        self.voice_btn.setToolTip("Слушаю…")
+        worker.recognized.connect(self._on_voice_recognized)
+        worker.failed.connect(lambda message: self._append_notice("⚠ " + message, "warn"))
+        worker.finished.connect(self._voice_input_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _voice_input_finished(self):
+        self._voice_worker = None
+        self.voice_btn.setEnabled(True)
+        self.voice_btn.setToolTip("Произнести команду или сообщение (до 8 секунд)")
+
+    def _sync_voice_reply(self):
+        from utils.settings_manager import get_settings_manager
+        if not get_settings_manager().get_setting("ai_voice_reply", False):
+            self._speech.stop()
+
+    def _on_voice_recognized(self, text: str):
+        if not text:
+            self._append_notice("Речь не распознана. Попробуйте ещё раз.", "warn")
+            return
+        action = command_for(text)
+        if action is not None and self.main_window is not None:
+            handler = getattr(self.main_window, action, None)
+            if callable(handler):
+                self._append_step("Голосовая команда: " + text, "◆")
+                handler()
+                return
+        self.input.setPlainText(text)
+        self.input.setFocus()
+        self.send_message()
+
     def send_message(self):
         raw = self.input.toPlainText().strip()
         attachments = tuple(getattr(self, "_attachments", ()))
@@ -3669,7 +3816,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         if profile is not None:
             self._append_step(f"Профиль: {profile.get('name') or profile_id}")
 
-    def _send(self, prompt: str, context: str, mentions=None, *, attachment_paths=()):
+    def _send(self, prompt: str, context: str, mentions=None, *, attachment_paths=(),
+              on_worker_created=None):
         # A message typed while the model is still answering is queued instead
         # of being rejected; it is sent automatically when the current answer
         # finishes (see _drain_queue).
@@ -3721,6 +3869,8 @@ class AIAgentPanel(QtWidgets.QWidget):
         self._last_request = (prompt, saved_context, mentions, attachment_paths)
         self._history_before_request = len(self._history)
         self._worker = worker
+        if on_worker_created is not None:
+            on_worker_created(worker)
         worker.start()
 
     # ------------------------------------------------------------------
@@ -3881,6 +4031,12 @@ class AIAgentPanel(QtWidgets.QWidget):
             self._record_session_stats(usage)
         if answer:
             self._append_assistant(answer, mark_thinking=False)
+            from utils.settings_manager import get_settings_manager
+            if get_settings_manager().get_setting("ai_voice_reply", False):
+                spoken = re.sub(r"```.*?```", "", answer, flags=re.DOTALL)
+                spoken = re.sub(r"[`*_#>|]", "", spoken).strip()
+                if spoken:
+                    self._speech.say(spoken[:600])
             if getattr(self, "_answer_truncated", False):
                 # The provider hit its own output ceiling even after automatic
                 # continuations; there is no local token limit to raise any more.

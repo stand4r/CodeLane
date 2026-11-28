@@ -11,6 +11,31 @@ from core.analyzers.registry import analyzer_map
 
 
 
+def test_recommendations_tree_grows_when_group_expands(qtbot):
+    from widgets.ProjectIntelligenceDashboard import ProjectIntelligenceDashboard
+
+    panel = ProjectIntelligenceDashboard()
+    qtbot.addWidget(panel)
+    panel.student_tips = [
+        {"title": f"Замечание {index}", "priority": "high", "file": "demo.py",
+         "line": index + 1, "action": "Проверить"}
+        for index in range(20)
+    ]
+    panel._filter_tips()
+    collapsed = panel.tips_tree.maximumHeight()
+
+    group = panel.tips_tree.topLevelItem(0)
+    group.setExpanded(True)
+    assert group.childCount() == 20
+    assert panel.tips_tree.maximumHeight() > collapsed
+
+    group.setExpanded(False)
+    assert panel.tips_tree.maximumHeight() == collapsed
+
+    group.setExpanded(True)
+    assert panel.tips_tree.maximumHeight() > collapsed
+
+
 def test_all_analyzers_are_registered():
     specs = analyzer_map()
     assert {"structure", "dependencies", "metrics", "health", "security", "binaries"} <= set(specs)

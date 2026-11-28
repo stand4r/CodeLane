@@ -943,6 +943,12 @@ class SettingsWidget(QtWidgets.QWidget):
         self.controls['ai_show_reasoning'] = show_reasoning
         form.addRow('', show_reasoning)
 
+        voice_reply = QtWidgets.QCheckBox('Озвучивать ответы агента')
+        voice_reply.setChecked(bool(self._value('ai_voice_reply')))
+        voice_reply.setToolTip('Читать вслух текст ответа; фрагменты кода пропускаются')
+        self.controls['ai_voice_reply'] = voice_reply
+        form.addRow('', voice_reply)
+
         # Agent behaviour: full answers vs. Socratic tutoring.
         mode = QtWidgets.QComboBox()
         for key, label in (("solve", "Решение — агент даёт готовые ответы"),
@@ -1351,6 +1357,7 @@ class SettingsWidget(QtWidgets.QWidget):
             'ai_tls_verify': bool(self.controls['ai_tls_verify'].isChecked()),
             'ai_tls_ca_bundle': text('ai_tls_ca_bundle'),
             'ai_show_reasoning': bool(self.controls['ai_show_reasoning'].isChecked()),
+            'ai_voice_reply': bool(self.controls['ai_voice_reply'].isChecked()),
             'ai_mode': self.controls['ai_mode'].currentData() or 'solve',
             'ai_access_mode': self.controls['ai_access_mode'].currentData(),
             'ai_teach_strictness': (self.controls['ai_teach_strictness'].currentData()
@@ -1367,6 +1374,9 @@ class SettingsWidget(QtWidgets.QWidget):
     def _persist_ai_settings(self) -> dict:
         values = self._collect_ai_settings()
         self.settings_manager.settings.update(values)
+        panel = getattr(self.main_window, 'ai_panel', None)
+        if panel is not None and hasattr(panel, '_sync_voice_reply'):
+            panel._sync_voice_reply()
         return values
 
     def _test_ai_connection(self):

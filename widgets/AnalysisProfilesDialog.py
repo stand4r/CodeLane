@@ -36,6 +36,7 @@ class AnalyzerProfilesEditor(QtWidgets.QWidget):
         self._group_dividers = []
         self._wide = None
         self.setObjectName("analysisChooser")
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setProperty("pyscribeSpecial", "projectAnalyzers")
         name = project.get("name", "Проект") if isinstance(project, dict) else project.name
         self.setFont(QtGui.QFont("Segoe UI", 9))
@@ -54,6 +55,7 @@ class AnalyzerProfilesEditor(QtWidgets.QWidget):
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         scroll = QtWidgets.QScrollArea()
+        scroll.setObjectName("analysisChooserScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)

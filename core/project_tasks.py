@@ -199,6 +199,37 @@ class TaskStore:
     def set_status(self, task_id: str, status: str) -> Optional[Task]:
         return self.update(task_id, status=status)
 
+    @staticmethod
+    def duplicate_key(task: Task) -> tuple:
+        """Identity used to skip re-adding the same analyzer finding."""
+        file_key = str(task.file or "").replace("\\", "/").strip().lower()
+        title_key = " ".join(str(task.title or "").split()).lower()
+        return (str(task.source or "").strip().lower(), file_key,
+                int(task.line or 0), title_key)
+
+    def add_many(self, tasks: Iterable[Task]) -> tuple[List[Task], int]:
+        """Append several tasks at once, skipping duplicates, save once.
+
+        Returns ``(added, skipped)``. A task is considered a duplicate when an
+        existing task (any status) has the same source, file, line and title.
+        """
+        existing = {self.duplicate_key(task) for task in self.tasks}
+        added: List[Task] = []
+        skipped = 0
+        for task in tasks:
+            task.normalize()
+            key = self.duplicate_key(task)
+            if key in existing:
+                skipped += 1
+                continue
+            existing.add(key)
+            self.tasks.append(task)
+            added.append(task)
+        if added:
+            self._sort()
+            self.save()
+        return added, skipped
+
     def toggle_done(self, task_id: str) -> Optional[Task]:
         task = self.find(task_id)
         if task is None:

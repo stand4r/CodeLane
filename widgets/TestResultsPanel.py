@@ -54,6 +54,7 @@ class TestResultsPanel(QtWidgets.QWidget):
         self.current_file = None
         self._report = None
         self._cancelled = False
+        self._startup_retries = 0
         self.exit_code = None
         self.nodeid = None
         self.results = []
@@ -104,6 +105,7 @@ class TestResultsPanel(QtWidgets.QWidget):
             return
         self._report = folder
         self._cancelled = False
+        self._startup_retries = 0
         self.exit_code = None
         self.nodeid = nodeid
         self.results = []
@@ -114,11 +116,14 @@ class TestResultsPanel(QtWidgets.QWidget):
         env = QtCore.QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONIOENCODING", "utf-8")
         self.process.setProcessEnvironment(env)
-        args = ["-c", _PYTEST_DRIVER, self._report.filePath("results.jsonl")]
-        if nodeid:
-            args.extend(["--", nodeid])
-        self.process.start(self.executable, args)
+        self._launch()
         self._update_actions()
+
+    def _launch(self):
+        args = ["-c", _PYTEST_DRIVER, self._report.filePath("results.jsonl")]
+        if self.nodeid:
+            args.extend(["--", self.nodeid])
+        self.process.start(self.executable, args)
 
     def _run_file(self):
         path = self.current_file() if callable(self.current_file) else self.current_file
@@ -152,6 +157,12 @@ class TestResultsPanel(QtWidgets.QWidget):
                     existing = rows.get(row["id"])
                     if existing is None or row["outcome"] == "failed":
                         rows[row["id"]] = row
+        if (not self._cancelled and not rows and not self.output.toPlainText().strip()
+                and code & 0xFFFFFFFF == 0xC0000005 and self._startup_retries < 2):
+            self._startup_retries += 1
+            self.status.setText("Python завершился при запуске; повторяю запуск тестов…")
+            self._launch()
+            return
         self._report = None
         self.exit_code = code
         self.results = sorted(rows.values(), key=lambda row: row["outcome"] != "failed")

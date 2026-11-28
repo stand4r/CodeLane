@@ -179,7 +179,9 @@ def test_team_tab_displays_worker_updates(monkeypatch, tmp_path, qtbot):
     assert transcript == [("user", "Проверить проект"), ("assistant", "Отчёт")]
     assert tab.journal_button.isEnabled()
     tab.journal_button.click()
-    journal = group.currentWidget().toPlainText()
+    journal_view = group.currentWidget()
+    journal = "\n".join(journal_view.entries.topLevelItem(i).data(0, QtCore.Qt.ItemDataRole.UserRole)
+                        for i in range(journal_view.entries.topLevelItemCount()))
     assert "read_file: demo.py" in journal and "Результат проверки" in journal
     assert "Проверяю изменения" not in journal
     assert tab.planner.cache.journal("project", tab._run_id, 1).endswith("Результат проверки")

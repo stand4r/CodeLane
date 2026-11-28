@@ -19,7 +19,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libegl1 libgl1 libopengl0 libxkbcommon0
-      - run: python -m pip install --config-settings=--global-option=--without-libyaml PyYAML==6.0.3
       - run: python -m pip install -r requirements.txt
       - run: python -m pip check
       - run: python -m compileall -q main.py app core design services utils widgets extensions
@@ -33,7 +32,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.15.2"
-      - run: python -m pip install --config-settings=--global-option=--without-libyaml PyYAML==6.0.3
       - run: python -m pip install -r requirements.txt pyinstaller==6.22.3
       - run: python -m PyInstaller --noconfirm CodeLane.spec
       - name: Test the packaged Windows application

@@ -1,4 +1,5 @@
 """Preview and copy the local diagnostic files."""
+import html
 import re
 from pathlib import Path
 
@@ -9,8 +10,8 @@ class LogShareDialog(QtWidgets.QDialog):
     def __init__(self, directory: Path, parent=None):
         super().__init__(parent)
         self.directory = directory
-        self.setWindowTitle("Отправить лог")
-        self.resize(760, 480)
+        self.setWindowTitle("Журналы CodeLane")
+        self.resize(980, 620)
         layout = QtWidgets.QVBoxLayout(self)
         hint = QtWidgets.QLabel(
             "Выберите журнал и проверьте его содержимое перед отправкой. "
@@ -23,11 +24,28 @@ class LogShareDialog(QtWidgets.QDialog):
         self.files.setMaximumHeight(138)
         self.files.currentItemChanged.connect(self._preview)
         layout.addWidget(self.files)
-        self.preview = QtWidgets.QPlainTextEdit()
-        self.preview.setReadOnly(True)
-        self.preview.setAccessibleName("Предпросмотр журнала")
-        self.preview.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
+        self.level_filter = QtWidgets.QComboBox()
+        self.level_filter.addItems(["Все события", "Ошибки", "Предупреждения", "ИИ-агент"])
+        self.level_filter.currentIndexChanged.connect(self._apply_filter)
+        layout.addWidget(self.level_filter)
+        self.preview = QtWidgets.QTreeWidget()
+        self.preview.setObjectName("logViewer")
+        self.preview.setHeaderLabels(["Время", "Уровень", "Источник", "Событие"])
+        self.preview.setRootIsDecorated(False)
+        self.preview.setAlternatingRowColors(True)
+        self.preview.setUniformRowHeights(True)
+        self.preview.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.preview.setAccessibleName("События журнала")
+        self.preview.header().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        for column, width in enumerate((170, 115, 170)):
+            self.preview.setColumnWidth(column, width)
         layout.addWidget(self.preview, 1)
+        self.details = QtWidgets.QTextBrowser()
+        self.details.setObjectName("logDetails")
+        self.details.setMaximumHeight(130)
+        self.details.setPlaceholderText("Выберите событие, чтобы прочитать подробности")
+        self.preview.currentItemChanged.connect(self._show_details)
+        layout.addWidget(self.details)
         self.status = QtWidgets.QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -63,6 +81,7 @@ class LogShareDialog(QtWidgets.QDialog):
         self.copy_button.setEnabled(False)
         self.status.clear()
         self.preview.clear()
+        self.details.clear()
         if item is None:
             self.status.setText("Журналы пока отсутствуют.")
             return
@@ -76,11 +95,62 @@ class LogShareDialog(QtWidgets.QDialog):
         except OSError as exc:
             self.status.setText(f"Не удалось прочитать журнал. {exc.strerror or exc}")
             return
-        self.preview.setPlainText(contents)
-        self.preview.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+        lines = contents.splitlines()
+        if size > limit and lines:
+            lines = lines[1:]
+        entries = []
+        pattern = re.compile(r"^(\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(?:,\d+)?)\s*\|\s*(?:(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s*\|\s*)?(?:(\S+)\s*\|\s*)?(.*)$")
+        for line in lines[-3000:]:
+            match = pattern.match(line)
+            if match:
+                level = match.group(2) or "INFO"
+                source = match.group(3) or ""
+                message = match.group(4)
+                if not match.group(2):
+                    message = " ".join(part for part in (source, message) if part)
+                    source = "Действия" if path.name.startswith("user-actions") else "Журнал"
+                entries.append([match.group(1), level, source, message])
+            elif entries:
+                entries[-1][3] += "\n" + line
+            else:
+                entries.append(["", "", "", line])
+        self.preview.setUpdatesEnabled(False)
+        try:
+            self.preview.clear()
+            for stamp, level, source, message in entries:
+                item = QtWidgets.QTreeWidgetItem([stamp, level, source, message.splitlines()[0] if message else ""])
+                item.setToolTip(3, message)
+                item.setData(0, QtCore.Qt.ItemDataRole.UserRole, (level, source))
+                if level in {"ERROR", "CRITICAL"}:
+                    item.setForeground(1, QtGui.QBrush(QtGui.QColor("#ec7777")))
+                elif level == "WARNING":
+                    item.setForeground(1, QtGui.QBrush(QtGui.QColor("#e5b567")))
+                self.preview.addTopLevelItem(item)
+        finally:
+            self.preview.setUpdatesEnabled(True)
+        self._apply_filter()
+        self.preview.scrollToBottom()
         self.copy_button.setEnabled(True)
         if size > limit:
             self.status.setText("Показаны последние 256 КБ. Копируется весь файл.")
+
+    def _apply_filter(self):
+        mode = self.level_filter.currentIndex()
+        for index in range(self.preview.topLevelItemCount()):
+            item = self.preview.topLevelItem(index)
+            level, source = item.data(0, QtCore.Qt.ItemDataRole.UserRole) or ("", "")
+            show = (mode == 0 or mode == 1 and level in {"ERROR", "CRITICAL"}
+                    or mode == 2 and level == "WARNING"
+                    or mode == 3 and "ai_agent" in source.lower())
+            item.setHidden(not show)
+
+    def _show_details(self, item, _previous=None):
+        if item is None:
+            self.details.clear()
+            return
+        heading = " · ".join(part for part in (item.text(0), item.text(1), item.text(2)) if part)
+        message = item.toolTip(3)
+        self.details.setHtml(f"<b>{html.escape(heading)}</b><pre style='white-space:pre-wrap'>{html.escape(message)}</pre>")
 
     def copy_file(self):
         item = self.files.currentItem()

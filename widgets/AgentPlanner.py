@@ -7,13 +7,12 @@ from PyQt6 import QtCore, QtWidgets
 from core.job_recovery import cache_dir as recovery_cache_dir
 from core.logging_config import get_logger
 from design.colors import COLORS
-from services.agent_delegation import ROLES
 from services.team_cache import TeamCache
 
 logger = get_logger("agent_planner")
 
 #: Подписи состояний задания в дереве планировщика.
-STATES = {"queued": "Ожидает", "running": "Назначено", "done": "Завершено", "paused": "Приостановлено"}
+STATES = {"queued": "Ожидает", "running": "Выполняется", "done": "Завершено", "paused": "Приостановлено"}
 
 #: Подпись приостановленного задания, у которого записана причина остановки.
 PAUSED_INTERRUPTED = "Приостановлено · прервано"
@@ -40,15 +39,20 @@ class AgentPlanner(QtWidgets.QWidget):
         self.collapse_button = QtWidgets.QToolButton()
         self.collapse_button.clicked.connect(self._toggle_collapsed)
         row.addWidget(self.collapse_button)
-        title = QtWidgets.QLabel("Расписание")
+        title = QtWidgets.QLabel("Отложенные задачи")
         title.setObjectName("agentPlannerTitle")
         row.addWidget(title)
         row.setSpacing(6)
         row.addStretch()
+        help_button = QtWidgets.QToolButton()
+        help_button.setText("?")
+        help_button.setToolTip("Как работают отложенные задачи")
+        help_button.clicked.connect(self.show_help)
+        row.addWidget(help_button)
         add = QtWidgets.QToolButton()
         add.setObjectName("agentPlannerAdd")
         add.setText("+")
-        add.setToolTip("Добавить задание")
+        add.setToolTip("Запланировать задачу для ИИ-агента")
         add.setFixedSize(22, 22)
         add.setStyleSheet("QToolButton#agentPlannerAdd { padding: 0; font-size: 14px; }")
         add.clicked.connect(lambda: self.edit())
@@ -58,15 +62,15 @@ class AgentPlanner(QtWidgets.QWidget):
         self.tree.setObjectName("agentPlannerTree")
         self.tree.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.tree.setIndentation(16)
-        self.empty_label = QtWidgets.QLabel("Нет запланированных задач", self.tree.viewport())
+        self.empty_label = QtWidgets.QLabel("Нет отложенных задач\nНажмите +, чтобы добавить", self.tree.viewport())
         self.empty_label.setObjectName("agentGraphEmpty")
         self.empty_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.tree.viewport().installEventFilter(self)
         self.tree.setHeaderHidden(True)
         self.tree.setMaximumHeight(160)
-        self.tree.itemDoubleClicked.connect(lambda item, _: self.edit(item.data(0, QtCore.Qt.ItemDataRole.UserRole))
-                                            if item.parent() else None)
+        self.tree.itemDoubleClicked.connect(
+            lambda item, _: self.edit(item.data(0, QtCore.Qt.ItemDataRole.UserRole)))
         box.addWidget(self.tree)
         self._set_collapsed(True)
         self.timer = QtCore.QTimer(self)
@@ -88,21 +92,19 @@ class AgentPlanner(QtWidgets.QWidget):
         if signature == self.signature:
             return
         self.tree.clear()
-        self.empty_label.setText("Нет запланированных задач")
+        self.empty_label.setText("Нет отложенных задач\nНажмите +, чтобы добавить")
         self.empty_label.setVisible(not jobs)
         self.empty_label.setGeometry(self.tree.viewport().rect())
-        groups = {}
         for job in jobs:
-            role = job["role"]
-            if role not in groups:
-                groups[role] = QtWidgets.QTreeWidgetItem(self.tree, [ROLES[role][0]])
-                groups[role].setExpanded(True)
             title = job["title"] or "(без названия)"
-            item = QtWidgets.QTreeWidgetItem(groups[role], [title + " · " + self._status(job)])
+            due = QtCore.QDateTime.fromSecsSinceEpoch(int(job["due"])).toString("dd.MM HH:mm")
+            item = QtWidgets.QTreeWidgetItem(self.tree, [f"{title} · {self._status(job)}"])
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, dict(job))
             reason = self._reason(job)
             prompt = job["prompt"] or ""
-            item.setToolTip(0, f"{prompt}\nПричина: {reason}" if reason else prompt)
+            condition = f"\nПосле появления файла: {job['required_file']}" if job["required_file"] else ""
+            item.setToolTip(0, f"Не раньше: {due}{condition}\n\n{prompt}" +
+                            (f"\n\nПричина: {reason}" if reason else ""))
         self.signature = signature
 
     def _toggle_collapsed(self):
@@ -114,7 +116,7 @@ class AgentPlanner(QtWidgets.QWidget):
     def _set_collapsed(self, collapsed: bool):
         self.tree.setVisible(not collapsed)
         self.collapse_button.setArrowType(QtCore.Qt.ArrowType.DownArrow if collapsed else QtCore.Qt.ArrowType.UpArrow)
-        self.collapse_button.setToolTip("Развернуть планировщик" if collapsed else "Свернуть планировщик")
+        self.collapse_button.setToolTip("Показать отложенные задачи" if collapsed else "Скрыть отложенные задачи")
 
     @staticmethod
     def _reason(job):
@@ -129,6 +131,18 @@ class AgentPlanner(QtWidgets.QWidget):
         if job["state"] == "paused" and self._reason(job):
             return PAUSED_INTERRUPTED
         return STATES.get(job["state"] or "", job["state"] or "Неизвестно")
+
+    def show_help(self):
+        QtWidgets.QMessageBox.information(
+            self, "Отложенные задачи",
+            "Задача запускается один раз, когда наступит указанное время. Если задан файл-условие, "
+            "агент дождётся, пока этот файл появится в открытом проекте.\n\n"
+            "CodeLane должен оставаться открытым, проект — открытым, а ИИ-агент — настроенным. "
+            "Задача ждёт, пока агент занят. При закрытом приложении работа не выполняется; "
+            "после следующего запуска просроченная задача будет проверена снова.\n\n"
+            "Например: завтра проверить тесты после ночной сборки или подготовить обзор "
+            "после появления отчёта. Результат появится в чате агента. Работа с файлами "
+            "зависит от выбранных разрешений агента.")
 
     def _restore_interrupted(self):
         """Подтвердить жизнь экземпляра и вернуть прерванные задания в «Приостановлено».
@@ -156,8 +170,7 @@ class AgentPlanner(QtWidgets.QWidget):
             if not self.cache.claim(root, job["id"]):
                 continue  # задание уже забрал другой экземпляр — пробуем следующее
             self.active = (root, job["id"])
-            if not self.team.submit(f"Назначь роль «{ROLES[job['role']][0]}». {job['title']}\n\n{job['prompt']}",
-                                    scheduled_role=job["role"]):
+            if not self.team.submit_scheduled(f"{job['title']}\n\n{job['prompt']}"):
                 self.finished(False)
             break
 
@@ -177,20 +190,25 @@ class AgentPlanner(QtWidgets.QWidget):
             self.team._agent_panel._append_notice("Сначала откройте проект.", "warn")
             return
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Отложенное задание")
+        dialog.setWindowTitle("Отложенная задача")
         form = QtWidgets.QFormLayout(dialog)
-        role = QtWidgets.QComboBox()
-        for key, (name, _) in ROLES.items():
-            role.addItem(name, key)
+        help_text = QtWidgets.QLabel(
+            "ИИ-агент выполнит задачу один раз, когда наступит время и открыт этот проект. "
+            "CodeLane должен оставаться запущенным. Результат появится в чате агента.")
+        help_text.setWordWrap(True)
+        form.addRow(help_text)
         title = QtWidgets.QLineEdit()
+        title.setPlaceholderText("Например: Проверить тесты после сборки")
         prompt = QtWidgets.QPlainTextEdit()
+        prompt.setPlaceholderText("Что агент должен сделать и какой результат вы ожидаете")
         due = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime().addSecs(300))
         due.setCalendarPopup(True)
         due.setDisplayFormat("dd.MM.yyyy HH:mm")
         required = QtWidgets.QLineEdit()
-        required.setPlaceholderText("Путь в проекте (необязательно)")
-        for name, widget in (("Агент", role), ("Задача", title), ("Запрос", prompt), ("Не раньше", due),
-                             ("При наличии файла", required)):
+        required.setPlaceholderText("Например: reports/build.txt (необязательно)")
+        required.setToolTip("Относительный путь в проекте. Задача запустится после появления файла.")
+        for name, widget in (("Название", title), ("Задание агенту", prompt), ("Не раньше", due),
+                             ("Дождаться файла", required)):
             form.addRow(name, widget)
         reason = self._reason(job) if job else None
         if reason:
@@ -201,7 +219,6 @@ class AgentPlanner(QtWidgets.QWidget):
             note.setStyleSheet(f"color: {COLORS['text_muted']};")
             form.addRow("Причина", note)
         if job:
-            role.setCurrentIndex(role.findData(job["role"]))
             title.setText(job["title"])
             prompt.setPlainText(job["prompt"])
             due.setDateTime(QtCore.QDateTime.fromSecsSinceEpoch(job["due"]))
@@ -214,7 +231,7 @@ class AgentPlanner(QtWidgets.QWidget):
             if not title.text().strip() or not prompt.toPlainText().strip():
                 return
             try:
-                self.cache.save_job(root, title.text().strip(), role.currentData(), prompt.toPlainText().strip(),
+                self.cache.save_job(root, title.text().strip(), "agent", prompt.toPlainText().strip(),
                                     due.dateTime().toSecsSinceEpoch(), required.text().strip(), job["id"] if job else None)
             except ValueError as exc:
                 QtWidgets.QMessageBox.warning(dialog, "Условие", str(exc))
@@ -245,10 +262,9 @@ class AgentPlanner(QtWidgets.QWidget):
                 confirm = QtWidgets.QMessageBox(dialog)
                 confirm.setWindowTitle("Удалить задание")
                 confirm.setIcon(QtWidgets.QMessageBox.Icon.Question)
-                confirm.setText(f"Вы уверены, что хотите удалить задание «{job['title']}» "
-                                f"(агент «{ROLES[job['role']][0]}»)?")
-                confirm.setInformativeText("Запись исчезнет из списка отложенных заданий. "
-                                           "Журналы и снимки команды останутся в архиве.")
+                confirm.setText(f"Вы уверены, что хотите удалить задачу «{job['title']}»?")
+                confirm.setInformativeText("Запись исчезнет из списка отложенных задач. "
+                                           "Журналы и снимки правок останутся в архиве.")
                 confirm.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes |
                                            QtWidgets.QMessageBox.StandardButton.No)
                 confirm.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)

@@ -2,6 +2,9 @@
 
 Run: python tests/test_adversary.py
 """
+import json
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -189,6 +192,30 @@ def explode(values):
 # ----------------------------------------------------------------------
 # Whole-file run and report
 # ----------------------------------------------------------------------
+def test_transient_windows_startup_crash_is_retried(tmp_path, monkeypatch):
+    if os.name != "nt":
+        return
+    from core import adversary
+
+    path = _write_demo(tmp_path)
+    attempts = []
+
+    def run(command, **_kwargs):
+        attempts.append(command)
+        if len(attempts) == 1:
+            return subprocess.CompletedProcess(command, 0xC0000005, "", "")
+        return subprocess.CompletedProcess(command, 0,
+                                           adversary.RESULT_MARKER + json.dumps({"kind": "ok"}), "")
+
+    monkeypatch.setattr(adversary, "run_hidden", run)
+    runner = AdversaryRunner()
+    try:
+        assert runner.execute(path, "label", ["ok"]).kind == "ok"
+        assert len(attempts) == 2
+    finally:
+        runner.dispose()
+
+
 def test_run_file_finds_the_deliberate_bugs():
     with tempfile.TemporaryDirectory() as td:
         path = _write_demo(Path(td))

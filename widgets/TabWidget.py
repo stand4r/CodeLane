@@ -80,8 +80,22 @@ class TabWidget(QtWidgets.QTabWidget):
         self.setTabBar(EditorTabBar(self))
         self.tabBar().setObjectName("editorTabs")
         self.setObjectName("editorGroup")
+        self.currentChanged.connect(self._sync_active_surface)
 
         self.tabBar().installEventFilter(self)
+
+    def _sync_active_surface(self, _index=None):
+        page = self.currentWidget()
+        kind = page.property("pyscribeSpecial") if page is not None else None
+        surface = ("agent" if kind in {"aiAgent", "agentTeam"} else
+                   "journal" if kind == "agentJournal" else
+                   "analysis" if kind in {"projectAnalysis", "projectAnalyzers"} else "editor")
+        bar = self.tabBar()
+        if bar.property("activeSurface") != surface:
+            bar.setProperty("activeSurface", surface)
+            bar.style().unpolish(bar)
+            bar.style().polish(bar)
+            bar.update()
 
     # Compatibility attributes for older callers; toolbar actions were intentionally removed.
     button_run = None

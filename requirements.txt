@@ -4,6 +4,10 @@ pylint
 PyQt6==6.12.1
 PyQt6-WebEngine==6.140.1
 
+# Локальное русское распознавание речи для кнопки микрофона
+vosk==0.3.45; sys_platform == "win32"
+sounddevice==0.5.6; sys_platform == "win32"
+
 # Работа с процессами и системой
 psutil==7.2.2
 

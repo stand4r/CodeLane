@@ -48,6 +48,8 @@ from widgets.QuickOpenDialog import QuickOpenDialog
 from core.activity_log import record_action
 from core.single_instance import SingleInstance
 from core.logging_config import configure_logging, get_logger
+from core.file_templates import load_templates
+from widgets.FileTemplateDialog import ask_template
 from widgets.GitPanel import GitPanel
 from utils.WorkspaceIndex import WorkspaceIndex
 from widgets.ProjectIntelligenceDashboard import ProjectIntelligenceDashboard, ProjectGraphEditorWidget
@@ -393,7 +395,12 @@ class ModernMainWindow(QMainWindow):
             palette.setColor(QPalette.ColorRole.ButtonText, QColor(colors.get("text_primary", "#D4D4D4")))
             palette.setColor(QPalette.ColorRole.Highlight, QColor(colors.get("selection_background", "#264F78")))
             palette.setColor(QPalette.ColorRole.HighlightedText, QColor(colors.get("text_primary", "#D4D4D4")))
-            app.setPalette(palette)
+            palette_signature = tuple(colors.get(key) for key in (
+                "app_background", "text_primary", "editor_background", "panel_background",
+                "input_background", "selection_background"))
+            if getattr(app, "_codelane_palette_signature", None) != palette_signature:
+                app.setPalette(palette)
+                app._codelane_palette_signature = palette_signature
             self.app_manager.settings = s
 
             qss = _load_design_qss(self.app_manager.base_path)
@@ -416,7 +423,8 @@ class ModernMainWindow(QMainWindow):
             from app.styling import ui_qfont
             font = ui_qfont(9)
             font.setPointSizeF(9 * scale / 100)
-            app.setFont(font)
+            if app.font() != font:
+                app.setFont(font)
         self.apply_interface_settings()
         self.apply_builtin_extensions()
         self.apply_accessibility_scale()
@@ -504,6 +512,10 @@ class ModernMainWindow(QMainWindow):
         """Resize fixed-size chrome (activity bar, icons, sidebar) to the UI scale."""
         from app.ui_scale import current_scale, scale_px
         scale = current_scale()
+        signature = (scale, get_settings_manager().get_setting('sidebar_width', 300))
+        if getattr(self, '_accessibility_scale_signature', None) == signature:
+            return
+        self._accessibility_scale_signature = signature
         factor = scale / 100.0
         try:
             if hasattr(self, 'activity_bar') and self.activity_bar is not None:
@@ -629,6 +641,10 @@ class ModernMainWindow(QMainWindow):
         ed = getattr(w, 'editor', None)
         if ed is None:
             return
+        preferences = (font_family, font_size, word_wrap, show_ln, syntax_hl)
+        if getattr(ed, "_codelane_preferences", None) == preferences:
+            return
+        ed._codelane_preferences = preferences
         f = ed.font()
         f.setFamily(font_family)
         f.setPointSize(font_size)
@@ -1547,9 +1563,18 @@ class ModernMainWindow(QMainWindow):
         )
         if not file_path:
             return
+        root = getattr(self.current_project, "root_path", None)
+        try:
+            templates = load_templates(root)
+            content = ask_template(self, templates, file_path=file_path, root=root)
+        except Exception:
+            logger.exception("Не удалось применить шаблон нового файла")
+            content = ""
+        if content is None:
+            return
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
-                f.write("")
+                f.write(content)
             self.file_manager.open_file(file_path)
             if file_path not in self.app_manager.session_files:
                 self.app_manager.session_files.append(file_path)

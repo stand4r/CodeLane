@@ -34,12 +34,12 @@
 | :--- | :--- | :--- |
 | **Название проекта** | `CodeLane` | Основное наименование анализируемой кодовой базы |
 | **Главная точка входа** | `main.py` | Исполняемый модуль инициализации и запуска приложения |
-| **Объём кодовой базы** | `72821` строк кода | Общий объём логики и структурных компонентов |
-| **Количество модулей** | `205` файлов | Модульная структура с декомпозицией ответственности |
-| **Классов и моделей** | `363` | Объектно-ориентированные модели данных, виджеты и сервисы |
-| **Функций и методов** | `3950` | Процедурные алгоритмы и методы бизнес-логики |
-| **Связей зависимостей** | `616` импортов | Карта межмодульных импортов и внешних зависимостей |
-| **Диагностика техдолга** | `2284` замечаний | Обнаруженные статические проблемы (0 ошибок, 42 предупреждений) |
+| **Объём кодовой базы** | `73222` строк кода | Общий объём логики и структурных компонентов |
+| **Количество модулей** | `206` файлов | Модульная структура с декомпозицией ответственности |
+| **Классов и моделей** | `365` | Объектно-ориентированные модели данных, виджеты и сервисы |
+| **Функций и методов** | `3972` | Процедурные алгоритмы и методы бизнес-логики |
+| **Связей зависимостей** | `618` импортов | Карта межмодульных импортов и внешних зависимостей |
+| **Диагностика техдолга** | `21` замечаний | Обнаруженные статические проблемы (0 ошибок, 21 предупреждений) |
 
 ---
 
@@ -55,11 +55,11 @@
 5. **Конфигурация и окружение (`config/`, `utils/`)**: Управление сессиями, пользовательскими параметрами и сторонними языковыми провайдерами.
 
 ### Ключевые модули кодовой базы (15)
-- **`AIAgentPanel.py`** (4644 строк) — Классы: _ModelsWorker, _RequestStopped, AIWorker, _QuickAIResult; Методы и функции: _detach_worker, run, _dispatch_tool, stop, _enforce_teaching
-- **`main_window.py`** (3676 строк) — Классы: ModernMainWindow; Методы и функции: _setup_tray_icon, _initialize_attributes, _setup_terminal, _terminal_visibility_changed, toggle_terminal
-- **`QCodeEditor.py`** (2656 строк) — Классы: SelectionMode, EnhancedTextEdit, LineNumberArea, ModernSyntaxHighlighter; Методы и функции: _ui_font, _ui_font_family, update_rectangle_selection, finalize_rectangle_selection, get_rectangle_selection_text
+- **`AIAgentPanel.py`** (4696 строк) — Классы: _ModelsWorker, _RequestStopped, AIWorker, _QuickAIResult; Методы и функции: _detach_worker, run, _dispatch_tool, stop, _enforce_teaching
+- **`main_window.py`** (3690 строк) — Классы: ModernMainWindow; Методы и функции: _setup_tray_icon, _initialize_attributes, _setup_terminal, _terminal_visibility_changed, toggle_terminal
+- **`QCodeEditor.py`** (2658 строк) — Классы: SelectionMode, EnhancedTextEdit, LineNumberArea, ModernSyntaxHighlighter; Методы и функции: _ui_font, _ui_font_family, update_rectangle_selection, finalize_rectangle_selection, get_rectangle_selection_text
 - **`TerminalWidget.py`** (2582 строк) — Классы: CompletionPopup, InteractiveTerminalEdit, TerminalTab, TerminalWidget; Методы и функции: _clean_saved_terminal_output, strip_ansi, _ensure_opacity, show_items, hide_popup
-- **`ProjectIntelligenceDashboard.py`** (2147 строк) — Классы: Palette, AnalysisWorker, AdversaryWorker, GraphNodeItem; Методы и функции: _ui_font, _ui_font_family, severity, primary_button_qss, secondary_button_qss
+- **`ProjectIntelligenceDashboard.py`** (2182 строк) — Классы: Palette, AnalysisWorker, AdversaryWorker, GraphNodeItem; Методы и функции: _ui_font, _ui_font_family, severity, primary_button_qss, secondary_button_qss
 - **`test_ai_and_scale.py`** (1658 строк) — Классы: Provider, View, _Handler, _Editor; Методы и функции: test_worker_delegates_read_only_project_subtask, converse, test_agent_search_returns_sources_and_keeps_workspace_active, page, test_agent_browser_navigation_and_async_page_text
 - **`ai_service.py`** (1601 строк) — Классы: AIError, AIMessage, ToolCall, AIService; Методы и функции: _is_uuid_like, as_dict, _setting, provider_key, provider
 - **`agent_tools.py`** (1534 строк) — Классы: ToolError, LocalToolbox; Методы и функции: normalize_access_mode, _tool, _allowed, definitions, _resolve
@@ -77,7 +77,7 @@
 
 > *Что статический анализ нашёл в кодовой базе и какие шаги помогут повысить качество.*
 
-**Сводка:** **× Ошибки:** 0 · **▲ Предупреждения:** 42 · **Всего замечаний:** 2284
+**Сводка:** **× Ошибки:** 0 · **▲ Предупреждения:** 21 · **Всего замечаний:** 21
 
 | Код | Уровень | Локализация | Описание проблемы |
 | :--- | :--- | :--- | :--- |
@@ -107,7 +107,7 @@
 ### 1. Архитектурная декомпозиция и расширяемость
 > **Вопрос:** *Каким образом соблюдается принцип разделения ответственности (Single Responsibility)?*
 >
-> **Ответ:** *Проект разделен на слабосвязанные модули (`205` модулей). Логика изолирована по функциональным слоям, что упрощает масштабирование, модульное тестирование и внесение изменений без каскадных регрессий.*
+> **Ответ:** *Проект разделен на слабосвязанные модули (`206` модулей). Логика изолирована по функциональным слоям, что упрощает масштабирование, модульное тестирование и внесение изменений без каскадных регрессий.*
 
 ### 2. Точка входа и управление жизненным циклом
 > **Вопрос:** *Как структурирован запуск и завершение программы?*

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.project_tasks import PRIORITIES, STATUSES, TaskStore
+from core.project_tasks import PRIORITIES, STATUSES, Task, TaskStore
 
 
 def test_empty_store_has_no_file():
@@ -122,6 +122,25 @@ def test_switching_project_resets_the_board():
         assert store.save() is False
 
 
+def test_add_many_skips_duplicates_and_persists():
+    with tempfile.TemporaryDirectory() as td:
+        store = TaskStore(td)
+        store.add("Уже в задачах", file="a.py", line=3, source="analysis")
+        added, skipped = store.add_many([
+            Task(title="Уже в задачах", file="a.py", line=3, source="analysis"),
+            Task(title="Новая рекомендация", file="a.py", line=9,
+                 source="analysis", priority="high"),
+            Task(title="Новая рекомендация", file="a.py", line=9, source="analysis"),
+        ])
+        assert len(added) == 1, added
+        assert skipped == 2, skipped
+        assert store.stats()["total"] == 2
+
+        reloaded = TaskStore(td)
+        assert reloaded.stats()["total"] == 2
+        assert reloaded.tasks[0].priority == "high"
+
+
 if __name__ == "__main__":
     tests = [
         ("test_empty_store_has_no_file", test_empty_store_has_no_file),
@@ -133,6 +152,7 @@ if __name__ == "__main__":
         ("test_broken_file_is_reported_not_raised", test_broken_file_is_reported_not_raised),
         ("test_unknown_values_are_normalized", test_unknown_values_are_normalized),
         ("test_switching_project_resets_the_board", test_switching_project_resets_the_board),
+        ("test_add_many_skips_duplicates_and_persists", test_add_many_skips_duplicates_and_persists),
     ]
     failures = 0
     for name, fn in tests:

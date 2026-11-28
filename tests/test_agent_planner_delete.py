@@ -33,7 +33,7 @@ def panel(tmp_path, monkeypatch):
     team._agent_panel = SimpleNamespace(_project_root=lambda: project)
     team.show_snapshots = team.show_journals = lambda: None
     team.busy, team._question, team._edits = False, "", []
-    team.submit = lambda prompt, scheduled_role=None: True
+    team.submit_scheduled = lambda prompt: True
     notes = []
     monkeypatch.setattr(QtWidgets.QMessageBox, "question",
                         lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.No)
@@ -58,15 +58,72 @@ def add_job(panel, title="Проверить", role="test", project=None, due=No
 
 
 def tree_jobs(planner):
-    """Все задания из дерева планировщика (группа роли -> дочерние элементы)."""
+    """Все задания из плоского списка отложенных задач."""
     from PyQt6 import QtCore
 
-    items = []
-    for index in range(planner.tree.topLevelItemCount()):
-        group = planner.tree.topLevelItem(index)
-        for child in range(group.childCount()):
-            items.append(group.child(child).data(0, QtCore.Qt.ItemDataRole.UserRole))
-    return items
+    return [planner.tree.topLevelItem(index).data(0, QtCore.Qt.ItemDataRole.UserRole)
+            for index in range(planner.tree.topLevelItemCount())]
+
+
+def test_legacy_role_runs_as_single_agent(panel):
+    calls = []
+    panel.planner.team.submit_scheduled = lambda prompt: calls.append(prompt) or True
+    job = add_job(panel, role="test", due=time.time() - 1)
+
+    panel.planner.refresh()
+
+    assert calls == ["Проверить\n\nПроверить граф"]
+    assert panel.planner.active == (panel.project, job["id"])
+    assert panel.planner.cache.jobs(panel.project)[0]["state"] == "running"
+
+
+def test_double_click_opens_task_editor(panel, monkeypatch):
+    job = add_job(panel)
+    panel.planner.refresh()
+    selected = []
+    monkeypatch.setattr(panel.planner, "edit", lambda item: selected.append(item["id"]))
+
+    panel.planner.tree.itemDoubleClicked.emit(panel.planner.tree.topLevelItem(0), 0)
+
+    assert selected == [job["id"]]
+
+
+def test_scheduled_task_uses_chat_worker_and_finishes_once():
+    from PyQt6 import QtCore
+    from widgets.AgentTeamTab import AgentTeamTab
+
+    class Worker(QtCore.QObject):
+        finished_ok = QtCore.pyqtSignal(str)
+        failed = QtCore.pyqtSignal(str)
+        finished = QtCore.pyqtSignal()
+
+    worker = Worker()
+    sent = []
+    states = []
+    planner = SimpleNamespace(active=("project", 1))
+
+    def finished(success):
+        states.append(success)
+        planner.active = None
+
+    planner.finished = finished
+    agent = SimpleNamespace(_worker=None, _context_for=lambda: "project context")
+
+    def send(prompt, context, *, on_worker_created):
+        sent.append((prompt, context))
+        agent._worker = worker
+        on_worker_created(worker)
+
+    agent._send = send
+    host = SimpleNamespace(_agent_panel=agent, busy=False, planner=planner,
+                           _set_phase=lambda text: None)
+
+    assert AgentTeamTab.submit_scheduled(host, "Проверить проект")
+    worker.finished_ok.emit("Готово")
+    worker.finished.emit()
+
+    assert sent == [("Проверить проект", "project context")]
+    assert states == [True]
 
 
 def press_delete(panel, job, monkeypatch, answer=True):

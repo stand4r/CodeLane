@@ -63,7 +63,6 @@ class ActivityBar(QtWidgets.QFrame):
         ("search", "search", "Поиск (Ctrl+Shift+F)"),
         ("git", "source-control", "Управление версиями"),
         ("todo", "circle-check", "Задачи проекта (Ctrl+Shift+T)"),
-        ("intelligence", "intelligence", "Анализ проекта"),
     ]
 
     def __init__(self, parent=None):
@@ -89,6 +88,11 @@ class ActivityBar(QtWidgets.QFrame):
             self.buttons[key] = button
 
         layout.addStretch(1)
+
+        analysis_button = self._button("intelligence", "Анализ проекта")
+        analysis_button.clicked.connect(lambda: self._activate_or_toggle("intelligence"))
+        layout.addWidget(analysis_button, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
+        self.buttons["intelligence"] = analysis_button
 
         self.browser_button = self._button("browser-globe", "Браузер")
         self.browser_button.clicked.connect(self.browser_requested)

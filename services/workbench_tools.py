@@ -67,6 +67,19 @@ TOOLS = {
                           "tab": NUMBER}, ["action"]),
     "terminal_execute": ("command", "Запустить команду в видимой вкладке терминала. wait_seconds=0 возвращает подтверждение старта; при ожидании возвращает вывод и код выхода.",
                          {"command": TEXT, "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 90}}, ["command"]),
+    "workbench_control": (
+        "command",
+        "Управлять интерфейсом CodeLane без координат: показать панели, настройки, браузер, "
+        "терминал, сохранить все файлы или запустить текущий файл. "
+        "Для создания файла с заданным путём используй write_file; для любого другого элемента интерфейса — computer_control.",
+        {"action": choice(
+            "show_explorer", "show_search", "show_git", "show_todo", "show_intelligence",
+            "show_settings", "show_extensions", "show_browser", "show_documentation",
+            "show_problems", "show_terminal", "hide_terminal", "toggle_sidebar",
+            "save_all", "run_file",
+        )},
+        ["action"],
+    ),
     "read_log": ("read", "Прочитать хвост журнала CodeLane. Выбери application, activity или crash.",
                  {"kind": choice("application", "activity", "crash"), "lines": NUMBER}, ["kind"]),
 }

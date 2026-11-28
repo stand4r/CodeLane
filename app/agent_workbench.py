@@ -295,6 +295,52 @@ def _edit_explorer(window, payload, root):
     return {"path": str(target)}
 
 
+def _control_workbench(window, action):
+    """Invoke a small, explicit set of live CodeLane UI actions on the Qt thread."""
+    activities = {
+        "show_explorer": "explorer",
+        "show_search": "search",
+        "show_git": "git",
+        "show_todo": "todo",
+        "show_intelligence": "intelligence",
+    }
+    if action in activities:
+        window.activity_bar.set_activity(activities[action])
+    elif action == "show_terminal":
+        if not window.terminal_visible:
+            window.toggle_terminal()
+    elif action == "hide_terminal":
+        if window.terminal_visible:
+            window.toggle_terminal()
+    elif action == "toggle_sidebar":
+        window.toggle_sidebar()
+    elif action == "save_all":
+        window.action_save_all_files()
+    elif action == "run_file":
+        editor = window.get_current_editor()
+        if editor is None or not getattr(editor, "file_path", None):
+            raise RuntimeError("Открой файл в редакторе перед запуском.")
+        window.action_run_file()
+    else:
+        methods = {
+            "show_settings": "action_open_settings",
+            "show_extensions": "action_open_extensions",
+            "show_browser": "action_open_browser",
+            "show_documentation": "action_open_documentation",
+            "show_problems": "show_problems_tab",
+        }
+        method = methods.get(action)
+        if method is None:
+            raise RuntimeError(f"Неизвестное действие CodeLane: {action}")
+        getattr(window, method)()
+    return {
+        "action": action,
+        "sidebar_visible": bool(getattr(window, "sidebar_visible", False)),
+        "terminal_visible": bool(getattr(window, "terminal_visible", False)),
+        "active_panel": getattr(getattr(window, "activity_bar", None), "active_sidebar_key", None),
+    }
+
+
 def run_workbench(window, name, payload, complete):
     """Return a result immediately or complete an asynchronous request."""
     root = None
@@ -307,6 +353,8 @@ def run_workbench(window, name, payload, complete):
         root = Path(requested_root)
     if name == "explorer_edit":
         return _edit_explorer(window, payload, root)
+    if name == "workbench_control":
+        return _control_workbench(window, payload["action"])
     if name == "test_results":
         location = window._find_special_tab("testResults")
         if location is None:

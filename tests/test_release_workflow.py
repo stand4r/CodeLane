@@ -52,3 +52,19 @@ def test_results_panel_reports_failure_navigates_and_reruns_one(qtbot, tmp_path)
         panel.rerun_button.click()
     assert completed.args == [1]
     assert [row["id"] for row in panel.results] == ["test_demo.py::test_failure"]
+
+
+def test_results_panel_retries_empty_windows_startup_crash(qtbot, tmp_path, monkeypatch):
+    from PyQt6 import QtCore
+    from widgets.TestResultsPanel import TestResultsPanel
+
+    panel = TestResultsPanel(tmp_path, sys.executable, lambda *_: None)
+    qtbot.addWidget(panel)
+    panel._report = QtCore.QTemporaryDir()
+    launches = []
+    monkeypatch.setattr(panel, "_launch", lambda: launches.append(True))
+    with qtbot.waitSignal(panel.run_finished, timeout=1000) as completed:
+        for _ in range(3):
+            panel._finished(-1073741819)
+    assert len(launches) == 2
+    assert completed.args == [-1073741819]

@@ -9,7 +9,9 @@ from threading import Event, RLock, Thread
 import time
 from uuid import uuid4
 
-from core.subprocess_utils import decode_console_output, popen_hidden, run_hidden
+import psutil
+
+from core.subprocess_utils import decode_console_output, popen_hidden
 
 
 class CommandSession:
@@ -58,12 +60,32 @@ class CommandSession:
             self.reason = reason
             try:
                 if os.name == "nt":
-                    run_hidden(["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
-                               capture_output=True, timeout=5)
+                    # taskkill is another process and can fail to launch during
+                    # system-wide process startup faults. psutil is already a
+                    # runtime dependency and stops the tree in this process.
+                    parent = psutil.Process(self.process.pid)
+                    children = parent.children(recursive=True)
+                    for child in children:
+                        try:
+                            child.terminate()
+                        except psutil.NoSuchProcess:
+                            pass
+                    try:
+                        parent.terminate()
+                    except psutil.NoSuchProcess:
+                        pass
+                    _, alive = psutil.wait_procs([*children, parent], timeout=2)
+                    for process in alive:
+                        try:
+                            process.kill()
+                        except psutil.NoSuchProcess:
+                            pass
+                    if alive:
+                        psutil.wait_procs(alive, timeout=2)
                 else:
                     os.killpg(self.process.pid, signal.SIGTERM)
                 self.process.wait(timeout=2)
-            except (OSError, subprocess.SubprocessError):
+            except (OSError, subprocess.SubprocessError, psutil.Error):
                 if self.process.poll() is None:
                     self.process.kill()
                 self.process.wait(timeout=2)

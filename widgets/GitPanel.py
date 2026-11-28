@@ -10,7 +10,61 @@ from PyQt6.QtGui import QDesktopServices
 
 from services.github_service import GitHubService
 from core.subprocess_utils import run_hidden
+from core.git_diff import parse_shortstat
 from design.icons import codicon_icon
+
+
+WARNING_SCAN_LIMIT = 12
+
+
+def changed_source_paths(root, status_text):
+    """Absolute paths of existing source files listed by ``git status --porcelain``."""
+    from core.project_intelligence import ProjectIntelligenceEngine
+
+    extensions = {ext.lower() for ext in ProjectIntelligenceEngine.SOURCE_EXTENSIONS}
+    paths = []
+    for line in (status_text or "").splitlines():
+        if len(line) < 4:
+            continue
+        raw = line[3:].strip()
+        if not raw:
+            continue
+        # Renames look like "old -> new"; the new path is what we review.
+        raw = raw.split("->")[-1].strip().strip('"')
+        path = os.path.normpath(os.path.join(root, raw))
+        if not os.path.isfile(path):
+            continue
+        if os.path.splitext(path)[1].lower() not in extensions:
+            continue
+        paths.append(path)
+    return paths
+
+
+def count_analyzer_warnings(root, status_text, cache=None, limit=WARNING_SCAN_LIMIT):
+    """Count analyzer findings for changed source files (best effort, cached)."""
+    if not root:
+        return 0
+    cache = cache if cache is not None else {}
+    from core.project_intelligence import ProjectIntelligenceEngine
+
+    total = 0
+    for path in changed_source_paths(root, status_text)[:limit]:
+        try:
+            signature = os.stat(path).st_mtime_ns
+        except OSError:
+            continue
+        cached = cache.get(path)
+        if cached and cached[0] == signature:
+            total += cached[1]
+            continue
+        try:
+            info = ProjectIntelligenceEngine(root).analyze_file(path)
+            issues = len(getattr(info, "issues", None) or [])
+        except Exception:
+            issues = 0
+        cache[path] = (signature, issues)
+        total += issues
+    return total
 
 
 class GitHubLoginDialog(QtWidgets.QDialog):
@@ -429,6 +483,8 @@ class GitPanel(QtWidgets.QFrame):
         self._needs_refresh = False
         # State read by _collect_state() on the worker thread.
         self._state_busy = False
+        # (path, mtime) -> analyzer finding count for changed files.
+        self._warning_cache = {}
         self._state_pending = False
         self._action_busy = False
         self._branches: list = []
@@ -645,6 +701,16 @@ class GitPanel(QtWidgets.QFrame):
         commit.setToolTip("Зафиксировать все изменения (Commit)")
         layout.addWidget(commit)
 
+        self.diff_summary = QtWidgets.QLabel("")
+        self.diff_summary.setObjectName("gitDiffSummary")
+        self.diff_summary.setWordWrap(True)
+        self.diff_summary.setToolTip("Изменения в рабочем дереве и в индексе")
+        layout.addWidget(self.diff_summary)
+
+        review = self._button("Ревью диффа…", self.open_diff_review, object_name="gitReviewButton")
+        review.setToolTip("Разобрать изменения по хункам и проиндексировать только выбранные")
+        layout.addWidget(review)
+
         actions = QtWidgets.QHBoxLayout()
         actions.setSpacing(4)
         stage = self._button("Index+", self.stage_all)
@@ -728,7 +794,7 @@ class GitPanel(QtWidgets.QFrame):
             # Let the panel paint first, then query git.
             QtCore.QTimer.singleShot(0, self.refresh)
 
-    def _run(self, args, timeout=15, *, root=None):
+    def _run(self, args, timeout=15, *, root=None, input=None):
         directory = root if root is not None else self.root_path
         if not directory:
             return False, ""
@@ -741,6 +807,7 @@ class GitPanel(QtWidgets.QFrame):
                 cwd=directory,
                 env=env,
                 text=True,
+                input=input,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 encoding="utf-8",
@@ -1065,16 +1132,32 @@ class GitPanel(QtWidgets.QFrame):
         # These read-only queries are independent. Keep the executor local to
         # this background refresh so it cannot accumulate work across refreshes.
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="git-state") as pool:
+        with ThreadPoolExecutor(max_workers=5, thread_name_prefix="git-state") as pool:
             status_job = pool.submit(self._run, ["status", "--porcelain"])
             remote_job = pool.submit(self._run, ["remote", "get-url", "origin"])
             branches_job = pool.submit(self._run, ["branch", "--list"])
+            total_job = pool.submit(self._run, ["diff", "HEAD", "--shortstat"])
+            staged_job = pool.submit(self._run, ["diff", "--cached", "--shortstat"])
+            worktree_job = pool.submit(self._run, ["diff", "--shortstat"])
             ok_status, status = status_job.result()
             ok_remote, remote = remote_job.result()
             ok_branches, branches = branches_job.result()
+            ok_total, total = total_job.result()
+            ok_staged, staged = staged_job.result()
+            ok_worktree, worktree = worktree_job.result()
         state["status_ok"] = ok_status
         state["status"] = status
         state["remote"] = remote if ok_remote else ""
+        if ok_total:
+            state["diffstat"] = parse_shortstat(total)
+        elif ok_worktree:
+            # No commits yet: report uncommitted worktree changes instead.
+            state["diffstat"] = parse_shortstat(worktree)
+        else:
+            state["diffstat"] = (0, 0, 0)
+        state["warnings"] = count_analyzer_warnings(
+            root, status if ok_status else "", self._warning_cache)
+        state["staged_diffstat"] = parse_shortstat(staged) if ok_staged else (0, 0, 0)
         state["branches"] = [
             line.strip().lstrip("* ").strip()
             for line in (branches if ok_branches else "").splitlines()
@@ -1125,9 +1208,56 @@ class GitPanel(QtWidgets.QFrame):
             self._state_pending = False
             QtCore.QTimer.singleShot(0, self.refresh)
 
+    @staticmethod
+    def _files_word(count: int) -> str:
+        if count % 10 == 1 and count % 100 != 11:
+            return "файл"
+        if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+            return "файла"
+        return "файлов"
+
+    def _apply_diff_summary(self, state):
+        """Show the commit summary: worktree diffstat and what is already staged."""
+        label = getattr(self, "diff_summary", None)
+        if label is None:
+            return
+        files, added, removed = state.get("diffstat") or (0, 0, 0)
+        if not files:
+            label.setText("Изменений нет")
+            return
+        text = f"Изменения: {files} {self._files_word(files)} · +{added} −{removed}"
+        staged_files, staged_added, staged_removed = state.get("staged_diffstat") or (0, 0, 0)
+        if staged_files:
+            text += (f"  ·  в индексе: {staged_files} {self._files_word(staged_files)}"
+                     f" (+{staged_added} −{staged_removed})")
+        warnings = state.get("warnings") or 0
+        if warnings:
+            text += f"  ·  предупреждений анализатора: {warnings}"
+        label.setToolTip("Правки, ожидающие коммита: diffstat и замечания анализатора "
+                         "в изменённых файлах.")
+        label.setText(text)
+
+    # ------------------------------------------------------------------
+    # Diff review with per-hunk staging
+    # ------------------------------------------------------------------
+    def _review_git(self, args, input_text=None):
+        """Run git for the review dialog; ``input_text`` feeds ``git apply``."""
+        return self._run(list(args), timeout=30, input=input_text)
+
+    def open_diff_review(self, _checked=False, *, path=None):
+        """Open the hunk-level review of worktree changes."""
+        if not self.root_path:
+            return
+        from widgets.DiffReviewDialog import DiffReviewDialog
+
+        dialog = DiffReviewDialog(self, root=self.root_path, run_git=self._review_git, path=path)
+        dialog.staged.connect(self.refresh)
+        dialog.exec()
+
     def _apply_state(self, state):
         """Paint the state collected by :meth:`_collect_state` (GUI thread)."""
         self.files.clear()
+        self._apply_diff_summary(state)
         if not state.get("is_dir"):
             self.not_repo_frame.hide()
             self.github_card.hide()
@@ -1187,6 +1317,7 @@ class GitPanel(QtWidgets.QFrame):
         if item:
             path = item.data(QtCore.Qt.ItemDataRole.UserRole)
             menu.addAction("Открыть файл", lambda: self._open_item(item))
+            menu.addAction("Ревью диффа по хункам…", lambda: self.open_diff_review(path=path))
             menu.addAction("Индексировать (git add)", lambda: self._stage_file(path))
             menu.addAction("Снять с индекса (git reset)", lambda: self._unstage_file(path))
             menu.addAction("Отменить локальные изменения…", lambda: self._discard_file_changes(path))

@@ -2205,6 +2205,8 @@ class ModernCodeEditor(QWidget):
             "Shift+Alt+Down": self.editor._duplicate_line_down,
             "Ctrl+F": self.show_find_bar,
             "Ctrl+H": self.show_replace_bar,
+            "Ctrl+Home": lambda: self.editor.moveCursor(QtGui.QTextCursor.MoveOperation.Start),
+            "Ctrl+End": lambda: self.editor.moveCursor(QtGui.QTextCursor.MoveOperation.End),
             "Ctrl+Shift+B": self.toggle_code_lens,
             "Ctrl+Shift+R": self.toggle_code_lens,
             "Ctrl+Return": self._run_current_block_shortcut,

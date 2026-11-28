@@ -257,6 +257,8 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         },
         ["actions"],
     ),
+    _tool("desktop_state", "Список видимых окон компьютера, активное окно, положение курсора и размеры экрана. "
+          "Используй перед focus_window или кликами; управление выполняй через computer_control.", {}, []),
     _tool(
         "process_monitor",
         "Живые метрики ПК: загрузка CPU/RAM, топ процессов, поиск процессов по имени и наблюдение "
@@ -356,6 +358,8 @@ class LocalToolbox:
         if name == "computer_control":
             # Живое управление вводом — только полный доступ и Windows.
             return self.allow_commands and self.access_mode == "full" and os.name == "nt"
+        if name == "desktop_state":
+            return self.access_mode == "full" and os.name == "nt"
         if name == "process_monitor":
             # Только чтение метрик: разрешено в любом режиме доступа.
             return True
@@ -1104,6 +1108,19 @@ class LocalToolbox:
             "description": json.dumps(summary, ensure_ascii=False),
         }
 
+    def desktop_state(self) -> str:
+        """Discover windows before choosing a foreground target for GUI control."""
+        from core import desktop_control as desktop
+
+        if not desktop.IS_WINDOWS:
+            raise ToolError("Список окон доступен только в Windows.")
+        return json.dumps({
+            "screen": desktop.screen_rect(),
+            "cursor": list(desktop.cursor_position()),
+            "foreground": desktop.foreground_window(),
+            "windows": desktop.list_windows(limit=30),
+        }, ensure_ascii=False)
+
     def process_monitor(self, action: str, pattern: str = "", top: int = 10,
                         duration_sec: float = 3.0, interval_sec: float = 1.0) -> str:
         """Снимок метрик, поиск процессов или наблюдение в реальном времени."""
@@ -1470,6 +1487,7 @@ class LocalToolbox:
             "screenshot": self.screenshot,
             "desktop_stream": self.desktop_stream,
             "computer_control": self.computer_control,
+            "desktop_state": self.desktop_state,
             "process_monitor": self.process_monitor,
             "run_admin_command": self.run_admin_command,
             "run_executable": self.run_executable,
@@ -1522,6 +1540,8 @@ class LocalToolbox:
                 payload[key] = str(self._resolve(payload[key]))
         if name == "project_config_edit" and "launch_command" in payload and not self.allow_commands:
             raise ToolError("Изменение команды запуска отключено настройками агента.")
+        if name == "workbench_control" and payload["action"] == "save_all" and not self.allow_write:
+            raise ToolError("Сохранение файлов отключено настройками агента.")
         if access == "write":
             self._ask(name, json.dumps(payload, ensure_ascii=False), description)
         if name == "terminal_execute":

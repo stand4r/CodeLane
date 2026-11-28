@@ -77,6 +77,7 @@ DEFAULT_SETTINGS = {
     # JSON list of MCP servers (see services/mcp_client.py).
     "ai_mcp_servers": "",
     "ai_mcp_enabled": True,
+    "ai_voice_reply": False,
     # Updates from GitHub releases (services/updater.py).
     "update_auto_check": True,
     "update_last_check": "",

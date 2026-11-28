@@ -4,7 +4,8 @@
 
 from pathlib import Path
 import sys
-from PyInstaller.utils.hooks import collect_data_files, collect_delvewheel_libs_directory, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import (collect_data_files, collect_delvewheel_libs_directory,
+                                     collect_dynamic_libs, collect_submodules, copy_metadata)
 
 ROOT = Path(SPECPATH)
 
@@ -30,6 +31,7 @@ if not certifi_bundle.is_file():
 datas.append((str(certifi_bundle), "certifi"))
 datas += copy_metadata("bandit")
 datas, database_binaries = collect_delvewheel_libs_directory("psycopg_binary", datas=datas)
+voice_binaries = collect_dynamic_libs("vosk") + collect_dynamic_libs("_sounddevice_data")
 
 hiddenimports = [
     # PyQt6 Core and GUI
@@ -39,6 +41,7 @@ hiddenimports = [
     "PyQt6.QtPrintSupport",
     "PyQt6.QtWebEngineCore",
     "PyQt6.QtWebEngineWidgets",
+    "PyQt6.QtTextToSpeech",
     "PyQt6.sip",
     # System and Process inspection
     "psutil",
@@ -116,7 +119,7 @@ hiddenimports = [
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
-    binaries=database_binaries,
+    binaries=database_binaries + voice_binaries,
     datas=datas,
     hiddenimports=hiddenimports + [module
         for package in ("bandit.plugins", "bandit.blacklists", "bandit.formatters")

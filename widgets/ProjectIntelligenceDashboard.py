@@ -735,6 +735,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('projectIntelligence')
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setProperty('pyscribeSpecial', 'projectAnalysis')
         self.editor_path_hint = None
         self._wide_layout = None
@@ -825,6 +826,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.analysis_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.analysis_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._analysis_body = QtWidgets.QWidget()
+        self._analysis_body.setObjectName('projectAnalysisBody')
         body = QtWidgets.QVBoxLayout(self._analysis_body)
         body.setContentsMargins(0, 0, 3, 0)
         body.setSpacing(12)
@@ -1028,6 +1030,15 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.save_tips_btn.clicked.connect(self._save_tips_to_file)
         actions.addWidget(self.save_tips_btn)
 
+        self.tips_to_tasks_btn = QtWidgets.QPushButton('Все в задачи')
+        self.tips_to_tasks_btn.setToolTip(
+            'Превратить показанные рекомендации анализатора в задачи проекта; '
+            'уже созданные задачи пропускаются')
+        self.tips_to_tasks_btn.setStyleSheet(secondary_button_qss("4px 10px", 6))
+        self.tips_to_tasks_btn.setEnabled(False)
+        self.tips_to_tasks_btn.clicked.connect(self._tasks_from_recommendations)
+        actions.addWidget(self.tips_to_tasks_btn)
+
         actions.addStretch()
         layout.addLayout(actions)
 
@@ -1038,37 +1049,29 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.tips_tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.tips_tree.customContextMenuRequested.connect(self._on_tips_context_menu)
         self.tips_tree.itemDoubleClicked.connect(self._open_tip_item)
+        self.tips_tree.itemExpanded.connect(self._expand_tip_group)
+        self.tips_tree.itemCollapsed.connect(self._resize_tips_tree)
+        self.tips_tree.itemClicked.connect(self._on_tip_clicked)
         layout.addWidget(self.tips_tree)
         layout.addStretch()
 
     def _collect_tips_data(self, only_selected: bool = False) -> list:
-        items = []
+        tips = getattr(self, "_filtered_tips", [])
         if only_selected:
-            selected = self.tips_tree.selectedItems()
-            raw_items = selected if selected else ([self.tips_tree.currentItem()] if self.tips_tree.currentItem() else [])
-        else:
-            raw_items = [self.tips_tree.topLevelItem(i) for i in range(self.tips_tree.topLevelItemCount())]
-
-        for item in raw_items:
-            if not item:
-                continue
-            title = item.text(0)
-            priority = item.text(1)
-            file_rel = item.text(2)
-            line = item.text(3)
-            action = item.text(4)
-            full_path = item.data(0, QtCore.Qt.ItemDataRole.UserRole) or file_rel
-            explanation = item.toolTip(0) or action
-            items.append({
-                "title": title,
-                "priority": priority,
-                "file": file_rel,
-                "full_path": str(full_path),
-                "line": line,
-                "action": action,
-                "explanation": explanation
-            })
-        return items
+            item = self.tips_tree.currentItem()
+            if item is None:
+                return []
+            index = item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1)
+            if isinstance(index, int):
+                tips = [tips[index]]
+            elif item.parent() is None:
+                tips = [tip for tip in tips if tip.get("priority", "low") == item.data(0, QtCore.Qt.ItemDataRole.UserRole)]
+            else:
+                return []
+        return [{"title": t.get("title", ""), "priority": t.get("priority", "low"),
+                 "file": self._relative(t.get("file", "")), "full_path": t.get("file", ""),
+                 "line": t.get("line", 1), "action": t.get("action", ""),
+                 "explanation": t.get("explanation", "")} for t in tips]
 
     def _copy_tips(self):
         tips = self._collect_tips_data(only_selected=False)
@@ -1178,19 +1181,26 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         item = self.tips_tree.itemAt(pos)
         menu = QtWidgets.QMenu(self)
 
-        if item:
+        if item and isinstance(item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1), int):
             act_copy_one = menu.addAction(line_icon("copy"), "Скопировать выбранное замечание")
             act_copy_one.triggered.connect(lambda: self._copy_single_tip(item))
+            act_task_one = menu.addAction(line_icon("add"), "Выбранное замечание → задача")
+            act_task_one.triggered.connect(self._task_from_recommendation)
             act_open = menu.addAction(line_icon("search"), "Перейти к строке в файле")
             act_open.triggered.connect(lambda: self._open_tip_item(item, 0))
             menu.addSeparator()
 
-        total = self.tips_tree.topLevelItemCount()
+        total = len(getattr(self, "_filtered_tips", []))
         act_copy_all = menu.addAction(line_icon("copy"), f"Скопировать все замечания ({total})")
         act_copy_all.triggered.connect(self._copy_tips)
 
         act_save = menu.addAction(line_icon("save"), "Сохранить список в файл…")
         act_save.triggered.connect(self._save_tips_to_file)
+
+        act_tasks_all = menu.addAction(
+            line_icon("tasklist"), f"Все рекомендации → задачи ({total})")
+        act_tasks_all.setEnabled(bool(total))
+        act_tasks_all.triggered.connect(self._tasks_from_recommendations)
 
         menu.exec(self.tips_tree.viewport().mapToGlobal(pos))
 
@@ -1256,25 +1266,85 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         for child in self.findChildren(QtWidgets.QWidget):
             child.setFont(font)
 
+    def _todo_panel(self):
+        """Locate the project task board regardless of how the window is wired."""
+        panel = getattr(self, "todo_panel", None)
+        if panel is None:
+            window = getattr(self, "main_window", None) or self.window()
+            panel = getattr(window, "todo_panel", None)
+        return panel
+
+    @staticmethod
+    def _task_from_tip(tip):
+        """Build a project task from one analyzer recommendation dict."""
+        from core.project_tasks import Task
+
+        title = " ".join(str(tip.get("title") or "Замечание анализатора").split())
+        explanation = str(tip.get("explanation") or "").strip()
+        action = str(tip.get("action") or "").strip()
+        details = explanation
+        if action:
+            details = f"{details}\n\nЧто сделать: {action}".strip()
+        priority = str(tip.get("priority") or "medium").lower()
+        if priority not in ("urgent", "high", "medium", "low"):
+            priority = "medium"
+        try:
+            line = max(0, int(tip.get("line") or 0))
+        except (TypeError, ValueError):
+            line = 0
+        return Task(
+            title=title,
+            details=details,
+            priority=priority,
+            file=str(tip.get("file") or ""),
+            line=line,
+            tag="ANALYSIS",
+            source="analysis",
+        )
+
+    def _create_tasks_from_tips(self, tips):
+        from widgets.Dialog import CustomDialog
+
+        panel = self._todo_panel()
+        store = getattr(panel, "task_store", None) if panel is not None else None
+        if store is None:
+            CustomDialog("Диспетчер задач недоступен. Откройте проект и повторите.").exec()
+            return
+        if store.root is None:
+            CustomDialog("Сначала откройте проект: задачи сохраняются в .codelane/tasks.json.").exec()
+            return
+
+        created, skipped = store.add_many(self._task_from_tip(tip) for tip in tips)
+        panel.refresh_tasks()
+        if created:
+            window = getattr(self, "main_window", None) or self.window()
+            if hasattr(window, "activity_bar"):
+                window.activity_bar.set_activity("todo")
+
+        message = f"Создано задач: {len(created)}."
+        if skipped:
+            message += f"\nПропущено уже существующих: {skipped}."
+        if not created:
+            message = "Все выбранные рекомендации уже есть в задачах проекта." if skipped else message
+        CustomDialog(message).exec()
+
     def _task_from_recommendation(self):
         item = getattr(self, "tips_tree", None) and self.tips_tree.currentItem()
-        if item is None:
+        index = item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) if item is not None else None
+        tips = getattr(self, "_filtered_tips", [])
+        if not isinstance(index, int) or not (0 <= index < len(tips)):
             from widgets.Dialog import CustomDialog
             CustomDialog("Выберите замечание в разделе «Рекомендации».").exec()
             return
-        title = item.text(0)
-        file_path = item.data(0, QtCore.Qt.ItemDataRole.UserRole) or ""
-        line = item.data(1, QtCore.Qt.ItemDataRole.UserRole) or 0
-        details = item.toolTip(0) or ""
-        if self.main_window and hasattr(self.main_window, "todo_panel") and self.main_window.todo_panel:
-            self.main_window.todo_panel.task_store.add(
-                title, details=details, file=str(file_path),
-                line=int(line or 0), source="analysis", priority="high"
-            )
-            self.main_window.todo_panel.refresh_tasks()
-            if hasattr(self.main_window, "activity_bar"):
-                self.main_window.activity_bar.set_activity("todo")
-        self._refresh_tasks()
+        self._create_tasks_from_tips([tips[index]])
+
+    def _tasks_from_recommendations(self):
+        tips = list(getattr(self, "_filtered_tips", []))
+        if not tips:
+            from widgets.Dialog import CustomDialog
+            CustomDialog("Список рекомендаций пуст.").exec()
+            return
+        self._create_tasks_from_tips(tips)
 
     def _open_task_item(self, item, _column):
         task = self._selected_task()
@@ -1932,7 +2002,7 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
             'low': Palette.severity('low'),
         }
 
-        items = []
+        filtered = []
         for tip in self.student_tips:
             cat = tip.get('category', '')
             prio = tip.get('priority', 'low')
@@ -1956,23 +2026,23 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
                 if query not in full_text:
                     continue
 
-            prio_label = "Высокая" if prio == "high" else "Средняя" if prio == "medium" else "Низкая"
-            item = QtWidgets.QTreeWidgetItem([
-                title,
-                prio_label,
-                self._relative(file_path),
-                str(line),
-                action
-            ])
-            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, file_path)
-            item.setData(1, QtCore.Qt.ItemDataRole.UserRole, line)
-            item.setToolTip(0, explanation)
-            item.setToolTip(4, explanation)
-
-            c = QtGui.QColor(sev_colors.get(prio, Palette.TEXT_MUTED))
-            item.setForeground(1, QtGui.QBrush(c))
-            items.append(item)
-        self.tips_tree.addTopLevelItems(items)
+            filtered.append(tip)
+        self._filtered_tips = filtered
+        if hasattr(self, "tips_to_tasks_btn"):
+            self.tips_to_tasks_btn.setEnabled(bool(filtered))
+            self.tips_to_tasks_btn.setText(
+                f"Все в задачи ({len(filtered)})" if filtered else "Все в задачи")
+        self._tip_groups = {}
+        for priority, label in (("high", "Высокий"), ("medium", "Средний"), ("low", "Низкий")):
+            indices = [i for i, tip in enumerate(filtered) if tip.get("priority", "low") == priority]
+            if not indices:
+                continue
+            group = QtWidgets.QTreeWidgetItem([f"{label} приоритет · {len(indices)}", "", "", "", ""])
+            group.setData(0, QtCore.Qt.ItemDataRole.UserRole, priority)
+            group.setChildIndicatorPolicy(QtWidgets.QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
+            group.setForeground(0, QtGui.QBrush(QtGui.QColor(sev_colors.get(priority, Palette.TEXT_MUTED))))
+            self._tip_groups[priority] = (group, indices, 0)
+            self.tips_tree.addTopLevelItem(group)
 
         # Resizing every column for hundreds of rows is itself several hundred
         # milliseconds; fixed widths are cheaper and stable while scrolling.
@@ -1980,10 +2050,53 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         self.tips_tree.setColumnWidth(1, 80)
         self.tips_tree.setColumnWidth(2, 180)
         self.tips_tree.setColumnWidth(3, 60)
-        visible_rows = min(max(len(items), 2), 7)
+        self._resize_tips_tree()
+
+    def _resize_tips_tree(self, _item=None):
+        visible_rows = self.tips_tree.topLevelItemCount()
+        for index in range(self.tips_tree.topLevelItemCount()):
+            group = self.tips_tree.topLevelItem(index)
+            if group.isExpanded():
+                visible_rows += group.childCount()
+        visible_rows = min(max(visible_rows, 2), 12)
         row_height = max(self.tips_tree.sizeHintForRow(0), self.tips_tree.fontMetrics().height() + 8)
         header_height = self.tips_tree.header().sizeHint().height()
         self.tips_tree.setFixedHeight(max(100, header_height + visible_rows * row_height + 14))
+
+    def _on_tip_clicked(self, item, _column):
+        parent = item.parent()
+        if parent is not None and item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is None:
+            self._expand_tip_group(parent, force=True)
+
+    def _expand_tip_group(self, item, force=False):
+        if item.parent() is not None:
+            return
+        priority = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        state = getattr(self, "_tip_groups", {}).get(priority)
+        if state is None:
+            return
+        group, indices, offset = state
+        if offset and not force:
+            self._resize_tips_tree()
+            return
+        if item.childCount() and item.child(item.childCount() - 1).data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is None:
+            item.removeChild(item.child(item.childCount() - 1))
+        for index in indices[offset:offset + 50]:
+            tip = self._filtered_tips[index]
+            child = QtWidgets.QTreeWidgetItem([
+                tip.get("title", ""), {"high": "Высокая", "medium": "Средняя"}.get(priority, "Низкая"),
+                self._relative(tip.get("file", "")), str(tip.get("line", 1)), tip.get("action", "")])
+            child.setData(0, QtCore.Qt.ItemDataRole.UserRole, tip.get("file", ""))
+            child.setData(1, QtCore.Qt.ItemDataRole.UserRole, tip.get("line", 1))
+            child.setData(0, QtCore.Qt.ItemDataRole.UserRole + 1, index)
+            child.setToolTip(0, tip.get("explanation", ""))
+            item.addChild(child)
+        offset = min(offset + 50, len(indices))
+        self._tip_groups[priority] = (group, indices, offset)
+        if offset < len(indices):
+            more = QtWidgets.QTreeWidgetItem([f"Показать ещё 50 · осталось {len(indices) - offset}"])
+            item.addChild(more)
+        self._resize_tips_tree()
 
     def _populate_structure_tree(self, a: ProjectAnalysis):
         # Creating a tree item for every symbol froze the panel for seconds on a
@@ -2112,6 +2225,8 @@ class ProjectIntelligenceDashboard(QtWidgets.QWidget):
         return Path(path).name
 
     def _open_tip_item(self, item, _column):
+        if item is None or not isinstance(item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1), int):
+            return
         path = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         line = item.data(1, QtCore.Qt.ItemDataRole.UserRole)
         if path:

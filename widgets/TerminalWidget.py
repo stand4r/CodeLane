@@ -2013,6 +2013,8 @@ class TerminalTab(QtWidgets.QWidget):
             label = "Программа завершилась аварийно"
         elif getattr(proc, "_assembly_returns_eax", False) and not crashed:
             label = f"Результат программы (EAX) = {code & 0xFFFFFFFF}"
+        elif crashed:
+            label = f"Программа завершилась аварийно · {elapsed:.1f} с"
         elif code == 0:
             label = f"Завершено за {elapsed:.1f} с"
         else:

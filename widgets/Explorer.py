@@ -4,11 +4,17 @@ Provides file system navigation and operations
 """
 
 import os
+import logging
 from design.icons import set_line_icon
 from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtGui import QIcon, QDesktopServices
 from PyQt6.QtCore import Qt, QFileInfo
 from pathlib import Path
+
+from core.file_templates import load_templates
+from widgets.FileTemplateDialog import ask_template
+
+logger = logging.getLogger(__name__)
 
 
 IGNORED_NAMES = {
@@ -240,10 +246,13 @@ class Explorer(QtWidgets.QTreeView):
                 QtWidgets.QMessageBox.warning(self, "Новый файл", "Файл должен оставаться внутри папки проекта.")
                 return
             
-            # Create empty file
+            # Create file: пользователь выбирает шаблон (или пустой файл)
+            content = self._ask_new_file_template(file_path)
+            if content is None:
+                return
             try:
                 with open(file_path, 'w', encoding='utf-8') as file:
-                    file.write("")
+                    file.write(content)
                 
                 # Refresh the model
                 self.refresh_model()
@@ -260,6 +269,32 @@ class Explorer(QtWidgets.QTreeView):
                     "Ошибка", 
                     f"Не удалось создать файл: {str(e)}"
                 )
+
+    def _project_root(self):
+        """Корень открытого проекта (нужен для шаблонов .codelane/templates/)."""
+        window = self.window()
+        project = getattr(window, "current_project", None)
+        root = getattr(project, "root_path", None) if project else None
+        if root:
+            candidate = Path(root)
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _ask_new_file_template(self, file_path):
+        """Спросить шаблон нового файла. Возвращает текст или None при отмене."""
+        root = self._project_root()
+        try:
+            templates = load_templates(root)
+            return ask_template(
+                self,
+                templates,
+                file_path=file_path,
+                root=root,
+            )
+        except Exception:
+            logger.exception("Не удалось применить шаблон нового файла")
+            return ""
 
     def create_new_folder(self):
         """Create a new folder in current directory"""

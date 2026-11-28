@@ -434,18 +434,28 @@ class AdversaryRunner:
         """Run one call and classify the outcome."""
         command = [self.python, self._runner(), str(module_path), function_name,
                    json.dumps(list(args), ensure_ascii=False)]
-        try:
-            completed = run_hidden(
-                command, capture_output=True, text=True, timeout=self.timeout,
-                encoding="utf-8", errors="replace",
-                cwd=str(Path(module_path).parent),
-            )
-        except subprocess.TimeoutExpired:
-            return Finding(function=function_name, args=list(args), kind="hang")
-        except OSError as exc:
-            return Finding(function=function_name, args=list(args),
-                           kind="import_error", error_type="OSError",
-                           error_message=str(exc))
+        for attempt in range(3):
+            try:
+                completed = run_hidden(
+                    command, capture_output=True, text=True, timeout=self.timeout,
+                    encoding="utf-8", errors="replace",
+                    cwd=str(Path(module_path).parent),
+                )
+            except subprocess.TimeoutExpired:
+                return Finding(function=function_name, args=list(args), kind="hang")
+            except OSError as exc:
+                return Finding(function=function_name, args=list(args),
+                               kind="import_error", error_type="OSError",
+                               error_message=str(exc))
+            # On affected Windows systems even an empty Python process can
+            # sporadically die during startup with 0xC0000005. Such a process
+            # never emitted our result marker, so one failure is not evidence
+            # that the tested function crashed.
+            startup_fault = (os.name == "nt" and completed.returncode is not None
+                             and completed.returncode & 0xFFFFFFFF == 0xC0000005
+                             and not completed.stdout and not completed.stderr)
+            if not startup_fault or attempt == 2:
+                break
 
         payload = None
         for line in reversed((completed.stdout or "").splitlines()):
@@ -457,7 +467,9 @@ class AdversaryRunner:
                 break
         if payload is None:
             stderr = (completed.stderr or "").strip().splitlines()
-            message = stderr[-1] if stderr else "нет ответа от процесса"
+            message = stderr[-1] if stderr else (
+                f"процесс завершился с кодом 0x{completed.returncode & 0xFFFFFFFF:08X}"
+                if completed.returncode is not None else "нет ответа от процесса")
             return Finding(function=function_name, args=list(args),
                            kind="error", error_type="ProcessError",
                            error_message=message[:300])
@@ -503,7 +515,8 @@ class AdversaryRunner:
                 trial[position] = candidate
                 budget -= 1
                 result = self.execute(module_path, best.function, trial)
-                if result.failed and result.kind == best.kind:
+                if (result.failed and result.kind == best.kind
+                        and result.error_type == best.error_type):
                     best = result
                     changed = True
                     break

@@ -1825,6 +1825,20 @@ QTabBar#editorTabs::tab:selected {
     border-color: @soft_border@;
     border-bottom-color: @tab_indicator@;
 }
+QTabBar#editorTabs[activeSurface="agent"]::tab:selected { background: @agent_canvas@; }
+QTabBar#editorTabs[activeSurface="analysis"]::tab:selected { background: @agent_canvas@; }
+QTabBar#editorTabs[activeSurface="journal"]::tab:selected { background: @agent_canvas@; }
+QWidget#agentJournalView { background: @agent_canvas@; color: @glass_text@; }
+QLabel#agentJournalTitle { font-size: 17px; font-weight: 600; }
+QLabel#agentJournalCount { color: @glass_text@; }
+QTreeWidget#agentJournalEntries, QTextBrowser#agentJournalDetails {
+    background: @agent_panel@; color: @glass_text@;
+    border: 1px solid @agent_edge@; border-radius: 8px;
+}
+QTreeWidget#logViewer, QTextBrowser#logDetails {
+    background: @glass_surface@; color: @glass_text@;
+    border: 1px solid @glass_border@; border-radius: 8px;
+}
 QFrame#aiHeader {
     background: @glass_surface@;
     border-bottom: 1px solid @soft_border@;
@@ -1933,8 +1947,13 @@ QToolTip {
 }
 
 /* Agent workspace: a quiet canvas, one floating composer and a separate activity rail. */
+QWidget#projectIntelligence, QScrollArea#projectAnalysisScroll, QWidget#projectAnalysisBody,
+QWidget#analysisChooser, QScrollArea#analysisChooserScroll, QWidget#analysisProfilePage {
+    background: @agent_canvas@; border: none;
+}
+QFrame#intelligenceHeader { background: @agent_canvas@; border: none; }
 QWidget#agentWorkspace, QWidget#agentWorkspaceSidebar, QWidget#aiAgentPanel, QWidget#aiTranscript,
-QWidget#aiColumnHost, QWidget#aiChatColumn, QWidget#aiComposerWrap,
+QWidget#aiColumnHost, QWidget#aiChatColumn, QWidget#agentWelcomePage, QWidget#aiComposerWrap,
 QWidget#aiComposerRow {
     background: @agent_canvas@; border: none;
 }
@@ -1956,6 +1975,8 @@ QToolButton#aiAccessMode, QToolButton#aiScopeButton, QToolButton#aiModelButton,
 QToolButton#aiAttachButton { background: transparent; color: @glass_text@; border: none; border-radius: 10px; }
 QToolButton#aiScopeButton:hover, QToolButton#aiModelButton:hover, QToolButton#aiAccessMode:hover,
 QToolButton#aiAttachButton:hover { background: @agent_tint@; }
+QToolButton#aiVoiceButton { background: transparent; border: none; border-radius: 16px; padding: 0; }
+QToolButton#aiVoiceButton:hover { background: @agent_tint@; }
 QFrame#aiUserBubblePill { background: @agent_tint@; border: none; border-radius: 17px; }
 QLabel#aiActivityLine { background: @agent_panel@; border: none; border-radius: 10px; padding: 5px 10px; }
 QWidget#chatCodeSnippet { background: @agent_panel@; border: 1px solid @agent_edge@; border-radius: 13px; }

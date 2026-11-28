@@ -68,6 +68,8 @@ class AgentTeamTab(QtWidgets.QWidget):
     def __init__(self, agent_panel, parent=None):
         super().__init__(parent)
         self.setObjectName("agentWorkspace")
+        # Paint the themed canvas behind the layout margins up to the tab edge.
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setProperty("pyscribeSpecial", "agentTeam")
         self._agent_panel = agent_panel
         self._cancel = None
@@ -197,6 +199,8 @@ class AgentTeamTab(QtWidgets.QWidget):
 
     @QtCore.pyqtSlot(int, str, str, str)
     def _update_agent(self, number, role, goal, status):
+        if number == 0 and role == "Руководитель":
+            role = "ИИ-агент"
         self._roles[number] = role
         if self._statuses.get(number) == status:
             return
@@ -263,7 +267,7 @@ class AgentTeamTab(QtWidgets.QWidget):
         self.journal_button.setEnabled(True)
         if self._journal_view is not None:
             try:
-                self._journal_view.appendPlainText(entry)
+                self._journal_view.append_entry(entry)
             except RuntimeError:
                 self._journal_view = None
 
@@ -323,15 +327,103 @@ class AgentTeamTab(QtWidgets.QWidget):
                 return
         self._journal_view = self._journal_tab("ИИ-агент", "\n\n".join(self._journal_lines))
 
-    def _journal_tab(self, title, text):
+    def _journal_tab(self, title, text, run=None):
+        from widgets.AgentJournalWidget import AgentJournalWidget
+
         window = self._agent_panel.main_window
-        view = QtWidgets.QPlainTextEdit()
-        view.setReadOnly(True)
-        view.setProperty("pyscribeSpecial", "agentJournal")
-        view.setPlainText(text)
+        view = AgentJournalWidget(title, text, edits=self._journal_edits(run))
+        if run:
+            view.undoEditRequested.connect(partial(self._undo_journal_edit, view, run))
+            view.rollbackRunRequested.connect(partial(self._rollback_journal_run, view, run))
         group = window.active_tab_widget
         group.setCurrentIndex(group.addTab(view, "Журнал · " + title))
         return view
+ 
+    def _journal_edits(self, run):
+        """Snapshots of the run, shown as undoable edits in the journal."""
+        project = self._agent_panel._project_root()
+        cache = getattr(self.planner, "cache", None)
+        if not project or cache is None or not run:
+            return []
+        try:
+            rows = cache.snapshots(project)
+        except (OSError, ValueError):
+            return []
+        edits = []
+        for row in rows:
+            if row["run"] != run or row["state"] == "restored":
+                continue
+            added = removed = 0
+            try:
+                entry, _state = cache.contents(project, row["id"])
+                diff = entry.diff()
+            except (OSError, ValueError):
+                diff = "Содержимое снимка недоступно."
+            for line in diff.splitlines():
+                if line.startswith("+++") or line.startswith("---"):
+                    continue
+                if line.startswith("+"):
+                    added += 1
+                elif line.startswith("-"):
+                    removed += 1
+            edits.append({"id": row["id"], "path": row["path"], "diff": diff,
+                          "state": row["state"], "added": added, "removed": removed})
+        return edits
+
+    def _undo_journal_edit(self, view, run, snapshot_id):
+        """Restore one snapshot from the journal, keeping later edits intact."""
+        project = self._agent_panel._project_root()
+        if not project or self.busy:
+            return
+        cancel = Event()
+        toolbox = self._agent_panel._build_local_tools(cancel.is_set, full_access=True)
+        self._applying = cancel
+
+        def finish(message):
+            from PyQt6 import sip
+
+            self._applying = None
+            if not cancel.is_set():
+                self._agent_panel._append_notice(message)
+            try:
+                if sip.isdeleted(view):
+                    return
+                view.set_edits(self._journal_edits(run))
+            except RuntimeError:
+                pass
+
+        work = partial(self.planner.cache.restore, project, int(snapshot_id), toolbox)
+        run_async(work, on_done=finish, on_error=finish)
+
+    def _rollback_journal_run(self, view, run):
+        """Roll back every snapshot of the run shown in the journal."""
+        project = self._agent_panel._project_root()
+        if not project or self.busy:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            view, "Откат сессии",
+            "Вернуть все файлы этой сессии к состоянию до запуска агента?")
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        cancel = Event()
+        toolbox = self._agent_panel._build_local_tools(cancel.is_set, full_access=True)
+        self._applying = cancel
+
+        def finish(message):
+            from PyQt6 import sip
+
+            self._applying = None
+            if not cancel.is_set():
+                self._agent_panel._append_notice(message)
+            try:
+                if sip.isdeleted(view):
+                    return
+                view.set_edits(self._journal_edits(run))
+            except RuntimeError:
+                pass
+
+        work = partial(self.planner.cache.restore_run, project, run, toolbox)
+        run_async(work, on_done=finish, on_error=finish)
 
     def _archive(self):
         if self._logs and self._root:
@@ -350,7 +442,39 @@ class AgentTeamTab(QtWidgets.QWidget):
         choice, ok = QtWidgets.QInputDialog.getItem(self, "Журналы", "Агент", labels, 0, False)
         if ok:
             row = rows[labels.index(choice)]
-            self._journal_tab(row["title"], self.planner.cache.journal(project, row["run"], row["agent"]))
+            self._journal_tab(row["title"], self.planner.cache.journal(project, row["run"], row["agent"]),
+                              run=row["run"])
+
+    def submit_scheduled(self, text):
+        """Run a deferred task through the ordinary chat worker."""
+        panel = self._agent_panel
+        if self.busy or getattr(panel, "_worker", None) is not None:
+            return False
+
+        def finish(success):
+            from PyQt6 import sip
+
+            if isinstance(self, QtCore.QObject) and sip.isdeleted(self):
+                return
+            if self.planner.active is None:
+                return
+            self.planner.finished(success)
+            self._set_phase("Задача завершена" if success else "Отложенная задача приостановлена")
+
+        def attach(worker):
+            worker.finished_ok.connect(
+                lambda answer: finish(bool(answer) and not getattr(worker, "truncated", False)))
+            worker.failed.connect(lambda _error: finish(False))
+            worker.finished.connect(lambda: finish(False))
+
+        self._set_phase("Отложенная задача запускается")
+        started = panel._send(text, panel._context_for(), on_worker_created=attach)
+        if started is False or getattr(panel, "_worker", None) is None:
+            self._set_phase("Отложенная задача приостановлена")
+            return False
+        if self.planner.active is not None:
+            self._set_phase("Отложенная задача выполняется")
+        return True
 
     def submit(self, text, *, scheduled_role=None, attachment_paths=(), file_context=None):
         if self.busy:
@@ -396,7 +520,7 @@ class AgentTeamTab(QtWidgets.QWidget):
         self._logs.clear()
         self._journal_lines.clear()
         self._journal_view = None
-        self._update_agent(0, "Руководитель", self._goal, "Запуск")
+        self._update_agent(0, "ИИ-агент", self._goal, "Запуск")
         self._agent_panel._record_team_message("user", text)
         options = {"attachment_paths": attachment_paths} if attachment_paths else {}
         if not attachment_paths:
@@ -452,6 +576,8 @@ class AgentTeamTab(QtWidgets.QWidget):
         self._pending.clear()
         self.pending_list.clear()
         self.pending_list.hide()
+        if self.planner.active and getattr(self._agent_panel, "_worker", None) is not None:
+            self._agent_panel.stop_request()
         self.planner.finished(False)
         if self._cancel is not None:
             self._cancel.set()
